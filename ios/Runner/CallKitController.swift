@@ -87,7 +87,12 @@ class CallKitController: NSObject {
     let cxHandle = CXHandle(type: .generic, value: handle)
     let startAction = CXStartCallAction(call: uuid, handle: cxHandle)
     startAction.isVideo = false
-    requestTransaction(CXTransaction(action: startAction), result: result)
+    // A failed start must not leave `callUUID` set, or every later start is a
+    // no-op against a call the OS never accepted.
+    requestTransaction(
+      CXTransaction(action: startAction),
+      rollback: { [weak self] in self?.callUUID = nil },
+      result: result)
   }
 
   private func reportEnded(result: @escaping FlutterResult) {
@@ -96,7 +101,12 @@ class CallKitController: NSObject {
       return
     }
     selfEnding = true
-    requestTransaction(CXTransaction(action: CXEndCallAction(call: uuid)), result: result)
+    // A failed end must clear `selfEnding`, or a later real End button is read as
+    // our own echo and never reaches Dart.
+    requestTransaction(
+      CXTransaction(action: CXEndCallAction(call: uuid)),
+      rollback: { [weak self] in self?.selfEnding = false },
+      result: result)
   }
 
   private func reportMuted(_ muted: Bool, result: @escaping FlutterResult) {
@@ -106,13 +116,32 @@ class CallKitController: NSObject {
     }
     selfMuting = true
     let action = CXSetMutedCallAction(call: uuid, muted: muted)
-    requestTransaction(CXTransaction(action: action), result: result)
+    // Same as end: a failed mute must clear `selfMuting` so a later real toggle
+    // is not swallowed as our own echo.
+    requestTransaction(
+      CXTransaction(action: action),
+      rollback: { [weak self] in self?.selfMuting = false },
+      result: result)
   }
 
-  private func requestTransaction(_ transaction: CXTransaction, result: @escaping FlutterResult) {
+  /// Requests a CallKit transaction. On failure, rolls the operation's committed
+  /// state back and surfaces the error to Dart (which logs and degrades to a call
+  /// the OS does not know about); on success, replies nil.
+  private func requestTransaction(
+    _ transaction: CXTransaction,
+    rollback: @escaping () -> Void,
+    result: @escaping FlutterResult
+  ) {
     callController.request(transaction) { error in
       if let error = error {
         NSLog("os_call: transaction failed: \(error.localizedDescription)")
+        rollback()
+        result(
+          FlutterError(
+            code: "transaction_failed",
+            message: error.localizedDescription,
+            details: nil))
+        return
       }
       result(nil)
     }
@@ -123,9 +152,17 @@ extension CallKitController: CXProviderDelegate {
   func providerDidReset(_ provider: CXProvider) {
     // CallKit threw the call away out from under us (a reset). Forget it; nothing
     // to end, because it is already gone.
+    let hadCall = callUUID != nil
     callUUID = nil
     selfEnding = false
     selfMuting = false
+    // The OS call is gone but Dart still thinks it is engaged — its media call
+    // runs on with no OS protection, and its engagement guard blocks a
+    // replacement. Treat the reset like the person pressing End so Dart tears
+    // down and clears engagement, the same path the lock-screen End takes.
+    if hadCall {
+      channel.invokeMethod("endRequested", arguments: nil)
+    }
   }
 
   func provider(_ provider: CXProvider, perform action: CXStartCallAction) {

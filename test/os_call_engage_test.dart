@@ -119,6 +119,21 @@ void main() {
     expect(os.started, hasLength(1));
   });
 
+  test('opening the faces syncs the initial mute into the system call UI', () async {
+    final (:state, :call, :os) = wired();
+
+    // The faces door engages with the mic still off, so CallKit must hear the
+    // call is muted — otherwise its default unmuted call lies and swallows the
+    // first system mute toggle as a no-op.
+    state.engageFromScreen();
+    expect(os.started, hasLength(1));
+    expect(os.muted, [true]);
+
+    // Still the one call, and no second start when unmuting afterwards.
+    await state.setMicOn(true);
+    expect(os.started, hasLength(1));
+  });
+
   test('leaving ends the OS call exactly once', () async {
     final (:state, :call, :os) = wired();
 
