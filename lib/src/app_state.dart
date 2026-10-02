@@ -11,6 +11,7 @@ import 'link_status.dart';
 import 'map_person.dart';
 import 'media/call.dart';
 import 'media/gameboy_sfx.dart';
+import 'media/os_call.dart';
 import 'notifications.dart';
 import 'pairing.dart';
 import 'push.dart';
@@ -71,6 +72,11 @@ class AppState extends ChangeNotifier {
     // Test seam for the resync cooldown clock. Production reads the wall clock.
     DateTime Function()? now,
     UiPreferences? uiPreferences,
+    // The OS-call seam. CallKit on a real iPhone, a no-op everywhere else. A
+    // suite injects [NoopOsCall] (or a recording fake) so engage/disengage can
+    // be asserted without a telephony stack. Defaults to the no-op rather than
+    // the real one so a plain `AppState()` in a widget test touches no channel.
+    OsCall? osCall,
   }) : _notifier = notifier ?? Notifier(),
        _connectivityChanges =
            connectivityChanges ?? Connectivity().onConnectivityChanged,
@@ -87,7 +93,15 @@ class AppState extends ChangeNotifier {
                DirectCollector(auth: auth, spaceId: spaceId, log: log ?? _noop)),
        _buildActivityFeed = buildActivityFeed ?? _realActivityFeed,
        // ignore: prefer_initializing_formals
-       _buildCall = buildCall;
+       _buildCall = buildCall,
+       _osCall = osCall ?? NoopOsCall() {
+    // The OS asking us to do something: the End and mute buttons on the lock
+    // screen and the system call sheet. Both route to the same paths an in-app
+    // tap would — one call, one place to tear it down, one place to mute.
+    _osSubs.add(_osCall.onEndRequested.listen((_) => unawaited(leaveCall())));
+    _osSubs.add(_osCall.onMuteRequested
+        .listen((muted) => unawaited(setMicOn(!muted))));
+  }
 
   static void _noop(String _) {}
 
@@ -143,6 +157,17 @@ class AppState extends ChangeNotifier {
   /// and needs the same credential the socket runs on.
   GatherAuth? _auth;
   Call? _call;
+
+  /// The OS's handle on the call, and whether we have told it one is running.
+  ///
+  /// Separate from [_call] on purpose: the media plane connects on proximity,
+  /// but the OS is only told once the person deliberately engages — see
+  /// [engageCall]. [_engaged] is the guard that keeps the two doors into that
+  /// (unmuting, opening the faces) reporting one call rather than two.
+  final OsCall _osCall;
+  bool _engaged = false;
+  final _osSubs = <StreamSubscription<dynamic>>[];
+
   final PresenceTracker _tracker = PresenceTracker();
   final _subs = <StreamSubscription<dynamic>>[];
 
@@ -1463,8 +1488,56 @@ class AppState extends ChangeNotifier {
     final call = _callOrNull();
     if (call == null) return 'Not connected to Gather.';
     final failed = await call.setMicOn(on);
+    // Unmuting is deliberate engagement — the OS should know there is a call.
+    // Muting is not disengagement: a muted call is still a call, so this only
+    // reflects the mute into the system UI, it does not end anything.
+    if (failed == null) {
+      if (on) engageCall();
+      unawaited(_osCall.reportMuted(!on));
+    }
     notifyListeners();
     return failed;
+  }
+
+  /// Tell the OS a call is running, once the person has actively engaged.
+  ///
+  /// The two doors: unmuting ([setMicOn]) and opening the faces
+  /// ([openCallScreen], via this). Drifting into a conversation and listening is
+  /// not a door — that would report a call for every group the phone wandered
+  /// past. Idempotent on [_engaged], so pushing on both doors reports one call.
+  void engageCall() {
+    if (_engaged) return;
+    _engaged = true;
+    unawaited(_osCall.reportStarted(handle: _callHandle));
+  }
+
+  /// End the call, by hand or at the OS's request, and tell the OS it ended.
+  ///
+  /// The single teardown both the in-app Leave and CallKit's own End button go
+  /// through, so the two can never disagree about whether a call is up.
+  Future<void> leaveCall() async {
+    await (_call?.hangUp() ?? Future<void>.value());
+    _disengage();
+    notifyListeners();
+  }
+
+  /// Tell the OS the call ended, if we had told it one started. Paired with
+  /// every teardown — a hang-up by hand, the OS's End button, or the connection
+  /// dropping out from under us.
+  void _disengage() {
+    if (!_engaged) return;
+    _engaged = false;
+    unawaited(_osCall.reportEnded());
+  }
+
+  /// The name the system call UI wears: who we are talking to. Falls back to the
+  /// app's name when standing alone, which is the moment just after unmuting
+  /// before anyone else is resolved.
+  String get _callHandle {
+    final names = huddle;
+    if (names.isEmpty) return 'Gather';
+    if (names.length == 1) return names.first;
+    return '${names.first} +${names.length - 1}';
   }
 
   Future<String?> setCameraOn(bool on) async {
@@ -2775,6 +2848,9 @@ class AppState extends ChangeNotifier {
     _party?.stop(detail);
     _walk?.release();
     unawaited(_call?.hangUp() ?? Future<void>.value());
+    // The OS call goes with it — a lock-screen call sheet for a room we have
+    // dropped off is the same untrue claim as a glowing switch.
+    _disengage();
   }
 
   void _onConnectivityChanged(List<ConnectivityResult> now) {
@@ -2850,6 +2926,9 @@ class AppState extends ChangeNotifier {
     _party = null;
     _walk = null;
     _call = null;
+    // The OS call belongs to the pairing it was reported under; a fresh pairing
+    // must not inherit a call sheet for the previous account's room.
+    _disengage();
     _auth = null;
     // Faces are signed per space and per person. Pairing again as somebody else
     // must not serve them the previous account's cache.
@@ -3099,6 +3178,13 @@ class AppState extends ChangeNotifier {
     _selfHealCooldown?.cancel();
     _selfHealCooldown = null;
     unawaited(_detach());
+    // The OS-call bridge outlives any one pairing — it is a channel, not a
+    // connection — so it ends with the app rather than inside `_detach`.
+    for (final sub in _osSubs) {
+      unawaited(sub.cancel());
+    }
+    _osSubs.clear();
+    unawaited(_osCall.dispose());
     // After `_detach`, which clears it: a `ChangeNotifier` notified after it has
     // been disposed throws, and `_detach` reaches that line before its first
     // await.

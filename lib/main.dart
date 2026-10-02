@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +10,8 @@ import 'src/app_state.dart';
 import 'src/fonts_license.dart';
 import 'src/media/live_call.dart';
 import 'src/media/media_log.dart';
+import 'src/media/os_call.dart';
+import 'src/media/webrtc_media_engine.dart';
 import 'theme/gather_theme.dart';
 import 'ui/home_shell.dart';
 import 'ui/pair_screen.dart';
@@ -80,12 +83,21 @@ class _GatherCompanionAppState extends State<GatherCompanionApp> with WidgetsBin
       spaceId: spaceId,
       srcId: srcId,
       log: mediaLog,
+      // On iOS the OS owns the route: CallKit activates the session and the
+      // system call sheet is the route picker, so the engine must not force the
+      // speaker from under it. Android has no such owner and routes itself.
+      engine: WebrtcMediaEngine(
+        log: mediaLog,
+        manageAudioRoute: !Platform.isIOS,
+      ),
     ),
     // The same sink the call uses, so the movement, socket and cluster diagnostics
     // land in `tmp/media.log` alongside the media ones — the file a standalone phone
     // build keeps and `devicectl` can copy off. Without this the collector and walk
     // log into a `_noop` and a desk-desync leaves no trace.
     log: mediaLog,
+    // CallKit on iOS, a no-op on Android until its ConnectionService lands.
+    osCall: defaultOsCall(log: mediaLog),
   );
 
   /// The wakelock state we last pushed to the OS, so [_syncWakelock] toggles the

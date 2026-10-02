@@ -30,6 +30,31 @@ rules that decide which events are worth a person's attention.
 | `media/sfu_session.dart` | `SfuSession` — the media plane's client half, both directions. Sending: router `get-addr` → node connect → `get-rtp-capabilities` → `Device.load()` → send transport → `produce`, VP8 with Gather's own three simulcast encodings (only `r0` active; the server flips the rest via `set-max-spatial-layer`). Receiving: `consume-request` to subscribe, then **reconciliation** against the full-state `producer-idMap` each `consume-try` carries — never delta handling, because the announcement is the whole truth about one peer. Holds a **pool** of node sockets, not one: peers are spread across SFUs and `get-addr` is asked per person. Owns the mediasoup `Device`; `sfu_signalling.dart` in `gather_client` owns the sockets beneath it. **Not exercised against the live SFU yet**, and it carries one uncaptured assumption — the `transport-create` *response* shape — named in the file. |
 | `media/call.dart` | `Call`, `CallState`, `CallParticipant` — what the two buttons mean, with **no `MediaStream` anywhere on it**. That is what lets call state be read everywhere without dragging the plugin along; the screen that draws video asks `LiveCall` for the native streams directly. |
 | `media/live_call.dart` | `LiveCall` — [MediaEngine] and [SfuSession] driven together: capture, publish, subscribe, and the capture *restart* that adding a camera mid-call requires (a track cannot join a session that is already open, and leaving the camera captured-but-disabled would keep iOS's indicator lit). |
+| `media/os_call.dart` | `OsCall` — the seam between "there is a call" and "the OS knows there is a call" (CallKit on iOS, a future `ConnectionService` on Android). Imports no platform channel, so `AppState` stays testable; `defaultOsCall()` picks `IosCallKit` on iOS and `NoopOsCall` everywhere else (Android for now, and tests). |
+| `media/os_call_callkit.dart` | `IosCallKit` — the thin `MethodChannel('gather/os_call')` to `ios/Runner/CallKitController.swift`. A hand-written bridge, not a plugin: the CallKit plugins are PushKit-incoming-call-shaped (this app's calls are app-initiated off a held socket) and CocoaPods-first (this project is SPM-only on purpose). Channel failures are swallowed — a call the OS does not know about beats a crash. |
+
+## The OS-call engage model
+
+A Gather call connects on **proximity** (`Call.setListeningTo` with a non-empty
+set), with nobody pressing anything. CallKit must *not* hear about that, or the
+Recents log fills up as the phone drifts past conversations in a pocket. So the OS
+is told a call is running only on deliberate **engagement**, which `AppState` owns:
+
+- **Engage** (→ `OsCall.reportStarted`) on the first of two doors — `setMicOn(true)`
+  succeeding, or `openCallScreen` (`AppState.engageCall`). Guarded by `_engaged`
+  so both doors report **one** call, not two. Muting does not disengage: a muted
+  call is still a call.
+- **Disengage** (→ `OsCall.reportEnded`) on every teardown — `AppState.leaveCall`
+  (the in-app Leave), the connection dropping, or unpairing.
+- The OS's own buttons come back the other way: `onEndRequested` → `leaveCall`,
+  `onMuteRequested` → `setMicOn`. The in-app Leave and CallKit's End share one
+  path so the two can never disagree about whether a call is up.
+
+On iOS, CallKit owns the `AVAudioSession` route (the system call sheet is the
+picker), so `WebrtcMediaEngine` is built with `manageAudioRoute: false` there — it
+sets the call category but forces no route and installs no headset listener — and
+the in-app speaker button is hidden. Android keeps routing itself. See
+`os_call_engage_test.dart` for the seam and `ios/Runner/AGENTS.md` for the native half.
 
 ## For AI Agents
 

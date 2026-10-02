@@ -52,12 +52,19 @@ enum SpotlightMode { manual, auto }
 
 /// Opens the faces. One place, because two things open them — the call banner and,
 /// while nobody else is in the call, the control bar's own camera button.
-Future<void> openCallScreen(BuildContext context, AppState state) =>
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => CallScreen(state: state, buildTile: debugCallTileBuilder),
-      ),
-    );
+///
+/// Opening the faces is deliberate engagement, so this is also one of the two
+/// doors that tells the OS a call is running — the other being unmuting. Drifting
+/// into a conversation and listening does not, which is what keeps the Recents log
+/// from filling up as the phone moves.
+Future<void> openCallScreen(BuildContext context, AppState state) {
+  state.engageCall();
+  return Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => CallScreen(state: state, buildTile: debugCallTileBuilder),
+    ),
+  );
+}
 
 /// Harness-only override every [openCallScreen] picks up. The simulator has no
 /// camera, so the whole-app harness sets this to paint stand-in footage into the
@@ -445,6 +452,7 @@ class _CallScreenState extends State<CallScreen> {
                   child: Column(
                     children: [
                       _Header(
+                        state: widget.state,
                         count: tiles.where((tile) => !tile.isSelf).length,
                         mode: _mode,
                         onMode: _setMode,
@@ -654,11 +662,13 @@ const _someone = 'Someone';
 
 class _Header extends StatelessWidget {
   const _Header({
+    required this.state,
     required this.count,
     required this.mode,
     required this.onMode,
   });
 
+  final AppState state;
   final int count;
   final SpotlightMode mode;
   final ValueChanged<SpotlightMode> onMode;
@@ -670,6 +680,9 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(4, 4, 8, 4),
       child: Row(
         children: [
+          // Back leaves the faces up — the call keeps running, you just stop
+          // looking. Leave, on the right, is the opposite and the deliberate one:
+          // it ends the call for real. The two are far apart on purpose.
           IconButton(
             onPressed: () => Navigator.of(context).maybePop(),
             icon: const Icon(Icons.arrow_back),
@@ -693,6 +706,18 @@ class _Header extends StatelessWidget {
           // How the big view is chosen. Persistent across both layouts, so the
           // way out of auto is the same control that got you in.
           _ModeToggle(mode: mode, onMode: onMode),
+          // Ends the call and tells the OS it ended — the same path CallKit's own
+          // End button takes, so the lock screen and this screen can never
+          // disagree about whether a call is up. The screen closes behind it.
+          TextButton.icon(
+            onPressed: () async {
+              await state.leaveCall();
+              if (context.mounted) await Navigator.of(context).maybePop();
+            },
+            icon: const Icon(Icons.call_end_rounded, size: 20),
+            label: const Text('Leave'),
+            style: TextButton.styleFrom(foregroundColor: t.danger),
+          ),
         ],
       ),
     );
