@@ -793,6 +793,19 @@ class AppState extends ChangeNotifier {
     unawaited(_osCall.reportStarted(handle: _callHandle));
   }
 
+  /// The faces door into [engageCall].
+  ///
+  /// Unlike the unmute door — where [setMicOn] reports the mute right after
+  /// engaging — opening the faces carries no mute report of its own, and the mic
+  /// is normally still off here. A fresh CallKit call is unmuted by default, so
+  /// without this it would show the opposite of the truth and swallow the first
+  /// system mute toggle as a no-op. Sync the real mute state after the start.
+  void engageFromScreen() {
+    final wasEngaged = _engaged;
+    engageCall();
+    if (!wasEngaged) unawaited(_osCall.reportMuted(!call.micOn));
+  }
+
   /// End the call, by hand or at the OS's request, and tell the OS it ended.
   ///
   /// The single teardown both the in-app Leave and CallKit's own End button go

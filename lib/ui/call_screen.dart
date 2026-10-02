@@ -48,7 +48,7 @@ import 'person_avatar.dart';
 /// into a conversation and listening does not, which is what keeps the Recents log
 /// from filling up as the phone moves.
 Future<void> openCallScreen(BuildContext context, AppState state) {
-  state.engageCall();
+  state.engageFromScreen();
   return Navigator.of(context).push(
     MaterialPageRoute<void>(builder: (_) => CallScreen(state: state)),
   );
