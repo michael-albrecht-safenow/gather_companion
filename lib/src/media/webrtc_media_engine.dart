@@ -87,11 +87,24 @@ const _videoConstraints = <String, dynamic>{
 };
 
 class WebrtcMediaEngine implements CaptureEngine {
-  WebrtcMediaEngine({void Function(String)? log}) : _log = log ?? _noop;
+  WebrtcMediaEngine({void Function(String)? log, this._manageAudioRoute = true})
+      : _log = log ?? _noop;
 
   static void _noop(String _) {}
 
   final void Function(String) _log;
+
+  /// Whether this engine forces the output route itself, or leaves it to the OS.
+  ///
+  /// True on Android, where the app is the only thing routing call audio. False
+  /// on iOS once CallKit is in the picture: CallKit owns the `AVAudioSession` and
+  /// the route picker lives in the system call sheet, so forcing the speaker from
+  /// here (`setSpeakerphoneOn`) and re-forcing it on every device change would
+  /// fight the system — the very AVAudioSession contention that froze the media
+  /// check. When false, [prepareAudioSession] still sets the call *category* (so
+  /// there is a call session at all) but installs no device-change override, and
+  /// [setSpeakerOn] is a no-op — the in-app button that drove it is hidden on iOS.
+  final bool _manageAudioRoute;
 
   final _states = StreamController<LocalMediaState>.broadcast();
   LocalMediaState _state = const LocalMediaState();
@@ -344,6 +357,12 @@ class WebrtcMediaEngine implements CaptureEngine {
       _log('media: could not configure the audio session: $error');
     }
 
+    // When the OS owns the route, stop here. The category above is set — there is
+    // a call session — but nothing below forces a route or listens for headsets:
+    // on iOS that is CallKit's job and the system call sheet's route picker, and
+    // a second hand on the wheel is the AVAudioSession contention to avoid.
+    if (!_manageAudioRoute) return;
+
     // One callback, owned here. A headset coming or going is a reason to redo the
     // default — not to honour a tap from before it was plugged in. Guarded by
     // [_knownOutputs] so the route change our own [_applyRouteOnce] causes does not
@@ -389,6 +408,10 @@ class WebrtcMediaEngine implements CaptureEngine {
 
   @override
   Future<void> setSpeakerOn(bool on) async {
+    // The OS owns the route here, so there is nothing to force. The in-app button
+    // that would call this is hidden on iOS for the same reason; this guard is the
+    // belt to that braces, so a stray call cannot start a fight over the session.
+    if (!_manageAudioRoute) return;
     _speakerOverride = on;
     await _applyRoute();
   }

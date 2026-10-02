@@ -5,16 +5,18 @@
 
 ## Purpose
 
-The iOS app target. Almost entirely Flutter's generated scaffolding — the two
-files that carry real decisions are `Info.plist` (permission copy, display name,
-transport security) and the asset catalogue (written by `tool/make_icons.mjs`).
+The iOS app target. Mostly Flutter's generated scaffolding — the files that carry
+real decisions are `Info.plist` (permission copy, display name, transport
+security, background modes), `CallKitController.swift` (the native CallKit
+bridge), and the asset catalogue (written by `tool/make_icons.mjs`).
 
 ## Key Files
 
 | File | Description |
 |------|-------------|
-| `Info.plist` | Display name, usage descriptions, local-networking exception, scene manifest, orientations. The hand-edited one. |
-| `AppDelegate.swift` | Registers the generated plugin registrant via `FlutterImplicitEngineDelegate`. Otherwise stock. |
+| `Info.plist` | Display name, usage descriptions, local-networking exception, scene manifest, orientations, and `UIBackgroundModes`. The hand-edited one. |
+| `AppDelegate.swift` | Registers the generated plugin registrant via `FlutterImplicitEngineDelegate`, and builds the one hand-written `CallKitController` against the plugin registry's messenger. |
+| `CallKitController.swift` | The native half of `gather/os_call` (Dart half: `lib/src/media/os_call_callkit.dart`). Reports an app-initiated, already-connected CallKit call so a Gather call is lock-screen-safe, draws system call UI, and lands in Recents; routes the system End / mute buttons back to Dart. No PushKit — calls are initiated off a socket the app already holds. **New Swift files must be added to `Runner.xcodeproj/project.pbxproj` by hand** (build-file, file-reference, group, and Sources-phase entries) — Flutter does not pick them up automatically. |
 | `SceneDelegate.swift` | Empty `FlutterSceneDelegate` subclass, referenced by the scene manifest. |
 | `GeneratedPluginRegistrant.h/.m` | Generated. Do not edit. |
 | `Runner-Bridging-Header.h` | Generated. |
@@ -40,6 +42,11 @@ transport security) and the asset catalogue (written by `tool/make_icons.mjs`).
 - `NSAllowsLocalNetworking` is set under `NSAppTransportSecurity` because the
   bridge is plain HTTP on the LAN. Do not broaden it to
   `NSAllowsArbitraryLoads`.
+- **`UIBackgroundModes` carries `audio`** alongside `fetch` and
+  `remote-notification`. That is what keeps call audio alive with the screen
+  locked; CallKit reports the call, but this mode keeps the microphone and remote
+  audio running. **Not `voip`** — there is no PushKit here, calls are app-initiated.
+  CallKit itself needs no entitlement, so the entitlements files stay empty.
 - `CFBundleShortVersionString` and `CFBundleVersion` interpolate
   `$(FLUTTER_BUILD_NAME)` and `$(FLUTTER_BUILD_NUMBER)`, which
   `flutter build ios --config-only --build-name --build-number` writes into
