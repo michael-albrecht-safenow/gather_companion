@@ -10,21 +10,25 @@ import Foundation
 /// call: the screen can lock and audio keeps running, the system draws its own
 /// in-call UI, and the call lands in the Phone app's Recents. The call is
 /// *app-initiated* — Gather connects off a socket it already holds, there is no
-/// incoming ring — so this reports an outgoing call that is immediately
-/// connected, and never uses PushKit.
+/// real incoming ring — but it is reported to CallKit as an **incoming** call that
+/// is then immediately answered. iOS 14 removed the rich lock-screen UI for
+/// *outgoing* calls; only incoming calls get the full call sheet (caller name,
+/// End, mute, speaker) and a reliable Recents entry. The brief ring is silenced
+/// with a bundled `silence.caf`. No PushKit is involved.
 ///
 /// Two directions cross the channel. Dart asks the OS to start, end and mute a
-/// call; the OS asks back when the person taps End or the mute toggle on the lock
-/// screen or the system call sheet. An end or a mute that *we* requested must not
-/// echo back to Dart as if the person had asked for it — the `selfEnding` /
-/// `selfMuting` flags below are what tell the two apart.
+/// call, and to pick the speaker; the OS asks back when the person taps End or the
+/// mute toggle on the lock screen or system call sheet, and reports audio-route
+/// changes. An end or a mute that *we* requested must not echo back to Dart as if
+/// the person had asked for it — the `selfEnding` / `selfMuting` flags below are
+/// what tell the two apart.
 ///
 /// Audio-session ownership note: `flutter_webrtc`'s AVAudioEngine audio device
 /// module manages activation itself, and the Dart engine sets the call category
-/// (`setAppleAudioIOMode`). So `didActivate` / `didDeactivate` here only log — the
-/// route is left to the system call sheet's picker, which is the whole point of
-/// letting CallKit own it. If device testing shows the route not following the
-/// picker, this is where manual `RTCAudioSession` activation would be added.
+/// (`setAppleAudioIOMode`). So `didActivate` / `didDeactivate` here only log. The
+/// speaker route is driven by `setSpeaker` (an `overrideOutputAudioPort`, the same
+/// mechanism as the system call sheet's own speaker button), and the current route
+/// is observed and reported back to Dart so the in-app icon tracks the truth.
 class CallKitController: NSObject {
   private let channel: FlutterMethodChannel
   private let provider: CXProvider
@@ -47,7 +51,13 @@ class CallKitController: NSObject {
     config.supportsVideo = true
     config.maximumCallGroups = 1
     config.maximumCallsPerCallGroup = 1
-    config.supportedHandleTypes = [.generic]
+    // Email-address handles group reliably in Recents on iOS 26, where the
+    // `.generic` type does not. The stable grouping id rides in the handle; the
+    // human-readable name goes in `localizedCallerName`.
+    config.supportedHandleTypes = [.emailAddress]
+    // Suppress the brief incoming ring: the call is app-initiated and answered
+    // immediately, so the ringtone would only be a blip of noise.
+    config.ringtoneSound = "silence.caf"
     provider = CXProvider(configuration: config)
 
     super.init()
@@ -56,6 +66,18 @@ class CallKitController: NSObject {
     channel.setMethodCallHandler { [weak self] call, result in
       self?.handle(call, result: result)
     }
+
+    // Watch the audio route so the in-app speaker icon reflects reality however
+    // the route changed — in-app, the system button, or a headset being plugged.
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(audioRouteChanged(_:)),
+      name: AVAudioSession.routeChangeNotification,
+      object: nil)
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
   }
 
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -63,19 +85,24 @@ class CallKitController: NSObject {
     case "reportStarted":
       let args = call.arguments as? [String: Any]
       let handle = args?["handle"] as? String ?? "Gather"
-      reportStarted(handle: handle, result: result)
+      let id = args?["id"] as? String ?? handle
+      reportStarted(handle: handle, id: id, result: result)
     case "reportEnded":
       reportEnded(result: result)
     case "reportMuted":
       let args = call.arguments as? [String: Any]
       let muted = args?["muted"] as? Bool ?? false
       reportMuted(muted, result: result)
+    case "setSpeaker":
+      let args = call.arguments as? [String: Any]
+      let on = args?["on"] as? Bool ?? false
+      setSpeaker(on, result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
   }
 
-  private func reportStarted(handle: String, result: @escaping FlutterResult) {
+  private func reportStarted(handle: String, id: String, result: @escaping FlutterResult) {
     // Idempotent: one engagement is one call however many doors reported it.
     if callUUID != nil {
       result(nil)
@@ -84,15 +111,34 @@ class CallKitController: NSObject {
     let uuid = UUID()
     callUUID = uuid
 
-    let cxHandle = CXHandle(type: .generic, value: handle)
-    let startAction = CXStartCallAction(call: uuid, handle: cxHandle)
-    startAction.isVideo = false
-    // A failed start must not leave `callUUID` set, or every later start is a
-    // no-op against a call the OS never accepted.
-    requestTransaction(
-      CXTransaction(action: startAction),
-      rollback: { [weak self] in self?.callUUID = nil },
-      result: result)
+    let update = CXCallUpdate()
+    update.remoteHandle = CXHandle(type: .emailAddress, value: id)
+    update.localizedCallerName = handle
+    update.hasVideo = false
+
+    // Report an incoming call, then answer it *inside* the completion block — the
+    // call is not yet known to CallKit until the completion fires, so requesting
+    // the answer before then would race. A failed report must not leave `callUUID`
+    // set, or every later start is a no-op against a call the OS never accepted.
+    provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
+      guard let self = self else { return }
+      if let error = error {
+        NSLog("os_call: reportNewIncomingCall failed: \(error.localizedDescription)")
+        self.callUUID = nil
+        result(
+          FlutterError(
+            code: "report_failed",
+            message: error.localizedDescription,
+            details: nil))
+        return
+      }
+      // Answering connects the call: the system shows an active call and Recents
+      // records it, with no "calling…" limbo.
+      self.requestTransaction(
+        CXTransaction(action: CXAnswerCallAction(call: uuid)),
+        rollback: { [weak self] in self?.callUUID = nil },
+        result: result)
+    }
   }
 
   private func reportEnded(result: @escaping FlutterResult) {
@@ -124,6 +170,15 @@ class CallKitController: NSObject {
       result: result)
   }
 
+  /// Picks the output route the same way the system call sheet's speaker button
+  /// does. `.none` falls back to the session's default (earpiece, or whatever
+  /// accessory is attached). Not routed through CallKit — this is an
+  /// AVAudioSession override that coexists with the system button.
+  private func setSpeaker(_ on: Bool, result: @escaping FlutterResult) {
+    try? AVAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
+    result(nil)
+  }
+
   /// Requests a CallKit transaction. On failure, rolls the operation's committed
   /// state back and surfaces the error to Dart (which logs and degrades to a call
   /// the OS does not know about); on success, replies nil.
@@ -146,30 +201,56 @@ class CallKitController: NSObject {
       result(nil)
     }
   }
+
+  /// The audio route changed. While a call is live, tell Dart which output is now
+  /// active so the in-app speaker icon tracks the truth. Only emit during a call
+  /// to avoid noise from unrelated route changes.
+  @objc private func audioRouteChanged(_ notification: Notification) {
+    guard callUUID != nil else { return }
+    let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+    let route: String
+    switch outputs.first?.portType {
+    case .some(.builtInSpeaker):
+      route = "speaker"
+    case .some(.builtInReceiver):
+      route = "earpiece"
+    case .some(.bluetoothA2DP), .some(.bluetoothHFP), .some(.bluetoothLE):
+      route = "bluetooth"
+    case .some(.headphones), .some(.headsetMic), .some(.usbAudio), .some(.carAudio):
+      route = "wired"
+    default:
+      // Unknown or no output — treat as earpiece, the default handset route.
+      route = "earpiece"
+    }
+    DispatchQueue.main.async { [weak self] in
+      self?.channel.invokeMethod("routeChanged", arguments: ["route": route])
+    }
+  }
 }
 
 extension CallKitController: CXProviderDelegate {
   func providerDidReset(_ provider: CXProvider) {
     // CallKit threw the call away out from under us (a reset). Forget it; nothing
-    // to end, because it is already gone.
-    let hadCall = callUUID != nil
+    // to end through a transaction, because it is already gone.
+    guard let uuid = callUUID else { return }
     callUUID = nil
     selfEnding = false
     selfMuting = false
+    // Log the call to Recents: a reset is an abnormal end that never went through
+    // a user CXEndCallAction, so without this the entry would be missing or
+    // zero-duration.
+    provider.reportCall(with: uuid, endedAt: nil, reason: .remoteEnded)
     // The OS call is gone but Dart still thinks it is engaged — its media call
     // runs on with no OS protection, and its engagement guard blocks a
     // replacement. Treat the reset like the person pressing End so Dart tears
     // down and clears engagement, the same path the lock-screen End takes.
-    if hadCall {
-      channel.invokeMethod("endRequested", arguments: nil)
-    }
+    channel.invokeMethod("endRequested", arguments: nil)
   }
 
-  func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+  func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+    // App-initiated calls are answered immediately after being reported incoming;
+    // fulfilling connects the call.
     action.fulfill()
-    // App-initiated and already up: mark it connected so the system shows an
-    // active call and Recents records it, with no "calling…" limbo.
-    provider.reportOutgoingCall(with: action.callUUID, connectedAt: nil)
   }
 
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {

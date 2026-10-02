@@ -56,8 +56,6 @@
 /// are already sitting at your desk with nobody around you.
 library;
 
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 // For [RenderProxyBox] — `material.dart` does not re-export the render tree, and
 // [_NoWidthOpinion] needs one box that measures itself differently.
@@ -380,28 +378,33 @@ class _ControlBarState extends State<ControlBar> {
               // the earpiece is the ordinary grey. A headset, once it is in, owns
               // the route and the glyph, and a tap still forces the speaker over it.
               //
-              // Android only. On iOS CallKit owns the route, and the picker lives
-              // in the system call sheet (earpiece / speaker / Bluetooth / AirPods)
-              // — a second button here would only fight it.
-              if (!Platform.isIOS && (call.live || state.inCall))
+              // Shared by both platforms, driving different machinery underneath.
+              // On Android the engine routes directly (`setSpeakerphoneOn`). On iOS
+              // CallKit owns the AVAudioSession, so the tap drives
+              // `overrideOutputAudioPort` through the os_call bridge instead, and
+              // the glyph tracks the native route-change feedback — including taps
+              // made on the system call sheet's own speaker button and headsets
+              // coming and going. [AppState.audioOutput] is the resolved route for
+              // whichever side owns it.
+              if (call.live || state.inCall)
                 _BarButton(
-                  icon: switch (call.audioOutput) {
+                  icon: switch (state.audioOutput) {
                     AudioOutput.speaker => Icons.volume_up_rounded,
                     AudioOutput.earpiece => Icons.phone_in_talk_rounded,
                     AudioOutput.bluetooth => Icons.bluetooth_audio_rounded,
                     AudioOutput.wired => Icons.headset_rounded,
                   },
-                  label: switch (call.audioOutput) {
+                  label: switch (state.audioOutput) {
                     AudioOutput.speaker => 'Use the earpiece',
                     AudioOutput.earpiece => 'Use the speaker',
                     AudioOutput.bluetooth => 'On Bluetooth — tap for the speaker',
                     AudioOutput.wired => 'On headphones — tap for the speaker',
                   },
-                  tint: call.audioOutput == AudioOutput.speaker
+                  tint: state.audioOutput == AudioOutput.speaker
                       ? t.brand
                       : t.mutedForeground,
                   onTap: () => _run(() =>
-                      state.setSpeakerOn(call.audioOutput != AudioOutput.speaker)),
+                      state.setSpeakerOn(state.audioOutput != AudioOutput.speaker)),
                 ),
               const _Rule(),
               _BarButton(

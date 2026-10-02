@@ -17,6 +17,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import 'media_engine.dart';
 import 'os_call.dart';
 
 /// Talks to `CallKitController` over `gather/os_call`. iOS only — built by
@@ -35,6 +36,7 @@ class IosCallKit implements OsCall {
 
   final _endRequested = StreamController<void>.broadcast();
   final _muteRequested = StreamController<bool>.broadcast();
+  final _routeChanged = StreamController<AudioOutput>.broadcast();
 
   @override
   Stream<void> get onEndRequested => _endRequested.stream;
@@ -43,8 +45,11 @@ class IosCallKit implements OsCall {
   Stream<bool> get onMuteRequested => _muteRequested.stream;
 
   @override
-  Future<void> reportStarted({required String handle}) =>
-      _invoke('reportStarted', {'handle': handle});
+  Stream<AudioOutput> get onRouteChanged => _routeChanged.stream;
+
+  @override
+  Future<void> reportStarted({required String handle, required String id}) =>
+      _invoke('reportStarted', {'handle': handle, 'id': id});
 
   @override
   Future<void> reportEnded() => _invoke('reportEnded');
@@ -52,6 +57,12 @@ class IosCallKit implements OsCall {
   @override
   Future<void> reportMuted(bool muted) =>
       _invoke('reportMuted', {'muted': muted});
+
+  @override
+  bool get managesAudioRoute => true;
+
+  @override
+  Future<void> setSpeaker(bool on) => _invoke('setSpeaker', {'on': on});
 
   /// Swallows channel failures the way the media engine swallows route failures:
   /// a call that could not be reported to the OS should degrade to a call the OS
@@ -72,15 +83,31 @@ class IosCallKit implements OsCall {
       case 'muteRequested':
         final muted = (call.arguments as Map?)?['muted'] as bool? ?? false;
         _muteRequested.add(muted);
+      case 'routeChanged':
+        final route = (call.arguments as Map?)?['route'] as String?;
+        final output = _routeFrom(route);
+        if (output != null) _routeChanged.add(output);
       default:
         _log('os_call: ignoring unknown native call ${call.method}');
     }
   }
+
+  /// The native route string → the four outputs the UI draws. An unknown string
+  /// is dropped rather than guessed at — a route we cannot name is better left
+  /// showing the last one we could than flipped to a wrong glyph.
+  static AudioOutput? _routeFrom(String? route) => switch (route) {
+        'speaker' => AudioOutput.speaker,
+        'earpiece' => AudioOutput.earpiece,
+        'bluetooth' => AudioOutput.bluetooth,
+        'wired' => AudioOutput.wired,
+        _ => null,
+      };
 
   @override
   Future<void> dispose() async {
     _channel.setMethodCallHandler(null);
     await _endRequested.close();
     await _muteRequested.close();
+    await _routeChanged.close();
   }
 }

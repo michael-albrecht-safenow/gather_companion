@@ -26,6 +26,7 @@ library;
 
 import 'dart:io';
 
+import 'media_engine.dart';
 import 'os_call_callkit.dart';
 
 /// The OS's handle on the call.
@@ -40,7 +41,9 @@ abstract class OsCall {
   /// so the two ways to engage (unmute, open the faces) report one call, not two.
   ///
   /// [handle] is the name the system UI shows — the people in the conversation.
-  Future<void> reportStarted({required String handle});
+  /// [id] is a stable grouping id for the call, used so Recents groups repeat
+  /// calls to the same conversation together rather than as strangers.
+  Future<void> reportStarted({required String handle, required String id});
 
   /// Tells the OS the call has ended. A no-op when nothing was reported.
   Future<void> reportEnded();
@@ -57,6 +60,26 @@ abstract class OsCall {
   /// Fires when the OS asks us to toggle mute from its own UI, carrying the
   /// muted state it wants. The app answers by muting or unmuting for real.
   Stream<bool> get onMuteRequested;
+
+  /// Whether this OS call owns the audio route — whether [setSpeaker] does
+  /// anything and [onRouteChanged] ever fires.
+  ///
+  /// The testable stand-in for `Platform.isIOS`: on iOS CallKit owns the
+  /// `AVAudioSession` and the route is driven here; everywhere else the media
+  /// engine routes and this reads false. `AppState` branches on this rather than
+  /// the platform so the decision can be exercised in a unit test by injecting a
+  /// fake that answers either way.
+  bool get managesAudioRoute;
+
+  /// Forces the loudspeaker on (`true`) or releases the override (`false`),
+  /// through the system's own `overrideOutputAudioPort` — the same mechanism the
+  /// native call sheet's speaker button uses. A no-op where there is no OS call.
+  Future<void> setSpeaker(bool on);
+
+  /// Fires when the active output route changes — whether we asked for it, the
+  /// system call sheet's button did, or a headset was plugged or pulled. Lets the
+  /// in-app audio-output icon track the truth even though the OS owns the route.
+  Stream<AudioOutput> get onRouteChanged;
 
   Future<void> dispose();
 }
@@ -76,7 +99,7 @@ OsCall defaultOsCall({void Function(String)? log}) =>
 /// is no OS call to keep.
 class NoopOsCall implements OsCall {
   @override
-  Future<void> reportStarted({required String handle}) async {}
+  Future<void> reportStarted({required String handle, required String id}) async {}
 
   @override
   Future<void> reportEnded() async {}
@@ -85,10 +108,19 @@ class NoopOsCall implements OsCall {
   Future<void> reportMuted(bool muted) async {}
 
   @override
+  bool get managesAudioRoute => false;
+
+  @override
+  Future<void> setSpeaker(bool on) async {}
+
+  @override
   Stream<void> get onEndRequested => const Stream<void>.empty();
 
   @override
   Stream<bool> get onMuteRequested => const Stream<bool>.empty();
+
+  @override
+  Stream<AudioOutput> get onRouteChanged => const Stream<AudioOutput>.empty();
 
   @override
   Future<void> dispose() async {}

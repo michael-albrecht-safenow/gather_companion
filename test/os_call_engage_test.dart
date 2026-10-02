@@ -13,27 +13,42 @@ import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
 import 'package:gather_companion/src/app_state.dart';
+import 'package:gather_companion/src/media/media_engine.dart';
 import 'package:gather_companion/src/media/os_call.dart';
 
 import 'fake_call.dart';
 
 /// An [OsCall] that records what it was told and can play the OS's side back —
-/// the End and mute buttons arriving from the lock screen.
+/// the End and mute buttons arriving from the lock screen, and a route change.
 class RecordingOsCall implements OsCall {
-  final List<String> started = [];
+  RecordingOsCall({this.managesAudioRoute = false});
+
+  /// The grouping ids reported alongside each start, in order.
+  final List<({String handle, String id})> started = [];
   int endedCount = 0;
   final List<bool> muted = [];
 
+  /// The speaker toggles asked of the OS, in order.
+  final List<bool> speakerCalls = [];
+
+  /// Whether this stand-in claims the OS owns the route — the flag `AppState`
+  /// branches on in place of `Platform.isIOS`.
+  @override
+  final bool managesAudioRoute;
+
   final _end = StreamController<void>.broadcast();
   final _mute = StreamController<bool>.broadcast();
+  final _route = StreamController<AudioOutput>.broadcast();
 
-  /// Pretend the person tapped End / the mute toggle in the system call UI.
+  /// Pretend the person tapped End / the mute toggle in the system call UI, or
+  /// the active output route changed.
   void fireEnd() => _end.add(null);
   void fireMute(bool value) => _mute.add(value);
+  void fireRoute(AudioOutput route) => _route.add(route);
 
   @override
-  Future<void> reportStarted({required String handle}) async =>
-      started.add(handle);
+  Future<void> reportStarted({required String handle, required String id}) async =>
+      started.add((handle: handle, id: id));
 
   @override
   Future<void> reportEnded() async => endedCount++;
@@ -42,15 +57,22 @@ class RecordingOsCall implements OsCall {
   Future<void> reportMuted(bool value) async => muted.add(value);
 
   @override
+  Future<void> setSpeaker(bool on) async => speakerCalls.add(on);
+
+  @override
   Stream<void> get onEndRequested => _end.stream;
 
   @override
   Stream<bool> get onMuteRequested => _mute.stream;
 
   @override
+  Stream<AudioOutput> get onRouteChanged => _route.stream;
+
+  @override
   Future<void> dispose() async {
     await _end.close();
     await _mute.close();
+    await _route.close();
   }
 }
 
@@ -64,9 +86,10 @@ void main() {
         connected: true,
       );
 
-  ({AppState state, FakeCall call, RecordingOsCall os}) wired() {
+  ({AppState state, FakeCall call, RecordingOsCall os}) wired(
+      {bool managesAudioRoute = false}) {
     final call = FakeCall();
-    final os = RecordingOsCall();
+    final os = RecordingOsCall(managesAudioRoute: managesAudioRoute);
     final state = AppState(osCall: os)..debugAttachCall(call);
     addTearDown(state.dispose);
     return (state: state, call: call, os: os);
@@ -165,5 +188,54 @@ void main() {
 
     // muteRequested(true) → setMicOn(false) → reportMuted(true).
     expect(os.muted, [false, true]);
+  });
+
+  test('when the OS owns the route, the speaker toggle drives it', () async {
+    final (:state, :call, :os) = wired(managesAudioRoute: true);
+
+    // The in-app button asks for the speaker. It goes to the OS
+    // (overrideOutputAudioPort via CallKit), not the engine's own routing.
+    final failed = await state.setSpeakerOn(true);
+    expect(failed, isNull);
+    expect(os.speakerCalls, [true]);
+    // The engine's speaker path was left alone — a second hand on the session.
+    expect(call.speakerCalls, isEmpty);
+  });
+
+  test('when the engine owns the route, the toggle stays on the engine path', () async {
+    final (:state, :call, :os) = wired();
+
+    await state.setSpeakerOn(true);
+    expect(call.speakerCalls, [true]);
+    expect(os.speakerCalls, isEmpty);
+  });
+
+  test('a route change from the OS updates the audio-output state', () async {
+    final (:state, :call, :os) = wired(managesAudioRoute: true);
+
+    // Before any report, the resolved route is the call's default.
+    expect(state.audioOutput, AudioOutput.speaker);
+
+    os.fireRoute(AudioOutput.bluetooth);
+    await pumpEventQueue();
+    expect(state.audioOutput, AudioOutput.bluetooth);
+
+    os.fireRoute(AudioOutput.earpiece);
+    await pumpEventQueue();
+    expect(state.audioOutput, AudioOutput.earpiece);
+  });
+
+  test('engaging reports the call once with a stable grouping id', () async {
+    final (:state, :call, :os) = wired();
+
+    await state.setMicOn(true);
+    expect(os.started, hasLength(1));
+    // No conversation or space resolved in the bare harness, so it falls back to
+    // the constant rather than reporting an empty id.
+    expect(os.started.single.id, 'gather-call');
+
+    // The other door engages the same one call, id and all.
+    state.engageCall();
+    expect(os.started, hasLength(1));
   });
 }

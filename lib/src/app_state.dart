@@ -8,6 +8,7 @@ import 'credentials.dart';
 import 'link_status.dart';
 import 'map_person.dart';
 import 'media/call.dart';
+import 'media/media_engine.dart';
 import 'media/os_call.dart';
 import 'notifications.dart';
 import 'pairing.dart';
@@ -73,6 +74,14 @@ class AppState extends ChangeNotifier {
     _osSubs.add(_osCall.onEndRequested.listen((_) => unawaited(leaveCall())));
     _osSubs.add(_osCall.onMuteRequested
         .listen((muted) => unawaited(setMicOn(!muted))));
+    // The OS telling us where the sound is going — our own tap, the system call
+    // sheet's button, or a headset coming and going. When the OS owns the route
+    // the media engine never fills [CallState.audioOutput], so this is the only
+    // source the audio-output icon has; [audioOutput] reads it back.
+    _osSubs.add(_osCall.onRouteChanged.listen((route) {
+      _osAudioOutput = route;
+      notifyListeners();
+    }));
   }
 
   static DirectCollector _realCollector(GatherAuth auth, String? spaceId) => DirectCollector(auth: auth, spaceId: spaceId);
@@ -126,6 +135,11 @@ class AppState extends ChangeNotifier {
   final OsCall _osCall;
   bool _engaged = false;
   final _osSubs = <StreamSubscription<dynamic>>[];
+
+  /// The route the OS last told us about, when the OS owns the route. Null until
+  /// the first [OsCall.onRouteChanged], and ignored entirely when the media
+  /// engine owns the route instead — see [audioOutput].
+  AudioOutput? _osAudioOutput;
 
   final PresenceTracker _tracker = PresenceTracker();
   final _subs = <StreamSubscription<dynamic>>[];
@@ -790,7 +804,7 @@ class AppState extends ChangeNotifier {
   void engageCall() {
     if (_engaged) return;
     _engaged = true;
-    unawaited(_osCall.reportStarted(handle: _callHandle));
+    unawaited(_osCall.reportStarted(handle: _callHandle, id: _callId));
   }
 
   /// The faces door into [engageCall].
@@ -835,6 +849,17 @@ class AppState extends ChangeNotifier {
     return '${names.first} +${names.length - 1}';
   }
 
+  /// The stable grouping id the OS files the call under, so Recents groups repeat
+  /// calls rather than listing strangers.
+  ///
+  /// Gather's own `clusterId` is the right grain — it is the conversation, and it
+  /// is what the handle names — but it is null in the moment just after unmuting,
+  /// before anyone else is resolved, which is exactly one of the two engage doors.
+  /// The space is the stable fallback (all of this phone's calls are in the one
+  /// space it is paired to), and a constant backs that up so the id is never
+  /// empty. The call is reported once at engage and holds this id for its life.
+  String get _callId => _conversation ?? _spaceIdForCall ?? 'gather-call';
+
   Future<String?> setCameraOn(bool on) async {
     final call = _callOrNull();
     if (call == null) return 'Not connected to Gather.';
@@ -848,7 +873,25 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Where the sound is coming out, for the button that switches it.
+  ///
+  /// Two sources, chosen by who owns the route. When the OS owns it (CallKit on
+  /// iOS), the media engine never updates its own `audioOutput`, so the truth is
+  /// whatever the OS last reported through [OsCall.onRouteChanged] — falling back
+  /// to the call's default until the first report lands. Everywhere else the
+  /// engine routes and its `audioOutput` is the one to read.
+  AudioOutput get audioOutput =>
+      _osCall.managesAudioRoute ? (_osAudioOutput ?? call.audioOutput) : call.audioOutput;
+
   Future<String?> setSpeakerOn(bool on) async {
+    // When the OS owns the route, the toggle drives `overrideOutputAudioPort`
+    // through CallKit rather than the engine's own `setSpeakerphoneOn` — a second
+    // hand on the AVAudioSession is the contention the engine's iOS path was
+    // built to avoid. The resulting route comes back as [OsCall.onRouteChanged].
+    if (_osCall.managesAudioRoute) {
+      await _osCall.setSpeaker(on);
+      return null;
+    }
     final call = _callOrNull();
     if (call == null) return 'Not connected to Gather.';
     final failed = await call.setSpeakerOn(on);
