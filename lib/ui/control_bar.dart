@@ -56,6 +56,8 @@
 /// are already sitting at your desk with nobody around you.
 library;
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 // For [RenderProxyBox] — `material.dart` does not re-export the render tree, and
 // [_NoWidthOpinion] needs one box that measures itself differently.
@@ -377,7 +379,11 @@ class _ControlBarState extends State<ControlBar> {
               // loudspeaker is the resting-on-a-desk default and wears the brand;
               // the earpiece is the ordinary grey. A headset, once it is in, owns
               // the route and the glyph, and a tap still forces the speaker over it.
-              if (call.live || state.inCall)
+              //
+              // Android only. On iOS CallKit owns the route, and the picker lives
+              // in the system call sheet (earpiece / speaker / Bluetooth / AirPods)
+              // — a second button here would only fight it.
+              if (!Platform.isIOS && (call.live || state.inCall))
                 _BarButton(
                   icon: switch (call.audioOutput) {
                     AudioOutput.speaker => Icons.volume_up_rounded,
