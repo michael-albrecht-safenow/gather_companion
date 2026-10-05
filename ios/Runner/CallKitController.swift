@@ -2,6 +2,7 @@ import AVFoundation
 import CallKit
 import Flutter
 import Foundation
+import WebRTC
 
 /// The native half of the `gather/os_call` bridge. The Dart half is
 /// `lib/src/media/os_call_callkit.dart`.
@@ -23,12 +24,18 @@ import Foundation
 /// the person had asked for it — the `selfEnding` / `selfMuting` flags below are
 /// what tell the two apart.
 ///
-/// Audio-session ownership note: `flutter_webrtc`'s AVAudioEngine audio device
-/// module manages activation itself, and the Dart engine sets the call category
-/// (`setAppleAudioIOMode`). So `didActivate` / `didDeactivate` here only log. The
-/// speaker route is driven by `setSpeaker` (an `overrideOutputAudioPort`, the same
-/// mechanism as the system call sheet's own speaker button), and the current route
-/// is observed and reported back to Dart so the in-app icon tracks the truth.
+/// Audio-session ownership note: once CallKit answers the call it, not WebRTC,
+/// owns when the audio session goes active. `flutter_webrtc`'s audio device module
+/// would otherwise try to activate the session itself and the two collide — the
+/// symptom was the mic track collapsing the instant you unmuted (the audio unit
+/// reconfigures for `voiceProcessing` mute exactly as CallKit activates). So we put
+/// WebRTC in manual-audio mode (`RTCAudioSession.useManualAudio = true`) and hand it
+/// the session lifecycle from the CallKit delegate: `didActivate` tells WebRTC the
+/// session is live, `didDeactivate` that it is not. The Dart engine still sets the
+/// call category (`setAppleAudioIOMode`). The speaker route is driven by
+/// `setSpeaker` (an `overrideOutputAudioPort`, the same mechanism as the system call
+/// sheet's own speaker button), and the current route is observed and reported back
+/// to Dart so the in-app icon tracks the truth.
 class CallKitController: NSObject {
   private let channel: FlutterMethodChannel
   private let provider: CXProvider
@@ -43,6 +50,13 @@ class CallKitController: NSObject {
   /// system button and bounced back to Dart.
   private var selfEnding = false
   private var selfMuting = false
+
+  /// True once CallKit has answered the call, so it exists and transactions on it
+  /// will take. A mute reported before this (the unmute door reports a start and a
+  /// mute back to back) is held in `pendingMuted` and applied at answer, rather
+  /// than fired at a call CallKit has not connected yet — which fails.
+  private var connected = false
+  private var pendingMuted: Bool?
 
   init(messenger: FlutterBinaryMessenger) {
     channel = FlutterMethodChannel(name: "gather/os_call", binaryMessenger: messenger)
@@ -61,6 +75,11 @@ class CallKitController: NSObject {
     provider = CXProvider(configuration: config)
 
     super.init()
+
+    // Hand the VoIP audio unit's lifetime to us: WebRTC stops starting the session
+    // on its own, and instead waits to be told it is live in `didActivate`. This is
+    // what stops WebRTC and CallKit from both trying to own the session.
+    RTCAudioSession.sharedInstance().useManualAudio = true
 
     provider.setDelegate(self, queue: nil)
     channel.setMethodCallHandler { [weak self] call, result in
@@ -160,6 +179,13 @@ class CallKitController: NSObject {
       result(nil)
       return
     }
+    // Reported before the answer connected the call: hold it and let the answer
+    // apply it. Firing a set-muted at a not-yet-connected call fails the transaction.
+    if !connected {
+      pendingMuted = muted
+      result(nil)
+      return
+    }
     selfMuting = true
     let action = CXSetMutedCallAction(call: uuid, muted: muted)
     // Same as end: a failed mute must clear `selfMuting` so a later real toggle
@@ -234,6 +260,8 @@ extension CallKitController: CXProviderDelegate {
     // to end through a transaction, because it is already gone.
     guard let uuid = callUUID else { return }
     callUUID = nil
+    connected = false
+    pendingMuted = nil
     selfEnding = false
     selfMuting = false
     // Log the call to Recents: a reset is an abnormal end that never went through
@@ -251,6 +279,17 @@ extension CallKitController: CXProviderDelegate {
     // App-initiated calls are answered immediately after being reported incoming;
     // fulfilling connects the call.
     action.fulfill()
+    connected = true
+    // Apply any mute reported before the call connected (the unmute door's
+    // back-to-back start+mute, or the faces door opening while muted).
+    if let muted = pendingMuted, let uuid = callUUID {
+      pendingMuted = nil
+      selfMuting = true
+      requestTransaction(
+        CXTransaction(action: CXSetMutedCallAction(call: uuid, muted: muted)),
+        rollback: { [weak self] in self?.selfMuting = false },
+        result: { _ in })
+    }
   }
 
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
@@ -258,6 +297,8 @@ extension CallKitController: CXProviderDelegate {
     let wasSelf = selfEnding
     selfEnding = false
     callUUID = nil
+    connected = false
+    pendingMuted = nil
     // Only when the *person* ended it — the lock-screen End button — does the app
     // need telling. Our own `reportEnded` already tore the call down.
     if !wasSelf {
@@ -276,9 +317,17 @@ extension CallKitController: CXProviderDelegate {
 
   func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     NSLog("os_call: audio session activated by CallKit")
+    // CallKit has made the session active; hand that to WebRTC, which is in manual
+    // mode and was waiting for exactly this before starting its audio unit.
+    let rtc = RTCAudioSession.sharedInstance()
+    rtc.audioSessionDidActivate(audioSession)
+    rtc.isAudioEnabled = true
   }
 
   func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     NSLog("os_call: audio session deactivated by CallKit")
+    let rtc = RTCAudioSession.sharedInstance()
+    rtc.audioSessionDidDeactivate(audioSession)
+    rtc.isAudioEnabled = false
   }
 }
