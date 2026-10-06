@@ -14,6 +14,14 @@
 /// purple palette below paints the body and its buttons, and [MapScreen] inside
 /// the screen cut-out renders exactly as it always has.
 ///
+/// ## The look is hardware, not a mobile app in a costume
+///
+/// The chrome follows a small "pixel console" grammar: a limited purple-plastic
+/// palette, flat fills rather than soft gradients, and **hard** shadows — a solid
+/// offset block, no blur — so every control reads as a moulded part you could
+/// press with a thumbnail. The office world keeps its own pixel art inside the
+/// screen; the shell around it is the console.
+///
 /// ## Why the D-pad is drawn here and not reused from `dpad.dart`
 ///
 /// The movement *contract* is reused — a held pointer, direction from where the
@@ -27,21 +35,43 @@ import 'package:flutter/services.dart';
 
 import '../src/app_state.dart';
 
-// The shell's own palette. Deliberately not [GatherTokens]: the office inside the
-// screen must stay the app's normal colours, so the retro purple lives only here
-// and touches nothing the map draws with.
-const _gbBody = Color(0xFF7B52C7);
-const _gbBodyLight = Color(0xFF9A6FE0);
-const _gbBodyDark = Color(0xFF4F3486);
-const _gbScreenFrame = Color(0xFF2A1E4A);
-const _gbButton = Color(0xFF3B2A63);
-const _gbButtonEdge = Color(0xFF2A1E4A);
-const _gbButtonText = Color(0xFFC9B8F0);
-const _gbHeaderText = Color(0xFFCDBDF2);
-const _gbHeart = Color(0xFFE56FA0);
-const _gbLed = Color(0xFFE2585F);
-const _gbLit = Color(0xFF9BBC0F); // the one "on" accent — a Gameboy green.
-const _gbSheet = Color(0xFF241A3E);
+// The shell's own palette, kept deliberately apart from [GatherTokens]: the
+// office inside the screen must stay the app's normal colours, so the retro
+// purple lives only here and touches nothing the map draws with. The names echo
+// the console design system — hardware plastic in one ramp, screen chrome in
+// another, and a short semantic set for the lights.
+
+// Hardware plastic: one purple ramp from deep shadow to bright highlight.
+const _hw900 = Color(0xFF35205F); // deepest shadow / the hard drop under a part
+const _hw800 = Color(0xFF48287A); // bezel and the darker moulded surfaces
+const _hw700 = Color(0xFF63379A); // the main housing
+const _hw600 = Color(0xFF7544B4); // a raised face, and the top-edge highlight
+const _hw500 = Color(0xFF8B55C8); // the brightest catch of light on a dome
+const _hw300 = Color(0xFFB58BE0); // decorative text and glyphs on the plastic
+
+// Screen chrome: the near-black of the recessed well around the office.
+const _scBlack = Color(0xFF11131C); // the screen frame
+const _scDark = Color(0xFF191C29); // the menu surface
+const _scMid = Color(0xFF292D40); // a row inside the menu
+const _scBorder = Color(0xFF3C4054); // the thin bright line inside the bezel
+const _scWhite = Color(0xFFF2F1F7); // primary text on the dark
+
+// Semantic lights.
+const _online = Color(0xFF45D19A); // the one "on" accent — a live control glows it
+const _danger = Color(0xFFEF5B67); // the power light
+const _accentPink = Color(0xFFF05CA9); // the heart
+
+/// The bundled pixel face, used for the shell's own labels and its menu and
+/// nothing else — the office world keeps the system font (see `pubspec.yaml`).
+/// Pixelify Sans has near-normal metrics and a real bold, so sizes here read
+/// like ordinary type and lean on weight rather than the letter spacing a
+/// monospace arcade face would have needed.
+const _pixelFont = 'PixelifySans';
+
+/// A pixel shadow: a solid block offset down, no blur. The signature of the
+/// whole look — every moulded part casts one so it reads as sitting proud of the
+/// body rather than painted onto it.
+const _hardShadow = BoxShadow(color: _hw900, blurRadius: 0, offset: Offset(0, 4));
 
 /// How wide the cross is. Each arm is then a target a thumb can hit without
 /// looking, which is the point of a control used while watching the screen above it.
@@ -76,8 +106,8 @@ class GameboyShell extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [_gbBodyLight, _gbBody, _gbBodyDark],
-          stops: [0, 0.4, 1],
+          colors: [_hw600, _hw700, _hw800],
+          stops: [0, 0.45, 1],
         ),
       ),
       child: SafeArea(
@@ -85,7 +115,7 @@ class GameboyShell extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
           child: Column(
             children: [
-              _Header(name: state.spaceName),
+              _Header(state: state),
               const SizedBox(height: 8),
               Expanded(child: _Screen(child: child)),
               const SizedBox(height: 8),
@@ -102,66 +132,76 @@ class GameboyShell extends StatelessWidget {
   }
 }
 
-/// The strip above the screen: the office this is on the left, the power light
-/// on the right — the two things moulded into the top of a real one. The name is
-/// the space's own, as the LCD title has it, so the shell is badged with the room
-/// you are in rather than a fixed wordmark.
+/// The strip above the screen: who is in the room on the left, the power light
+/// on the right — the two things moulded into the top of a real one. The name of
+/// the office is the LCD's job, carried on the title inside the screen; the shell
+/// badge answers the other question, how many people are in there with you.
 class _Header extends StatelessWidget {
-  const _Header({required this.name});
+  const _Header({required this.state});
 
-  final String? name;
+  final AppState state;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: Row(
-        children: [
-          const Icon(Icons.favorite, color: _gbHeart, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              name ?? 'The office',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: _gbHeaderText,
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.5,
+    // Both listenables: presence changes the roster, and a walk that steps you
+    // onto another floor changes who counts as "here". The LCD's own head count
+    // watches the same two, so the badge and the title never disagree.
+    return ListenableBuilder(
+      listenable: Listenable.merge([state, state.positions]),
+      builder: (context, _) {
+        final count =
+            state.peopleOnMap.length + (state.mePerson == null ? 0 : 1);
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: Row(
+            children: [
+              const Icon(Icons.favorite, color: _accentPink, size: 18),
+              const SizedBox(width: 9),
+              Text(
+                '$count HERE',
+                style: const TextStyle(
+                  fontFamily: _pixelFont,
+                  fontWeight: FontWeight.w700,
+                  color: _hw300,
+                  fontSize: 19,
+                  letterSpacing: 0.5,
+                ),
               ),
-            ),
+              const Spacer(),
+              Container(
+                width: 9,
+                height: 9,
+                decoration: const BoxDecoration(
+                  color: _danger,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(color: _danger, blurRadius: 6, spreadRadius: 1),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 7),
+              const Text(
+                'POWER',
+                style: TextStyle(
+                  fontFamily: _pixelFont,
+                  fontWeight: FontWeight.w700,
+                  color: _hw300,
+                  fontSize: 13,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Container(
-            width: 9,
-            height: 9,
-            decoration: BoxDecoration(
-              color: _gbLed,
-              shape: BoxShape.circle,
-              boxShadow: [BoxShadow(color: _gbLed.withValues(alpha: 0.7), blurRadius: 6, spreadRadius: 1)],
-            ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            'POWER',
-            style: TextStyle(
-              color: _gbHeaderText,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.2,
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
 
-/// The recessed screen: a dark bezel with the office clipped inside it. The
-/// bottom padding the shell adds for its vanished nav rail is stripped here, so
-/// the map's own legend sits snug to the screen's edge rather than floating a
-/// rail's height above it.
+/// The recessed screen: a raised purple lip, a near-black well with a thin bright
+/// inner line, and the office clipped inside it. The bottom padding the shell
+/// adds for its vanished nav rail is stripped here, so the map's own legend sits
+/// snug to the screen's edge rather than floating a rail's height above it.
 class _Screen extends StatelessWidget {
   const _Screen({required this.child});
 
@@ -170,19 +210,38 @@ class _Screen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(7),
-      decoration: BoxDecoration(
-        color: _gbScreenFrame,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.45), width: 2),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 8, offset: const Offset(0, 3))],
+      // The moulded lip around the well: a dark purple frame lit bright along the
+      // top and sinking to shadow at the bottom, casting the same hard shadow the
+      // buttons do. The light-to-dark is a gradient, not per-side borders, because
+      // a rounded corner needs one border colour all the way round.
+      padding: const EdgeInsets.all(5),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [_hw600, _hw700, _hw800],
+          stops: [0, 0.3, 1],
+        ),
+        borderRadius: BorderRadius.all(Radius.circular(14)),
+        border: Border.fromBorderSide(BorderSide(color: _hw900, width: 1.5)),
+        boxShadow: [_hardShadow],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(9),
-        child: MediaQuery.removePadding(
-          context: context,
-          removeBottom: true,
-          child: child,
+      child: Container(
+        // The black well, with the thin bright line the real ones have just
+        // inside the bezel.
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: _scBlack,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: _scBorder, width: 1.5),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: MediaQuery.removePadding(
+            context: context,
+            removeBottom: true,
+            child: child,
+          ),
         ),
       ),
     );
@@ -232,10 +291,10 @@ class _ControlsDeck extends StatelessWidget {
     HapticFeedback.selectionClick();
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: _gbSheet,
+      backgroundColor: _scDark,
       showDragHandle: true,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       ),
       builder: (sheetContext) => _GameboyMenu(
         state: state,
@@ -329,8 +388,8 @@ class _ControlsDeck extends StatelessWidget {
               child: Stack(
                 children: [
                   const Positioned(
-                    right: 16,
-                    bottom: 0,
+                    right: 10,
+                    bottom: 2,
                     child: _SpeakerGrille(),
                   ),
                   Positioned.fill(
@@ -465,7 +524,7 @@ class _CrossPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final centre = Offset(size.width / 2, size.height / 2);
     final arm = size.width * 0.36;
-    final radius = const Radius.circular(12);
+    const radius = Radius.circular(4); // chunky, near-square — moulded, not glass
     final vertical = RRect.fromRectAndRadius(
       Rect.fromCenter(center: centre, width: arm, height: size.height),
       radius,
@@ -475,24 +534,35 @@ class _CrossPainter extends CustomPainter {
       radius,
     );
 
-    final shadow = Paint()..color = Colors.black.withValues(alpha: enabled ? 0.35 : 0.2);
-    canvas.drawRRect(vertical.shift(const Offset(0, 3)), shadow);
-    canvas.drawRRect(horizontal.shift(const Offset(0, 3)), shadow);
+    // The hard drop: a solid block of the deepest purple, offset down, no blur.
+    final shadow = Paint()..color = _hw900.withValues(alpha: enabled ? 1 : 0.4);
+    canvas.drawRRect(vertical.shift(const Offset(0, 4)), shadow);
+    canvas.drawRRect(horizontal.shift(const Offset(0, 4)), shadow);
 
-    final face = Paint()..color = enabled ? _gbButton : _gbButton.withValues(alpha: 0.5);
+    // A darker moulded part than the housing it sits on, so the light arrows and
+    // the top bevel read against it the way the mock's cross does.
+    final face = Paint()..color = enabled ? _hw800 : _hw800.withValues(alpha: 0.45);
     canvas.drawRRect(vertical, face);
     canvas.drawRRect(horizontal, face);
 
-    // A faint rim, so the cross reads as raised plastic rather than a flat hole.
-    final rim = Paint()
+    // The pixel outline, then a bright line along the top of the vertical arm and
+    // the left of the horizontal one — the light catching the moulded edge.
+    final outline = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
-      ..color = _gbButtonEdge.withValues(alpha: enabled ? 1 : 0.5);
-    canvas.drawRRect(vertical, rim);
-    canvas.drawRRect(horizontal, rim);
+      ..strokeWidth = 2.5
+      ..color = _hw900.withValues(alpha: enabled ? 1 : 0.4);
+    canvas.drawRRect(vertical, outline);
+    canvas.drawRRect(horizontal, outline);
 
-    // The still hub.
-    canvas.drawCircle(centre, arm * 0.3, Paint()..color = _gbBodyDark.withValues(alpha: enabled ? 1 : 0.5));
+    final bevel = Paint()
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = _hw600.withValues(alpha: enabled ? 1 : 0.4);
+    canvas.drawLine(Offset(centre.dx - arm / 2 + 3, 2.5), Offset(centre.dx + arm / 2 - 3, 2.5), bevel);
+    canvas.drawLine(Offset(2.5, centre.dy - arm / 2 + 3), Offset(2.5, centre.dy + arm / 2 - 3), bevel);
+
+    // The still hub, sunk a shade darker than the arms.
+    canvas.drawCircle(centre, arm * 0.3, Paint()..color = _hw900.withValues(alpha: enabled ? 1 : 0.45));
 
     _arrow(canvas, size, 'Up');
     _arrow(canvas, size, 'Down');
@@ -503,12 +573,12 @@ class _CrossPainter extends CustomPainter {
   void _arrow(Canvas canvas, Size size, String direction) {
     final centre = Offset(size.width / 2, size.height / 2);
     final reach = size.width * 0.34;
-    final s = size.width * 0.07;
+    final s = size.width * 0.075;
     final lit = held == direction;
     final paint = Paint()
       ..color = lit
-          ? Colors.white
-          : _gbButtonText.withValues(alpha: enabled ? 0.9 : 0.4);
+          ? _scWhite
+          : _hw300.withValues(alpha: enabled ? 0.95 : 0.4);
 
     final (dx, dy) = switch (direction) {
       'Up' => (0.0, -1.0),
@@ -531,8 +601,9 @@ class _CrossPainter extends CustomPainter {
   bool shouldRepaint(_CrossPainter old) => old.held != held || old.enabled != enabled;
 }
 
-/// One round button, A or B. Pressed is a push down rather than a colour change;
-/// lit is the green accent for a control that is currently *on*.
+/// One round button, A or B. Pressed is a push down into its own shadow rather
+/// than a colour change; lit rings the button in the live-green accent for a
+/// control that is currently *on*.
 class _GbRoundButton extends StatefulWidget {
   const _GbRoundButton({
     required this.label,
@@ -573,36 +644,49 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 90),
           curve: Curves.easeOut,
-          transform: Matrix4.translationValues(0, _down ? 2 : 0, 0),
+          transform: Matrix4.translationValues(0, _down ? 3 : 0, 0),
           width: widget.size,
           height: widget.size,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: RadialGradient(
-              center: const Alignment(-0.3, -0.4),
-              radius: 0.9,
-              colors: lit
-                  ? [_gbLit, const Color(0xFF6E8C0A)]
-                  : [_gbBody, _gbButton],
+            // A shallow dome — brightest at the top-left, the inner highlight a
+            // real button has — over an otherwise flat purple face.
+            gradient: const RadialGradient(
+              center: Alignment(-0.35, -0.4),
+              radius: 0.95,
+              colors: [_hw500, _hw600, _hw700],
+              stops: [0, 0.55, 1],
             ),
-            border: Border.all(color: _gbButtonEdge, width: 2.5),
+            border: Border.all(color: lit ? _online : _hw900, width: 3),
             boxShadow: [
-              BoxShadow(
-                color: lit ? _gbLit.withValues(alpha: 0.55) : Colors.black.withValues(alpha: 0.4),
-                blurRadius: lit ? 10 : 6,
-                offset: Offset(0, _down ? 1 : 4),
-              ),
+              // The hard drop, closing up as the key is pushed into it.
+              BoxShadow(color: _hw900, blurRadius: 0, offset: Offset(0, _down ? 2 : 5)),
+              if (lit) const BoxShadow(color: _online, blurRadius: 10, spreadRadius: 0),
             ],
           ),
-          child: Center(
-            child: Text(
-              widget.label,
-              style: TextStyle(
-                color: lit ? Colors.white : _gbButtonText,
-                fontSize: widget.size * 0.34,
-                fontWeight: FontWeight.w800,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // A thin inner ring when on, so the live state reads even past a
+              // thumb sitting on the button.
+              if (lit)
+                Container(
+                  margin: EdgeInsets.all(widget.size * 0.15),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: _online, width: 2),
+                  ),
+                ),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  fontFamily: _pixelFont,
+                  fontWeight: FontWeight.w700,
+                  color: lit ? _scWhite : _hw300,
+                  fontSize: widget.size * 0.42,
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ),
@@ -610,45 +694,73 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
   }
 }
 
-/// A Select or Start key: a slanted little pill with its name under it.
-class _GbPill extends StatelessWidget {
+/// A Select or Start key: a slanted little pill, dark plastic on a hard shadow,
+/// with its name under it.
+class _GbPill extends StatefulWidget {
   const _GbPill({required this.label, required this.onTap});
 
   final String label;
   final VoidCallback onTap;
 
   @override
+  State<_GbPill> createState() => _GbPillState();
+}
+
+class _GbPillState extends State<_GbPill> {
+  bool _down = false;
+
+  void _set(bool down) {
+    if (_down == down) return;
+    setState(() => _down = down);
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Semantics(
       button: true,
-      label: label,
+      label: widget.label,
       child: GestureDetector(
-        onTap: onTap,
+        onTap: widget.onTap,
+        onTapDown: (_) => _set(true),
+        onTapUp: (_) => _set(false),
+        onTapCancel: () => _set(false),
         behavior: HitTestBehavior.opaque,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Transform.rotate(
-              angle: -0.32,
-              child: Container(
-                width: 48,
-                height: 15,
+              angle: -0.3,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 90),
+                curve: Curves.easeOut,
+                transform: Matrix4.translationValues(0, _down ? 2 : 0, 0),
+                width: 50,
+                height: 16,
                 decoration: BoxDecoration(
-                  color: _gbButton,
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: _gbButtonEdge, width: 1.5),
-                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 3, offset: const Offset(0, 2))],
+                  // Lit along the top, dark at the base — the bevel, as a gradient
+                  // so the rounded ends keep a single border colour.
+                  gradient: const LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [_hw700, _hw800],
+                  ),
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(color: _hw900, width: 1),
+                  boxShadow: [
+                    BoxShadow(color: _hw900, blurRadius: 0, offset: Offset(0, _down ? 1 : 3)),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(height: 7),
+            const SizedBox(height: 8),
             Text(
-              label,
-              style: TextStyle(
-                color: _gbHeaderText,
-                fontSize: 11,
+              widget.label,
+              style: const TextStyle(
+                fontFamily: _pixelFont,
                 fontWeight: FontWeight.w700,
-                letterSpacing: 1,
+                color: _hw300,
+                fontSize: 13,
+                letterSpacing: 0.5,
               ),
             ),
           ],
@@ -658,8 +770,8 @@ class _GbPill extends StatelessWidget {
   }
 }
 
-/// The moulded grille in the corner. Six slanted ribs, shortening outward, as the
-/// mock has them. Hidden from the reader — it is decoration, not a control.
+/// The moulded grille in the corner. Five slanted ribs, lengthening outward, as
+/// the mock has them. Hidden from the reader — it is decoration, not a control.
 class _SpeakerGrille extends StatelessWidget {
   const _SpeakerGrille();
 
@@ -667,8 +779,8 @@ class _SpeakerGrille extends StatelessWidget {
   Widget build(BuildContext context) {
     return const ExcludeSemantics(
       child: SizedBox(
-        width: 70,
-        height: 40,
+        width: 74,
+        height: 42,
         child: CustomPaint(painter: _GrillePainter()),
       ),
     );
@@ -681,15 +793,21 @@ class _GrillePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = _gbBodyDark
-      ..strokeWidth = 4
+      ..color = _hw900
+      ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
-    const count = 6;
+    const count = 5;
+    const slant = 7.0;
     for (var i = 0; i < count; i++) {
-      final x = size.width - i * 11.0;
-      // Each rib a touch shorter than the last, so the block reads as angled.
-      final top = size.height - (count - i) * 5.0;
-      canvas.drawLine(Offset(x, size.height), Offset(x - 8, top.clamp(0, size.height)), paint);
+      final x = size.width - i * 13.0;
+      // Each rib a little taller than the last toward the corner, so the block
+      // reads as an angled moulding rather than a flat comb.
+      final top = size.height - (i + 2) * 6.0;
+      canvas.drawLine(
+        Offset(x, size.height),
+        Offset(x - slant, top.clamp(0.0, size.height)),
+        paint,
+      );
     }
   }
 
@@ -737,8 +855,9 @@ class _GameboyMenu extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.04),
-                borderRadius: BorderRadius.circular(14),
+                color: _scMid,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: _scBorder, width: 1.5),
               ),
               child: Row(
                 children: [
@@ -748,7 +867,7 @@ class _GameboyMenu extends StatelessWidget {
                         button: true,
                         label: 'Send $emote',
                         child: InkWell(
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(6),
                           onTap: () => onReact(emote),
                           child: SizedBox(
                             height: 40,
@@ -786,14 +905,18 @@ class _MenuRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colour = lit ? _gbLit : _gbHeaderText;
+    final colour = lit ? _online : _scWhite;
     return Material(
-      color: Colors.white.withValues(alpha: 0.04),
-      borderRadius: BorderRadius.circular(14),
+      color: _scMid,
+      borderRadius: BorderRadius.circular(6),
       child: InkWell(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(6),
         onTap: onTap,
-        child: Padding(
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: _scBorder, width: 1.5),
+          ),
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
@@ -801,7 +924,12 @@ class _MenuRow extends StatelessWidget {
               const SizedBox(width: 14),
               Text(
                 title,
-                style: TextStyle(color: colour, fontSize: 15, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  fontFamily: _pixelFont,
+                  color: colour,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ],
           ),

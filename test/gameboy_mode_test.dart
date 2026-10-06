@@ -108,9 +108,11 @@ void main() {
       expect(find.byType(GameboyShell), findsOneWidget);
       expect(find.byType(MapScreen), findsOneWidget, reason: 'the office is still in there');
       expect(find.byType(ControlBar), findsNothing, reason: 'the dock has stood down');
-      // The four keys, and the office's own name badged on the shell (the LCD
-      // title carries it too, so it reads on both).
-      expect(find.text('HQ'), findsWidgets);
+      // The office's name is the LCD's job — on the title inside the screen,
+      // once. The shell badge answers the other question, the head count, so
+      // 'HERE' belongs to the handheld and the name does not repeat on it.
+      expect(find.text('HQ'), findsOneWidget);
+      expect(find.textContaining('HERE'), findsOneWidget);
       expect(find.text('A'), findsOneWidget);
       expect(find.text('B'), findsOneWidget);
       expect(find.text('SELECT'), findsOneWidget);
