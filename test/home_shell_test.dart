@@ -204,6 +204,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Settings'));
     await tester.pump();
+    await tester.scrollUntilVisible(find.text('Forget this computer'), 120);
     expect(find.text('Forget this computer'), findsOneWidget);
     expect(find.textContaining('Reading the floor plan'), findsNothing);
 
@@ -311,8 +312,9 @@ void main() {
     expect(find.byType(SettingsScreen), findsOneWidget);
 
     // Bottom of the settings list now that it has a section of its own — off
-    // the edge of the test viewport until scrolled to.
-    await tester.ensureVisible(find.text('Forget this computer'));
+    // the edge of the test viewport, and past the lazy list's built range, until
+    // scrolled to.
+    await tester.scrollUntilVisible(find.text('Forget this computer'), 120);
     await tester.tap(find.text('Forget this computer'));
     await tester.pump();
 

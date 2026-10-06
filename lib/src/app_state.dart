@@ -13,6 +13,7 @@ import 'pairing.dart';
 import 'push.dart';
 import 'reactions.dart';
 import 'settings.dart';
+import 'ui_preferences.dart';
 
 /// Everything the UI reads. One object, so the whole app is a single
 /// `ListenableBuilder` away from being correct.
@@ -52,11 +53,13 @@ class AppState extends ChangeNotifier {
     // a [Call] is a microphone, a camera and an SFU, none of which a test runner
     // has. `main.dart` supplies the real one.
     Call Function(GatherAuth auth, String spaceId, String srcId)? buildCall,
+    UiPreferences? uiPreferences,
   }) : _notifier = notifier ?? Notifier(),
        // ignore: prefer_initializing_formals
        _push = push,
        _credentialStore = credentials ?? GatherCredentialStore(),
        _bridgeStore = bridge ?? BridgeSettingsStore(),
+       _uiPrefs = uiPreferences ?? UiPreferences(),
        _buildCollector = buildCollector ?? _realCollector,
        _buildActivityFeed = buildActivityFeed ?? _realActivityFeed,
        // ignore: prefer_initializing_formals
@@ -71,6 +74,7 @@ class AppState extends ChangeNotifier {
 
   final GatherCredentialStore _credentialStore;
   final BridgeSettingsStore _bridgeStore;
+  final UiPreferences _uiPrefs;
   final Collector Function(GatherAuth auth, String? spaceId) _buildCollector;
   final ActivityFeed Function(GatherAuth auth) _buildActivityFeed;
 
@@ -330,6 +334,20 @@ class AppState extends ChangeNotifier {
   bool get partyMode => _snapshot.party.active;
   bool get partyPending => false;
 
+  /// Whether the office tab wears the retro handheld shell. A pure look-and-input
+  /// preference — every underlying action is the same one the normal controls
+  /// call — so it lives next to [partyMode] as one more switch the app owns, read
+  /// back from [UiPreferences] at [boot] and persisted the moment it flips.
+  bool _gameboyMode = false;
+  bool get gameboyMode => _gameboyMode;
+
+  Future<void> setGameboyMode(bool on) async {
+    if (_gameboyMode == on) return;
+    _gameboyMode = on;
+    notifyListeners();
+    await _uiPrefs.saveGameboyMode(on);
+  }
+
   /// Development shortcut past the scanner:
   /// `--dart-define=GATHER_PAIR=host:port:token:refreshToken`.
   ///
@@ -342,6 +360,7 @@ class AppState extends ChangeNotifier {
     _bridgeName = await _bridgeStore.loadName();
     _credentials = await _credentialStore.load();
     _spaceId = await _credentialStore.loadSpaceId();
+    _gameboyMode = await _uiPrefs.loadGameboyMode();
 
     if (!_credentials.isComplete && _devPair.isNotEmpty) {
       final parts = _devPair.split(':');
