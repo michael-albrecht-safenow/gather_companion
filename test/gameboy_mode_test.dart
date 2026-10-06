@@ -108,8 +108,9 @@ void main() {
       expect(find.byType(GameboyShell), findsOneWidget);
       expect(find.byType(MapScreen), findsOneWidget, reason: 'the office is still in there');
       expect(find.byType(ControlBar), findsNothing, reason: 'the dock has stood down');
-      // The four keys and the branding.
-      expect(find.text('SafeNow'), findsOneWidget);
+      // The four keys, and the office's own name badged on the shell (the LCD
+      // title carries it too, so it reads on both).
+      expect(find.text('HQ'), findsWidgets);
       expect(find.text('A'), findsOneWidget);
       expect(find.text('B'), findsOneWidget);
       expect(find.text('SELECT'), findsOneWidget);

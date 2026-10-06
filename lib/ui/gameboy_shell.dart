@@ -85,7 +85,7 @@ class GameboyShell extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
           child: Column(
             children: [
-              const _Header(),
+              _Header(name: state.spaceName),
               const SizedBox(height: 8),
               Expanded(child: _Screen(child: child)),
               const SizedBox(height: 8),
@@ -102,10 +102,14 @@ class GameboyShell extends StatelessWidget {
   }
 }
 
-/// The strip above the screen: who this is on the left, the power light on the
-/// right — the two things moulded into the top of a real one.
+/// The strip above the screen: the office this is on the left, the power light
+/// on the right — the two things moulded into the top of a real one. The name is
+/// the space's own, as the LCD title has it, so the shell is badged with the room
+/// you are in rather than a fixed wordmark.
 class _Header extends StatelessWidget {
-  const _Header();
+  const _Header({required this.name});
+
+  final String? name;
 
   @override
   Widget build(BuildContext context) {
@@ -115,16 +119,20 @@ class _Header extends StatelessWidget {
         children: [
           const Icon(Icons.favorite, color: _gbHeart, size: 18),
           const SizedBox(width: 8),
-          Text(
-            'SafeNow',
-            style: TextStyle(
-              color: _gbHeaderText,
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.5,
+          Expanded(
+            child: Text(
+              name ?? 'The office',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: _gbHeaderText,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.5,
+              ),
             ),
           ),
-          const Spacer(),
+          const SizedBox(width: 8),
           Container(
             width: 9,
             height: 9,
@@ -257,75 +265,90 @@ class _ControlsDeck extends StatelessWidget {
       listenable: state,
       builder: (context, _) {
         final call = state.call;
-        return SizedBox(
-          height: 208,
-          child: Stack(
-            children: [
-              // D-pad, bottom-left. Dimmed, not removed, when there is nowhere to
-              // walk — a wall is found by walking into it, not by a dead control.
-              Positioned(
-                left: 2,
-                top: 6,
-                child: ListenableBuilder(
-                  listenable: state.positions,
-                  builder: (context, _) => _GbDpad(
-                    key: const Key('gb-dpad'),
-                    enabled: state.canWalk,
-                    onPress: state.walk,
-                    onRelease: state.stopWalking,
+        // Two packed zones rather than one tall box with the keys pinned to its
+        // edges: the cross and the A/B pair share an upper band, the slanted pair
+        // and the grille a lower one, with no dead plastic in between. The buttons
+        // sit low against the cross's centre so the right of the body fills the
+        // way the left does.
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: _dpadSize,
+              child: Stack(
+                children: [
+                  // D-pad, bottom-left. Dimmed, not removed, when there is nowhere
+                  // to walk — a wall is found by walking into it, not a dead control.
+                  Positioned(
+                    left: 2,
+                    top: 0,
+                    child: ListenableBuilder(
+                      listenable: state.positions,
+                      builder: (context, _) => _GbDpad(
+                        key: const Key('gb-dpad'),
+                        enabled: state.canWalk,
+                        onPress: state.walk,
+                        onRelease: state.stopWalking,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              // A, raised and to the right: the cart. Lit while it is latched on.
-              Positioned(
-                right: 18,
-                top: 8,
-                child: _GbRoundButton(
-                  label: 'A',
-                  size: 66,
-                  lit: state.boost,
-                  onTap: () {
-                    HapticFeedback.selectionClick();
-                    state.boost = !state.boost;
-                  },
-                ),
-              ),
-              // B, below and left of A: mute. Lit means the mic is live, so the
-              // button glows when you are the one being heard.
-              Positioned(
-                right: 98,
-                top: 52,
-                child: _GbRoundButton(
-                  label: 'B',
-                  size: 58,
-                  lit: call.micOn,
-                  onTap: () => _run(context, () => state.setMicOn(!call.micOn)),
-                ),
-              ),
-              // Speaker grille — moulded, does nothing.
-              const Positioned(
-                right: 16,
-                bottom: 2,
-                child: _SpeakerGrille(),
-              ),
-              // Select and Start, the slanted pair, centred along the bottom.
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Center(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _GbPill(label: 'SELECT', onTap: () => _openMenu(context)),
-                      const SizedBox(width: 22),
-                      _GbPill(label: 'START', onTap: () => _goHome(context)),
-                    ],
+                  // A, raised and to the right: the cart. Lit while it is latched on.
+                  Positioned(
+                    right: 18,
+                    top: 30,
+                    child: _GbRoundButton(
+                      label: 'A',
+                      size: 66,
+                      lit: state.boost,
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        state.boost = !state.boost;
+                      },
+                    ),
                   ),
-                ),
+                  // B, below and left of A: mute. Lit means the mic is live, so the
+                  // button glows when you are the one being heard.
+                  Positioned(
+                    right: 98,
+                    top: 66,
+                    child: _GbRoundButton(
+                      label: 'B',
+                      size: 58,
+                      lit: call.micOn,
+                      onTap: () => _run(context, () => state.setMicOn(!call.micOn)),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 14),
+            // Select and Start, the slanted pair centred, with the moulded grille
+            // tucked into the corner beside them.
+            SizedBox(
+              height: 50,
+              child: Stack(
+                children: [
+                  const Positioned(
+                    right: 16,
+                    bottom: 0,
+                    child: _SpeakerGrille(),
+                  ),
+                  Positioned.fill(
+                    child: Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _GbPill(label: 'SELECT', onTap: () => _openMenu(context)),
+                          const SizedBox(width: 22),
+                          _GbPill(label: 'START', onTap: () => _goHome(context)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         );
       },
     );

@@ -127,7 +127,11 @@ class _HomeShellState extends State<HomeShell> {
         children: [
           MediaQuery(
             data: mq.copyWith(
-              padding: mq.padding.copyWith(bottom: mq.padding.bottom + kRailInset),
+              // The rail's strip is reserved only while the dock is up. In Gameboy
+              // mode it stands down (see the `if (!gameboyMap)` below), so the
+              // handheld shell wants the whole height rather than a dock's worth
+              // of dead plastic under it.
+              padding: mq.padding.copyWith(bottom: mq.padding.bottom + (gameboyMap ? 0 : kRailInset)),
               // And see `resizeToAvoidBottomInset`: a tab's own `Scaffold` would
               // otherwise do the resize this one just declined to.
               viewInsets: mq.viewInsets.copyWith(bottom: 0),
