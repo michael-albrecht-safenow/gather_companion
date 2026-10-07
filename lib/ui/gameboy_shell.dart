@@ -41,13 +41,20 @@ import '../src/app_state.dart';
 // the console design system — hardware plastic in one ramp, screen chrome in
 // another, and a short semantic set for the lights.
 
-// Hardware plastic: one purple ramp from deep shadow to bright highlight.
-const _hw900 = Color(0xFF35205F); // deepest shadow / the hard drop under a part
-const _hw800 = Color(0xFF48287A); // bezel and the darker moulded surfaces
+// Hardware plastic: one purple ramp from deep shadow to bright highlight. The
+// range is deliberately wide — the housing sits mid-ramp and the moulded
+// controls (cross, pills, grille) sink to the near-black end, so a part always
+// has a darker value to stand against. A control the same value as the body
+// behind it reads as a hollow outline, which is the one thing to avoid.
+const _hw990 = Color(0xFF160A2E); // the deepest: the drop under the cross, its sunk hub
+const _hw950 = Color(0xFF241243); // near-black: the cross face and the hard drop under a part
+const _hw900 = Color(0xFF35205F); // a dark moulded face — the pill slots
+const _hw800 = Color(0xFF48287A); // the bezel and the recessed frame
 const _hw700 = Color(0xFF63379A); // the main housing
 const _hw600 = Color(0xFF7544B4); // a raised face, and the top-edge highlight
 const _hw500 = Color(0xFF8B55C8); // the brightest catch of light on a dome
-const _hw300 = Color(0xFFB58BE0); // decorative text and glyphs on the plastic
+const _hw300 = Color(0xFFB58BE0); // mid glyphs — the D-pad arrows, engraved letters
+const _hw150 = Color(0xFFE6DAF7); // bright lavender-white: legible chrome text
 
 // Screen chrome: the near-black of the recessed well around the office.
 const _scBlack = Color(0xFF11131C); // the screen frame
@@ -102,12 +109,17 @@ class GameboyShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
+      // A top-lit mid-purple body: a short highlight along the top edge, then the
+      // housing holds one mid value all the way down. It must *not* darken into
+      // the controls' own value — a cross or a pill the same purple as the body
+      // behind it reads as a hollow outline, which is exactly the washed-out look
+      // this replaces.
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [_hw600, _hw700, _hw800],
-          stops: [0, 0.45, 1],
+          colors: [_hw600, _hw700, _hw700],
+          stops: [0, 0.22, 1],
         ),
       ),
       child: SafeArea(
@@ -115,9 +127,7 @@ class GameboyShell extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
           child: Column(
             children: [
-              _Header(state: state),
-              const SizedBox(height: 8),
-              Expanded(child: _Screen(child: child)),
+              Expanded(child: _Screen(state: state, child: child)),
               const SizedBox(height: 8),
               _ControlsDeck(
                 state: state,
@@ -132,10 +142,13 @@ class GameboyShell extends StatelessWidget {
   }
 }
 
-/// The strip above the screen: who is in the room on the left, the power light
-/// on the right — the two things moulded into the top of a real one. The name of
-/// the office is the LCD's job, carried on the title inside the screen; the shell
-/// badge answers the other question, how many people are in there with you.
+/// The strip across the top of the screen bezel: the room's name on the left as
+/// the console's wordmark, the power light on the right — the two things moulded
+/// into the top of a real one. It sits *inside* the dark purple surround, above
+/// the LCD well, so the bezel reads as wider along the top the way the mock's
+/// does. The name is taken *off* the LCD title so it is not printed twice (see
+/// `map_screen.dart`). The head count is the LCD's job, carried on the "N here"
+/// chip inside the screen.
 class _Header extends StatelessWidget {
   const _Header({required this.state});
 
@@ -143,31 +156,33 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Both listenables: presence changes the roster, and a walk that steps you
-    // onto another floor changes who counts as "here". The LCD's own head count
-    // watches the same two, so the badge and the title never disagree.
+    // Listens on [state] alone: the name comes from the space, which only the
+    // self plane changes, not a walk. The LCD's own head count watches presence
+    // separately, so the two never contend for the same listenable.
     return ListenableBuilder(
-      listenable: Listenable.merge([state, state.positions]),
+      listenable: state,
       builder: (context, _) {
-        final count =
-            state.peopleOnMap.length + (state.mePerson == null ? 0 : 1);
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 2),
           child: Row(
             children: [
               const Icon(Icons.favorite, color: _accentPink, size: 18),
               const SizedBox(width: 9),
-              Text(
-                '$count HERE',
-                style: const TextStyle(
-                  fontFamily: _pixelFont,
-                  fontWeight: FontWeight.w700,
-                  color: _hw300,
-                  fontSize: 19,
-                  letterSpacing: 0.5,
+              Expanded(
+                child: Text(
+                  state.spaceName ?? 'The office',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: _pixelFont,
+                    fontWeight: FontWeight.w700,
+                    color: _hw150,
+                    fontSize: 19,
+                    letterSpacing: 0.5,
+                  ),
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 10),
               Container(
                 width: 9,
                 height: 9,
@@ -185,7 +200,7 @@ class _Header extends StatelessWidget {
                 style: TextStyle(
                   fontFamily: _pixelFont,
                   fontWeight: FontWeight.w700,
-                  color: _hw300,
+                  color: _hw150,
                   fontSize: 13,
                   letterSpacing: 0.5,
                 ),
@@ -198,51 +213,65 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// The recessed screen: a raised purple lip, a near-black well with a thin bright
-/// inner line, and the office clipped inside it. The bottom padding the shell
-/// adds for its vanished nav rail is stripped here, so the map's own legend sits
-/// snug to the screen's edge rather than floating a rail's height above it.
+/// The recessed screen: a raised purple lip that carries the header along its
+/// top, a near-black well with a thin bright inner line, and the office clipped
+/// inside it. The bezel is wider at the top — the header (room name + power light)
+/// lives in that band — so the dark purple reads as a deeper surround above the
+/// LCD, the way the mock draws it. The bottom padding the shell adds for its
+/// vanished nav rail is stripped on the well, so the map's own legend sits snug to
+/// the screen's edge rather than floating a rail's height above it.
 class _Screen extends StatelessWidget {
-  const _Screen({required this.child});
+  const _Screen({required this.state, required this.child});
 
+  final AppState state;
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      // The moulded lip around the well: a dark purple frame lit bright along the
-      // top and sinking to shadow at the bottom, casting the same hard shadow the
-      // buttons do. The light-to-dark is a gradient, not per-side borders, because
-      // a rounded corner needs one border colour all the way round.
-      padding: const EdgeInsets.all(5),
+      // The moulded lip around the well: a dark bezel, darker than the mid-purple
+      // body so the screen reads as sunk into the console rather than laid on top
+      // of it. Wider at the top (the header sits there) than on the other three
+      // sides. It still catches a little light along the top and falls to shadow
+      // at the bottom, and casts the same hard drop the buttons do. The gradient,
+      // not per-side borders, because a rounded corner needs one border colour
+      // all the way round.
+      padding: const EdgeInsets.fromLTRB(6, 7, 6, 6),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [_hw600, _hw700, _hw800],
-          stops: [0, 0.3, 1],
+          colors: [_hw800, _hw900],
         ),
         borderRadius: BorderRadius.all(Radius.circular(14)),
-        border: Border.fromBorderSide(BorderSide(color: _hw900, width: 1.5)),
+        border: Border.fromBorderSide(BorderSide(color: _hw950, width: 1.5)),
         boxShadow: [_hardShadow],
       ),
-      child: Container(
-        // The black well, with the thin bright line the real ones have just
-        // inside the bezel.
-        padding: const EdgeInsets.all(6),
-        decoration: BoxDecoration(
-          color: _scBlack,
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(color: _scBorder, width: 1.5),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: MediaQuery.removePadding(
-            context: context,
-            removeBottom: true,
-            child: child,
+      child: Column(
+        children: [
+          _Header(state: state),
+          const SizedBox(height: 6),
+          Expanded(
+            child: Container(
+              // The black well, with the thin bright line the real ones have just
+              // inside the bezel.
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: _scBlack,
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: _scBorder, width: 1.5),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: MediaQuery.removePadding(
+                  context: context,
+                  removeBottom: true,
+                  child: child,
+                ),
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -325,10 +354,10 @@ class _ControlsDeck extends StatelessWidget {
       builder: (context, _) {
         final call = state.call;
         // Two packed zones rather than one tall box with the keys pinned to its
-        // edges: the cross and the A/B pair share an upper band, the slanted pair
-        // and the grille a lower one, with no dead plastic in between. The buttons
-        // sit low against the cross's centre so the right of the body fills the
-        // way the left does.
+        // edges: the cross and the A/B pair share an upper band, the SELECT/START
+        // pair and the grille a lower one, with no dead plastic in between. The
+        // buttons sit low against the cross's centre so the right of the body fills
+        // the way the left does.
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -357,7 +386,7 @@ class _ControlsDeck extends StatelessWidget {
                     top: 30,
                     child: _GbRoundButton(
                       label: 'A',
-                      size: 66,
+                      size: 64,
                       lit: state.boost,
                       onTap: () {
                         HapticFeedback.selectionClick();
@@ -372,7 +401,7 @@ class _ControlsDeck extends StatelessWidget {
                     top: 66,
                     child: _GbRoundButton(
                       label: 'B',
-                      size: 58,
+                      size: 64,
                       lit: call.micOn,
                       onTap: () => _run(context, () => state.setMicOn(!call.micOn)),
                     ),
@@ -381,8 +410,8 @@ class _ControlsDeck extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 14),
-            // Select and Start, the slanted pair centred, with the moulded grille
-            // tucked into the corner beside them.
+            // Select and Start, the flat horizontal pair centred, with the moulded
+            // grille tucked into the corner beside them.
             SizedBox(
               height: 50,
               child: Stack(
@@ -523,7 +552,7 @@ class _CrossPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final centre = Offset(size.width / 2, size.height / 2);
-    final arm = size.width * 0.36;
+    final arm = size.width * 0.40;
     const radius = Radius.circular(4); // chunky, near-square — moulded, not glass
     final vertical = RRect.fromRectAndRadius(
       Rect.fromCenter(center: centre, width: arm, height: size.height),
@@ -535,13 +564,14 @@ class _CrossPainter extends CustomPainter {
     );
 
     // The hard drop: a solid block of the deepest purple, offset down, no blur.
-    final shadow = Paint()..color = _hw900.withValues(alpha: enabled ? 1 : 0.4);
+    final shadow = Paint()..color = _hw990.withValues(alpha: enabled ? 1 : 0.4);
     canvas.drawRRect(vertical.shift(const Offset(0, 4)), shadow);
     canvas.drawRRect(horizontal.shift(const Offset(0, 4)), shadow);
 
-    // A darker moulded part than the housing it sits on, so the light arrows and
-    // the top bevel read against it the way the mock's cross does.
-    final face = Paint()..color = enabled ? _hw800 : _hw800.withValues(alpha: 0.45);
+    // The darkest moulded part on the body — near-black, well below the mid-purple
+    // housing it sits on, so the light arrows and the top bevel read against it the
+    // way the mock's cross does: a solid dark plus, never a hollow outline.
+    final face = Paint()..color = enabled ? _hw950 : _hw950.withValues(alpha: 0.45);
     canvas.drawRRect(vertical, face);
     canvas.drawRRect(horizontal, face);
 
@@ -550,20 +580,21 @@ class _CrossPainter extends CustomPainter {
     final outline = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.5
-      ..color = _hw900.withValues(alpha: enabled ? 1 : 0.4);
+      ..color = _hw990.withValues(alpha: enabled ? 1 : 0.4);
     canvas.drawRRect(vertical, outline);
     canvas.drawRRect(horizontal, outline);
 
     final bevel = Paint()
       ..strokeWidth = 2
       ..strokeCap = StrokeCap.round
-      ..color = _hw600.withValues(alpha: enabled ? 1 : 0.4);
+      ..color = _hw500.withValues(alpha: enabled ? 1 : 0.4);
     canvas.drawLine(Offset(centre.dx - arm / 2 + 3, 2.5), Offset(centre.dx + arm / 2 - 3, 2.5), bevel);
     canvas.drawLine(Offset(2.5, centre.dy - arm / 2 + 3), Offset(2.5, centre.dy + arm / 2 - 3), bevel);
 
-    // The still hub, sunk a shade darker than the arms.
-    canvas.drawCircle(centre, arm * 0.3, Paint()..color = _hw900.withValues(alpha: enabled ? 1 : 0.45));
-
+    // No hub and no centre square: the mock's cross is just the plus and its four
+    // arrows, two values — the near-black face and the light arrows, with a bright
+    // bevel catching the top-left edge. Anything in the middle reads as a button
+    // the cross does not have.
     _arrow(canvas, size, 'Up');
     _arrow(canvas, size, 'Down');
     _arrow(canvas, size, 'Left');
@@ -573,7 +604,7 @@ class _CrossPainter extends CustomPainter {
   void _arrow(Canvas canvas, Size size, String direction) {
     final centre = Offset(size.width / 2, size.height / 2);
     final reach = size.width * 0.34;
-    final s = size.width * 0.075;
+    final s = size.width * 0.088;
     final lit = held == direction;
     final paint = Paint()
       ..color = lit
@@ -649,18 +680,21 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
           height: widget.size,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            // A shallow dome — brightest at the top-left, the inner highlight a
-            // real button has — over an otherwise flat purple face.
+            // A matte moulded face with only a soft top sheen — not the glassy
+            // candy highlight a strong radial gives. The mock's buttons are flat
+            // plastic with the letter engraved into them, so the dome is gentle
+            // (one step of light near the top) and the depth comes from the hard
+            // drop below, not from gloss.
             gradient: const RadialGradient(
-              center: Alignment(-0.35, -0.4),
-              radius: 0.95,
-              colors: [_hw500, _hw600, _hw700],
-              stops: [0, 0.55, 1],
+              center: Alignment(-0.25, -0.35),
+              radius: 1.05,
+              colors: [_hw500, _hw600],
             ),
-            border: Border.all(color: lit ? _online : _hw900, width: 3),
+            border: Border.all(color: lit ? _online : _hw950, width: 3),
             boxShadow: [
-              // The hard drop, closing up as the key is pushed into it.
-              BoxShadow(color: _hw900, blurRadius: 0, offset: Offset(0, _down ? 2 : 5)),
+              // The hard drop — a deeper, more offset block than a soft shadow, so
+              // the key reads as sitting proud of the body; it closes up on press.
+              BoxShadow(color: _hw950, blurRadius: 0, offset: Offset(0, _down ? 2 : 7)),
               if (lit) const BoxShadow(color: _online, blurRadius: 10, spreadRadius: 0),
             ],
           ),
@@ -682,7 +716,9 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
                 style: TextStyle(
                   fontFamily: _pixelFont,
                   fontWeight: FontWeight.w700,
-                  color: lit ? _scWhite : _hw300,
+                  // Dark and engraved into the lit dome when idle, the way the
+                  // mock prints its A/B; white only when the control is live.
+                  color: lit ? _scWhite : _hw900,
                   fontSize: widget.size * 0.42,
                 ),
               ),
@@ -694,7 +730,7 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
   }
 }
 
-/// A Select or Start key: a slanted little pill, dark plastic on a hard shadow,
+/// A Select or Start key: a flat horizontal pill, dark plastic on a hard shadow,
 /// with its name under it.
 class _GbPill extends StatefulWidget {
   const _GbPill({required this.label, required this.onTap});
@@ -728,28 +764,28 @@ class _GbPillState extends State<_GbPill> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Transform.rotate(
-              angle: -0.3,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 90),
-                curve: Curves.easeOut,
-                transform: Matrix4.translationValues(0, _down ? 2 : 0, 0),
-                width: 50,
-                height: 16,
-                decoration: BoxDecoration(
-                  // Lit along the top, dark at the base — the bevel, as a gradient
-                  // so the rounded ends keep a single border colour.
-                  gradient: const LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [_hw700, _hw800],
-                  ),
-                  borderRadius: BorderRadius.circular(5),
-                  border: Border.all(color: _hw900, width: 1),
-                  boxShadow: [
-                    BoxShadow(color: _hw900, blurRadius: 0, offset: Offset(0, _down ? 1 : 3)),
-                  ],
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 90),
+              curve: Curves.easeOut,
+              transform: Matrix4.translationValues(0, _down ? 2 : 0, 0),
+              width: 50,
+              height: 16,
+              decoration: BoxDecoration(
+                // A flat, perfectly horizontal slot — long axis across, never
+                // tilted, the way the mock lays the pair out. Darker than the
+                // mid-purple body so it reads as recessed. A touch of light along
+                // the top as a gradient, so the rounded ends keep a single border
+                // colour.
+                gradient: const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [_hw800, _hw900],
                 ),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: _hw950, width: 1),
+                boxShadow: [
+                  BoxShadow(color: _hw950, blurRadius: 0, offset: Offset(0, _down ? 1 : 3)),
+                ],
               ),
             ),
             const SizedBox(height: 8),
@@ -758,7 +794,7 @@ class _GbPillState extends State<_GbPill> {
               style: const TextStyle(
                 fontFamily: _pixelFont,
                 fontWeight: FontWeight.w700,
-                color: _hw300,
+                color: _hw150,
                 fontSize: 13,
                 letterSpacing: 0.5,
               ),
@@ -770,8 +806,11 @@ class _GbPillState extends State<_GbPill> {
   }
 }
 
-/// The moulded grille in the corner. Five slanted ribs, lengthening outward, as
-/// the mock has them. Hidden from the reader — it is decoration, not a control.
+/// The moulded grille in the corner. Identical upright slots — every one the same
+/// length and width, each perfectly vertical — stepped up to the right so the
+/// block reads as an angled speaker moulding while no single slot is itself
+/// slanted, the way the mock draws it. Hidden from the reader: it is decoration,
+/// not a control.
 class _SpeakerGrille extends StatelessWidget {
   const _SpeakerGrille();
 
@@ -793,21 +832,19 @@ class _GrillePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = _hw900
+      ..color = _hw990
       ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
-    const count = 5;
-    const slant = 7.0;
+    const count = 6;
+    const barLen = 16.0; // every slot the same height
+    const stepX = 11.0; // march to the right
+    const stepY = 3.0; // and climb, so the cluster reads as an angled moulding
     for (var i = 0; i < count; i++) {
-      final x = size.width - i * 13.0;
-      // Each rib a little taller than the last toward the corner, so the block
-      // reads as an angled moulding rather than a flat comb.
-      final top = size.height - (i + 2) * 6.0;
-      canvas.drawLine(
-        Offset(x, size.height),
-        Offset(x - slant, top.clamp(0.0, size.height)),
-        paint,
-      );
+      final x = 8 + i * stepX;
+      final bottom = size.height - 4 - i * stepY;
+      // A straight up-and-down slot: same endpoints' x, so it is never angled —
+      // only its position moves, in both axes.
+      canvas.drawLine(Offset(x, bottom), Offset(x, bottom - barLen), paint);
     }
   }
 

@@ -108,11 +108,19 @@ void main() {
       expect(find.byType(GameboyShell), findsOneWidget);
       expect(find.byType(MapScreen), findsOneWidget, reason: 'the office is still in there');
       expect(find.byType(ControlBar), findsNothing, reason: 'the dock has stood down');
-      // The office's name is the LCD's job — on the title inside the screen,
-      // once. The shell badge answers the other question, the head count, so
-      // 'HERE' belongs to the handheld and the name does not repeat on it.
+      // The office's name is the handheld's own wordmark now, on the shell
+      // header — and taken off the LCD title so it prints once, not twice.
+      // Finding 'HQ' exactly once, and never inside the LCD (the MapScreen), is
+      // that contract: a second copy would mean the map's title still carries it.
+      // The head count stays the LCD's job (its 'N here' chip), so the uppercase
+      // 'HERE' badge no longer lives on the shell.
       expect(find.text('HQ'), findsOneWidget);
-      expect(find.textContaining('HERE'), findsOneWidget);
+      expect(
+        find.descendant(of: find.byType(MapScreen), matching: find.text('HQ')),
+        findsNothing,
+        reason: 'the name moved off the LCD title onto the shell header',
+      );
+      expect(find.textContaining('HERE'), findsNothing);
       expect(find.text('A'), findsOneWidget);
       expect(find.text('B'), findsOneWidget);
       expect(find.text('SELECT'), findsOneWidget);

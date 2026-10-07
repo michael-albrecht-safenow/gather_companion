@@ -95,7 +95,11 @@ class _MapScreenState extends State<MapScreen> {
         // Default title spacing, like the other two tabs: the three app bars sit
         // in one shell, and a title that shifts sideways as you change tab reads
         // as a layout bug rather than a choice.
-        title: _Where(space: widget.state.spaceName),
+        //
+        // In Gameboy mode the name moves up onto the handheld's own header (see
+        // `gameboy_shell.dart`), so it is dropped here to avoid printing twice —
+        // the head-count chip in `actions` stays, which is the LCD's own job.
+        title: widget.state.gameboyMode ? null : _Where(space: widget.state.spaceName),
         actions: [
           // The follower count leads and the head count anchors the corner, so
           // the pill that is always there never moves when the other arrives.
