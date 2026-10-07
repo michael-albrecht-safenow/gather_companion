@@ -96,7 +96,10 @@ class _HomeShellState extends State<HomeShell> {
   /// The office being one tap away costs it nothing. No tab is rebuilt when you
   /// leave it, so it is already drawn, already panned where you left it, and its
   /// artwork is still decoded.
-  _Tab _tab = _Tab.dial;
+  ///
+  /// Gameboy mode is the exception: the handheld wraps the office, so that is the
+  /// screen the retro shell exists to show and the one it opens on.
+  late _Tab _tab = widget.state.gameboyMode ? _Tab.map : _Tab.dial;
 
   /// Built once and held. A fresh `Listenable.merge` on every build would hand
   /// the map's `ListenableBuilder` a new object each frame and make it
@@ -177,6 +180,7 @@ class _HomeShellState extends State<HomeShell> {
                 state: widget.state,
                 onOpenSettings: () => _select(_Tab.settings),
                 onOpenActivity: () => _select(_Tab.activity),
+                onOpenDial: () => _select(_Tab.dial),
                 child: ListenableBuilder(
                   listenable: _tab == _Tab.map ? _mapTick : widget.state,
                   builder: (context, _) => MapScreen(state: widget.state),

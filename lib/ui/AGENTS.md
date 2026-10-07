@@ -188,3 +188,13 @@ Wrap screens in the real theme (`buildGatherTheme()`) in tests; the widgets read
 `mobile_scanner` (pair screen only), `flutter/material`, `flutter/services`.
 
 <!-- MANUAL: -->
+
+### Gameboy mode
+
+**The Gameboy Select menu must always hold every destination the bottom tab bar
+holds.** In `gameboy_shell.dart` the handheld replaces the tab bar while the
+office is on screen, so its Select menu is the only way to reach the other tabs.
+Whenever a tab is added to or removed from `_Tab` (`home_shell.dart`), add or
+remove the matching `_menuRow*` row in the Select menu — the one exception is the
+map itself, which *is* the office drawn under the shell and so needs no row. A new
+tab with no menu row is unreachable in Gameboy mode.

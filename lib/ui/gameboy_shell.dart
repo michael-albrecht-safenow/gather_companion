@@ -115,18 +115,22 @@ const _emotes = ['👋', '❤️', '🎉', '👍️', '🤣', '👏', '💯', '�
 
 /// The Select menu's rows, in D-pad order top to bottom. Two of them — the
 /// status choices and the emote strip — are rows the D-pad walks left/right
-/// inside; the other three are single targets. Kept as a count so the cursor can
+/// inside; the other four are single targets, one per tab the menu can leave to
+/// (Dial, Activity, Settings) plus the camera toggle. Kept as a count so the cursor can
 /// clamp without the menu and the router disagreeing about how many rows there are.
 const int _menuRowStatus = 0;
 const int _menuRowCamera = 1;
 const int _menuRowEmotes = 2;
-const int _menuRowActivity = 3;
-const int _menuRowSettings = 4;
-const int _menuRowCount = 5;
+const int _menuRowDial = 3;
+const int _menuRowActivity = 4;
+const int _menuRowSettings = 5;
+const int _menuRowCount = 6;
 
-/// Wraps [child] (the office) in the handheld. [onOpenSettings]/[onOpenActivity]
-/// are how the Select menu leaves for another tab — the shell cannot switch tabs
-/// itself, so the home shell hands it the two it owns.
+/// Wraps [child] (the office) in the handheld. [onOpenDial]/[onOpenActivity]/
+/// [onOpenSettings] are how the Select menu leaves for another tab — the shell
+/// cannot switch tabs itself, so the home shell hands it the ones it owns. The
+/// menu mirrors the bottom tab bar, so every tab reachable there (bar the map,
+/// which is the office under the shell) has a row here.
 ///
 /// Stateful only for the Select menu: whether it is open, which row the cursor is
 /// on, and which emote within the strip. Everything else is still a straight pass
@@ -140,12 +144,14 @@ class GameboyShell extends StatefulWidget {
     required this.child,
     required this.onOpenSettings,
     required this.onOpenActivity,
+    required this.onOpenDial,
   });
 
   final AppState state;
   final Widget child;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenActivity;
+  final VoidCallback onOpenDial;
 
   @override
   State<GameboyShell> createState() => _GameboyShellState();
@@ -259,6 +265,11 @@ class _GameboyShellState extends State<GameboyShell> {
     _run(() => widget.state.sendEmoteLocalFirst(emote));
   }
 
+  void _doDial() {
+    _closeMenu();
+    widget.onOpenDial();
+  }
+
   void _doActivity() {
     _closeMenu();
     widget.onOpenActivity();
@@ -278,6 +289,8 @@ class _GameboyShellState extends State<GameboyShell> {
         _doCamera();
       case _menuRowEmotes:
         _doReact(_emotes[_emote]);
+      case _menuRowDial:
+        _doDial();
       case _menuRowActivity:
         _doActivity();
       case _menuRowSettings:
@@ -322,6 +335,7 @@ class _GameboyShellState extends State<GameboyShell> {
                           onStatus: _doStatus,
                           onCamera: _doCamera,
                           onReact: _doReact,
+                          onDial: _doDial,
                           onActivity: _doActivity,
                           onSettings: _doSettings,
                           onDismiss: _closeMenu,
@@ -1405,6 +1419,7 @@ class _GameboyMenu extends StatelessWidget {
     required this.onStatus,
     required this.onCamera,
     required this.onReact,
+    required this.onDial,
     required this.onActivity,
     required this.onSettings,
     required this.onDismiss,
@@ -1421,6 +1436,7 @@ class _GameboyMenu extends StatelessWidget {
   final ValueChanged<String> onStatus;
   final VoidCallback onCamera;
   final ValueChanged<String> onReact;
+  final VoidCallback onDial;
   final VoidCallback onActivity;
   final VoidCallback onSettings;
   final VoidCallback onDismiss;
@@ -1473,6 +1489,16 @@ class _GameboyMenu extends StatelessWidget {
                     focused: focusedRow == _menuRowEmotes,
                     focusedEmote: focusedEmote,
                     onReact: onReact,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                KeyedSubtree(
+                  key: rowKeys[_menuRowDial],
+                  child: _MenuRow(
+                    icon: Icons.sensors_rounded,
+                    title: 'Dial',
+                    focused: focusedRow == _menuRowDial,
+                    onTap: onDial,
                   ),
                 ),
                 const SizedBox(height: 8),
