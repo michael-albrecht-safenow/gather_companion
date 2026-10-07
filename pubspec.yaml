@@ -116,3 +116,14 @@ flutter:
 dependency_overrides:
   mediasfu_mediasoup_client:
     path: third_party/mediasfu_mediasoup_client
+  # Vendored copy of flutter_webrtc 1.6.2+hotfix.3 carrying a one-line native
+  # patch: `FlutterRTCVideoRenderer.m` `renderFrame:` dereferenced `weakSelf`
+  # through a direct ivar access (`strongSelf->_isFirstFrameRendered`) with no
+  # nil check. When the renderer deallocated mid-call-teardown, the main-queue
+  # block ran with a nil `weakSelf` and segfaulted at the ivar offset (0x40) —
+  # the "app goes to background during a call" crash. Guarded with
+  # `if (strongSelf == nil) return;`. Remove this override once the fix lands
+  # upstream (flutter-webrtc/flutter-webrtc). Keeps the ^1.6.0 pin's intent:
+  # the vendored package ships SPM support, so no CocoaPods regression.
+  flutter_webrtc:
+    path: third_party/flutter_webrtc
