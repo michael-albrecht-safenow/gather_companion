@@ -48,6 +48,7 @@ import '../theme/gather_theme.dart';
 import 'activity_screen.dart';
 import 'dial_screen.dart';
 import 'control_bar.dart';
+import 'gameboy_shell.dart';
 import 'map_screen.dart';
 import 'settings_screen.dart';
 
@@ -112,6 +113,10 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final mq = MediaQuery.of(context);
+    // The handheld owns the whole office tab, controls and all, so the floating
+    // dock stands down while it is on screen — its mute, its rail and its
+    // reactions have moved onto the body.
+    final gameboyMap = widget.state.gameboyMode && _tab == _Tab.map;
 
     return Scaffold(
       backgroundColor: t.background,
@@ -124,7 +129,11 @@ class _HomeShellState extends State<HomeShell> {
         children: [
           MediaQuery(
             data: mq.copyWith(
-              padding: mq.padding.copyWith(bottom: mq.padding.bottom + kRailInset),
+              // The rail's strip is reserved only while the dock is up. In Gameboy
+              // mode it stands down (see the `if (!gameboyMap)` below), so the
+              // handheld shell wants the whole height rather than a dock's worth
+              // of dead plastic under it.
+              padding: mq.padding.copyWith(bottom: mq.padding.bottom + (gameboyMap ? 0 : kRailInset)),
               // And see `resizeToAvoidBottomInset`: a tab's own `Scaffold` would
               // otherwise do the resize this one just declined to.
               viewInsets: mq.viewInsets.copyWith(bottom: 0),
@@ -138,40 +147,53 @@ class _HomeShellState extends State<HomeShell> {
               ],
             ),
           ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _Dock(
-              state: widget.state,
-              // The controls are the office's, so they are up only while it is.
-              showingControls: _tab == _Tab.map,
-              selected: _tab,
-              onSelect: _select,
+          if (!gameboyMap)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: _Dock(
+                state: widget.state,
+                // The controls are the office's, so they are up only while it is.
+                showingControls: _tab == _Tab.map,
+                selected: _tab,
+                onSelect: _select,
+              ),
             ),
-          ),
         ],
       ),
     );
   }
 
   Widget _bodyFor(_Tab tab) => switch (tab) {
-        // The office alone carries the control bar, so the office alone pays for
-        // it: the same inset trick the shell uses for the rail, one layer in, so
-        // the D-pad and the legend lift above both islands without either
-        // knowing the other is there.
-        _Tab.map => _Inset(
-            bottom: kControlBarInset,
-            child: ListenableBuilder(
-              // `state` for the connection and the party; `positions` for people
-              // walking, which the presence tracker deliberately does not count
-              // as a change because no other screen draws it. Only while the map
-              // is what you are looking at — off the tab it would be four
-              // rebuilds a second behind something else.
-              listenable: _tab == _Tab.map ? _mapTick : widget.state,
-              builder: (context, _) => MapScreen(state: widget.state),
-            ),
-          ),
+        // In Gameboy mode the handheld shell wraps the office and carries the
+        // controls itself; the normal dock is hidden (see `build`), so the map
+        // body skips the control-bar inset. Otherwise the office alone carries the
+        // control bar, so the office alone pays for it: the same inset trick the
+        // shell uses for the rail, one layer in, so the D-pad and the legend lift
+        // above both islands without either knowing the other is there.
+        _Tab.map => widget.state.gameboyMode
+            ? GameboyShell(
+                state: widget.state,
+                onOpenSettings: () => _select(_Tab.settings),
+                onOpenActivity: () => _select(_Tab.activity),
+                child: ListenableBuilder(
+                  listenable: _tab == _Tab.map ? _mapTick : widget.state,
+                  builder: (context, _) => MapScreen(state: widget.state),
+                ),
+              )
+            : _Inset(
+                bottom: kControlBarInset,
+                child: ListenableBuilder(
+                  // `state` for the connection and the party; `positions` for
+                  // people walking, which the presence tracker deliberately does
+                  // not count as a change because no other screen draws it. Only
+                  // while the map is what you are looking at — off the tab it would
+                  // be four rebuilds a second behind something else.
+                  listenable: _tab == _Tab.map ? _mapTick : widget.state,
+                  builder: (context, _) => MapScreen(state: widget.state),
+                ),
+              ),
         _Tab.activity => ActivityScreen(state: widget.state),
         // No control bar, so no `kControlBarInset` layer: the shell's own rail
         // inset is all a scrolling directory needs to clear the dock.

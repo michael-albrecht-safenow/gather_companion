@@ -202,8 +202,8 @@ void main() {
     await tester.pump();
 
     // Bottom of the list now that it has a section of its own — off the edge of
-    // the test viewport until scrolled to.
-    await tester.ensureVisible(find.text('Forget this computer'));
+    // the test viewport, and past the lazy list's built range, until scrolled to.
+    await tester.scrollUntilVisible(find.text('Forget this computer'), 120);
     await tester.tap(find.text('Forget this computer'));
     await tester.pump();
 

@@ -90,7 +90,16 @@ class _MapScreenState extends State<MapScreen> {
       // Where the space name and the head count live: the map is the screen, and a
       // strip above it repeating what it already shows was costing the map a fifth
       // of a phone.
-      appBar: AppBar(
+      //
+      // In Gameboy mode the whole bar stands down: the handheld draws its own pixel
+      // status strip inside the LCD (space name on the shell header, and a
+      // status/mic/cam/followers/head-count HUD on the screen — see
+      // `gameboy_shell.dart`), so an app-themed bar here would both double the head
+      // count and waste a strip of the LCD. The follower count rides into that HUD
+      // too, so the "someone is following you" signal survives the skin.
+      appBar: widget.state.gameboyMode
+          ? null
+          : AppBar(
         backgroundColor: t.background,
         // Default title spacing, like the other two tabs: the three app bars sit
         // in one shell, and a title that shifts sideways as you change tab reads

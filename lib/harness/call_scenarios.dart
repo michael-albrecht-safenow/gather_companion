@@ -10,6 +10,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:gather_client/gather_client.dart';
@@ -281,6 +282,14 @@ class AppScenarioDriver {
   int _ticks = 0;
   bool _wasInCall = false;
 
+  final Random _rng = Random();
+
+  /// Per-person talking bursts, in ticks still to run. A person with a positive
+  /// count is mid-burst; zero means silent and free to start a fresh one. Driving
+  /// speech off this — rather than the tick parity — is what makes talkers come
+  /// and go independently instead of handing the floor round one at a time.
+  final Map<String, int> _speakingTicksLeft = {};
+
   /// Seeds the activity history and starts the clock. The timer runs even on
   /// [AppScenario.still] — the cast stay put there, but a warp still has to form
   /// a call, which is what each tick drives.
@@ -316,15 +325,25 @@ class AppScenarioDriver {
 
     final milling = scenario != AppScenario.still;
     for (var i = 0; i < ids.length; i++) {
+      final id = ids[i];
       // Whoever is in my call stays put, so the conversation holds until I walk
       // away rather than someone wandering out of range a tick later.
-      if (mateIds.contains(ids[i])) continue;
+      if (mateIds.contains(id)) continue;
       if (milling) {
-        collector.stepPerson(ids[i], _wander[(_ticks + i) % _wander.length]);
+        collector.stepPerson(id, _wander[(_ticks + i) % _wander.length]);
       }
-      // One speaking ring at a time among the *rest*, rotating, so the map shows
-      // a live talker who is not in my call. Call-mates' rings are driven below.
-      collector.placePerson(ids[i], speaking: milling && ids.isNotEmpty && _ticks % ids.length == i);
+      // Each of the *rest* talks in their own random bursts: a silent person
+      // starts one with a small chance each tick, then holds the floor for a
+      // random spell (2–6 ticks ≈ 1.2–3.6s at the 600ms period). Independent
+      // draws mean nobody owns the floor on a rota and several can be lit at
+      // once — a real babble rather than a hand-off round robin. Call-mates'
+      // rings are driven below; a still office stays quiet.
+      var left = _speakingTicksLeft[id] ?? 0;
+      if (milling && left == 0 && _rng.nextDouble() < 0.18) {
+        left = 2 + _rng.nextInt(5);
+      }
+      collector.placePerson(id, speaking: left > 0);
+      _speakingTicksLeft[id] = left > 0 ? left - 1 : 0;
     }
 
     _driveCall(mates);

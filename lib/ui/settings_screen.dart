@@ -112,6 +112,11 @@ class SettingsScreen extends StatelessWidget {
             ],
           ),
           SizedBox(height: 8),
+          const _SectionLabel('Appearance'),
+          _Card(
+            children: [_GameboyRow(state: state)],
+          ),
+          SizedBox(height: 8),
           // Not 'Paired computer': that asserted a pairing as the *label*, above a
           // sentence that then had to argue with it. The card is about what the
           // computer's one remaining job gets you.
@@ -301,6 +306,33 @@ class _PartyRow extends StatelessWidget {
         subtitle: subtitle,
         onTap: () => _toggle(context),
         trailing: _PartySwitch(on: on, pending: state.partyPending),
+      ),
+    );
+  }
+}
+
+/// Gameboy mode, as a row of the Appearance card. Unlike party mode it is a pure
+/// look-and-input switch — it changes which controls the office tab wears, never
+/// the space — so it owns a plain bool on [AppState] and has no refusal to show.
+class _GameboyRow extends StatelessWidget {
+  const _GameboyRow({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final on = state.gameboyMode;
+
+    return Semantics(
+      toggled: on,
+      child: _Row(
+        icon: Icons.videogame_asset_rounded,
+        tint: on ? t.brand : null,
+        title: 'Gameboy mode',
+        subtitle: on ? 'The office, played as a handheld.' : 'Play the office like a handheld.',
+        onTap: () => state.setGameboyMode(!on),
+        trailing: _PartySwitch(on: on, pending: false),
       ),
     );
   }

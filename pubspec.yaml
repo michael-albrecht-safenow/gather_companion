@@ -82,6 +82,17 @@ flutter:
     # serving it, so there is no URL to fetch; this is that PNG, byte for byte.
     # See `lib/src/art_cache.dart` (`ghostAvatarUrl`).
     - assets/avatar-ghost.png
+  fonts:
+    # The pixel face for Gameboy mode's chrome only — the shell's own labels
+    # (HERE, POWER, A/B, SELECT/START) and the Select menu. The office world and
+    # the rest of the app keep the system font; this never leaves
+    # `gameboy_shell.dart`. Pixelify Sans, SIL Open Font License 1.1 — a rounded
+    # pixel face with real lowercase, matching the mock's wordmark.
+    - family: PixelifySans
+      fonts:
+        - asset: assets/fonts/PixelifySans-Regular.ttf
+        - asset: assets/fonts/PixelifySans-Bold.ttf
+          weight: 700
 
 # A patched copy of the mediasoup client, and the app does not work without it.
 #
