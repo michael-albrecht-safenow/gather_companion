@@ -53,8 +53,18 @@ const _hw800 = Color(0xFF48287A); // the bezel and the recessed frame
 const _hw700 = Color(0xFF63379A); // the main housing
 const _hw600 = Color(0xFF7544B4); // a raised face, and the top-edge highlight
 const _hw500 = Color(0xFF8B55C8); // the brightest catch of light on a dome
-const _hw300 = Color(0xFFB58BE0); // mid glyphs — the D-pad arrows, engraved letters
 const _hw150 = Color(0xFFE6DAF7); // bright lavender-white: legible chrome text
+
+// Neutral hardware greys. The D-pad and the SELECT/START keys are moulded in
+// charcoal, not the body's purple — the console's one grey part, as the design
+// system's neutral ramp specifies. Same grammar as the purple ramp: a dark
+// surface, a deeper drop, a near-black outline, and a light label on top.
+const _n950 = Color(0xFF11111A); // deepest: outline under the grey parts
+const _n900 = Color(0xFF191923); // the hard drop under the D-pad and keys
+const _n800 = Color(0xFF252531); // the dark moulded surface — cross face, key base
+const _n700 = Color(0xFF343442); // the top-lit catch on a key
+const _n300 = Color(0xFFA8A8B7); // primary hardware labels — the D-pad arrows
+const _n200 = Color(0xFFC9C9D4); // pressed-state highlight detail
 
 // Screen chrome: the near-black of the recessed well around the office.
 const _scBlack = Color(0xFF11131C); // the screen frame
@@ -82,7 +92,7 @@ const _hardShadow = BoxShadow(color: _hw900, blurRadius: 0, offset: Offset(0, 4)
 
 /// How wide the cross is. Each arm is then a target a thumb can hit without
 /// looking, which is the point of a control used while watching the screen above it.
-const double _dpadSize = 150;
+const double _dpadSize = 135;
 
 /// Gather's eight, same codepoints and order as the dock's tray — the variation
 /// selectors matter, so this list is copied rather than trimmed. See
@@ -413,7 +423,7 @@ class _ControlsDeck extends StatelessWidget {
             // Select and Start, the flat horizontal pair centred, with the moulded
             // grille tucked into the corner beside them.
             SizedBox(
-              height: 50,
+              height: 64,
               child: Stack(
                 children: [
                   const Positioned(
@@ -563,38 +573,34 @@ class _CrossPainter extends CustomPainter {
       radius,
     );
 
-    // The hard drop: a solid block of the deepest purple, offset down, no blur.
-    final shadow = Paint()..color = _hw990.withValues(alpha: enabled ? 1 : 0.4);
-    canvas.drawRRect(vertical.shift(const Offset(0, 4)), shadow);
-    canvas.drawRRect(horizontal.shift(const Offset(0, 4)), shadow);
+    // One plus-shaped silhouette. Filling and outlining the *union* — not each arm
+    // on its own — means no fill seam or outline line is ever drawn across the
+    // centre, so the old tic-tac-toe look is gone: the cross is a single moulded
+    // part with nothing inside it.
+    final cross = Path.combine(
+      PathOperation.union,
+      Path()..addRRect(vertical),
+      Path()..addRRect(horizontal),
+    );
 
-    // The darkest moulded part on the body — near-black, well below the mid-purple
-    // housing it sits on, so the light arrows and the top bevel read against it the
-    // way the mock's cross does: a solid dark plus, never a hollow outline.
-    final face = Paint()..color = enabled ? _hw950 : _hw950.withValues(alpha: 0.45);
-    canvas.drawRRect(vertical, face);
-    canvas.drawRRect(horizontal, face);
+    // The hard drop: a solid grey block offset down, no blur.
+    final shadow = Paint()..color = _n900.withValues(alpha: enabled ? 1 : 0.4);
+    canvas.drawPath(cross.shift(const Offset(0, 4)), shadow);
 
-    // The pixel outline, then a bright line along the top of the vertical arm and
-    // the left of the horizontal one — the light catching the moulded edge.
+    // The moulded cross: one flat charcoal fill — the console's grey part, not the
+    // body's purple — so the light grey arrows read against it. Two colours, a
+    // solid plus, and no hub, square, or bevel bar in the middle.
+    final face = Paint()..color = enabled ? _n800 : _n800.withValues(alpha: 0.5);
+    canvas.drawPath(cross, face);
+
+    // A single silhouette outline around the whole plus — one near-black edge, no
+    // line crossing the centre.
     final outline = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.5
-      ..color = _hw990.withValues(alpha: enabled ? 1 : 0.4);
-    canvas.drawRRect(vertical, outline);
-    canvas.drawRRect(horizontal, outline);
+      ..color = _n950.withValues(alpha: enabled ? 1 : 0.4);
+    canvas.drawPath(cross, outline);
 
-    final bevel = Paint()
-      ..strokeWidth = 2
-      ..strokeCap = StrokeCap.round
-      ..color = _hw500.withValues(alpha: enabled ? 1 : 0.4);
-    canvas.drawLine(Offset(centre.dx - arm / 2 + 3, 2.5), Offset(centre.dx + arm / 2 - 3, 2.5), bevel);
-    canvas.drawLine(Offset(2.5, centre.dy - arm / 2 + 3), Offset(2.5, centre.dy + arm / 2 - 3), bevel);
-
-    // No hub and no centre square: the mock's cross is just the plus and its four
-    // arrows, two values — the near-black face and the light arrows, with a bright
-    // bevel catching the top-left edge. Anything in the middle reads as a button
-    // the cross does not have.
     _arrow(canvas, size, 'Up');
     _arrow(canvas, size, 'Down');
     _arrow(canvas, size, 'Left');
@@ -608,8 +614,8 @@ class _CrossPainter extends CustomPainter {
     final lit = held == direction;
     final paint = Paint()
       ..color = lit
-          ? _scWhite
-          : _hw300.withValues(alpha: enabled ? 0.95 : 0.4);
+          ? _n200
+          : _n300.withValues(alpha: enabled ? 0.95 : 0.4);
 
     final (dx, dy) = switch (direction) {
       'Up' => (0.0, -1.0),
@@ -771,20 +777,20 @@ class _GbPillState extends State<_GbPill> {
               width: 50,
               height: 16,
               decoration: BoxDecoration(
-                // A flat, perfectly horizontal slot — long axis across, never
-                // tilted, the way the mock lays the pair out. Darker than the
-                // mid-purple body so it reads as recessed. A touch of light along
-                // the top as a gradient, so the rounded ends keep a single border
-                // colour.
+                // A flat, perfectly horizontal key — long axis across, never
+                // tilted, the way the mock lays the pair out. Moulded in charcoal
+                // grey like the D-pad, not the body's purple, with a touch of light
+                // along the top as a gradient so the rounded ends keep a single
+                // border colour.
                 gradient: const LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [_hw800, _hw900],
+                  colors: [_n700, _n800],
                 ),
                 borderRadius: BorderRadius.circular(5),
-                border: Border.all(color: _hw950, width: 1),
+                border: Border.all(color: _n950, width: 1),
                 boxShadow: [
-                  BoxShadow(color: _hw950, blurRadius: 0, offset: Offset(0, _down ? 1 : 3)),
+                  BoxShadow(color: _n900, blurRadius: 0, offset: Offset(0, _down ? 1 : 3)),
                 ],
               ),
             ),
@@ -819,7 +825,7 @@ class _SpeakerGrille extends StatelessWidget {
     return const ExcludeSemantics(
       child: SizedBox(
         width: 74,
-        height: 42,
+        height: 60,
         child: CustomPaint(painter: _GrillePainter()),
       ),
     );
@@ -836,7 +842,7 @@ class _GrillePainter extends CustomPainter {
       ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
     const count = 6;
-    const barLen = 16.0; // every slot the same height
+    const barLen = 32.0; // every slot the same height
     const stepX = 11.0; // march to the right
     const stepY = 3.0; // and climb, so the cluster reads as an angled moulding
     for (var i = 0; i < count; i++) {
