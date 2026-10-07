@@ -28,12 +28,25 @@
 /// thumb has slid to, `walk`/`stopWalking` on the way in and out — but the disc
 /// in `dpad.dart` is glass over a floor, and this is a moulded cross on a plastic
 /// body. The shape is the only difference, and it is the whole point here.
+///
+/// ## The LCD is a screen, so it carries a screen's furniture
+///
+/// Two things live *on* the LCD rather than over the whole device: a status strip
+/// along its top (your Gather status, mic, camera, head count — the four things
+/// worth knowing at a glance, drawn in the pixel grammar), and the Select menu, which
+/// opens inside the screen instead of sliding a sheet over the plastic. Both are
+/// the shell's own chrome; the office still renders underneath untouched. The
+/// menu can be worked by thumb or by the hardware — the D-pad moves the highlight,
+/// A chooses, Start backs out — because a handheld whose menu needs a touchscreen
+/// is only half a handheld.
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:gather_client/gather_client.dart' show settableAvailabilities;
 
 import '../src/app_state.dart';
+import '../theme/gather_theme.dart' show availabilityColor, availabilityLabel, GatherThemeContext;
 
 // The shell's own palette, kept deliberately apart from [GatherTokens]: the
 // office inside the screen must stay the app's normal colours, so the retro
@@ -68,10 +81,10 @@ const _n200 = Color(0xFFC9C9D4); // pressed-state highlight detail
 
 // Screen chrome: the near-black of the recessed well around the office.
 const _scBlack = Color(0xFF11131C); // the screen frame
-const _scDark = Color(0xFF191C29); // the menu surface
 const _scMid = Color(0xFF292D40); // a row inside the menu
 const _scBorder = Color(0xFF3C4054); // the thin bright line inside the bezel
 const _scWhite = Color(0xFFF2F1F7); // primary text on the dark
+const _scGlyphOff = Color(0xFF5A6072); // an off/idle status glyph on the LCD — dim, so "on" can glow past it
 
 // Semantic lights.
 const _online = Color(0xFF45D19A); // the one "on" accent — a live control glows it
@@ -99,10 +112,27 @@ const double _dpadSize = 135;
 /// `control_bar.dart`.
 const _emotes = ['👋', '❤️', '🎉', '👍️', '🤣', '👏', '💯', '🔥'];
 
+/// The Select menu's rows, in D-pad order top to bottom. Two of them — the
+/// status choices and the emote strip — are rows the D-pad walks left/right
+/// inside; the other three are single targets. Kept as a count so the cursor can
+/// clamp without the menu and the router disagreeing about how many rows there are.
+const int _menuRowStatus = 0;
+const int _menuRowCamera = 1;
+const int _menuRowEmotes = 2;
+const int _menuRowActivity = 3;
+const int _menuRowSettings = 4;
+const int _menuRowCount = 5;
+
 /// Wraps [child] (the office) in the handheld. [onOpenSettings]/[onOpenActivity]
 /// are how the Select menu leaves for another tab — the shell cannot switch tabs
 /// itself, so the home shell hands it the two it owns.
-class GameboyShell extends StatelessWidget {
+///
+/// Stateful only for the Select menu: whether it is open, which row the cursor is
+/// on, and which emote within the strip. Everything else is still a straight pass
+/// to [AppState]. The menu state lives up here, above both the screen (which draws
+/// the overlay) and the control deck (which, while the menu is open, points the
+/// D-pad and the A/Start keys at it instead of at the office).
+class GameboyShell extends StatefulWidget {
   const GameboyShell({
     super.key,
     required this.state,
@@ -115,6 +145,120 @@ class GameboyShell extends StatelessWidget {
   final Widget child;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenActivity;
+
+  @override
+  State<GameboyShell> createState() => _GameboyShellState();
+}
+
+class _GameboyShellState extends State<GameboyShell> {
+  /// Whether the Select menu is open in the LCD. While true the control deck
+  /// reroutes the hardware: the D-pad drives the cursor, A chooses, Start closes.
+  bool _menuOpen = false;
+
+  /// Which menu row the cursor is on (`_menuRow*`), and the sub-position within
+  /// the two rows that have one: which status choice, and which emote. Both
+  /// survive leaving and re-entering their strip, which is what a thumb expects.
+  int _row = _menuRowStatus;
+  int _status = 0;
+  int _emote = 0;
+
+  void _toggleMenu() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _menuOpen = !_menuOpen;
+      if (_menuOpen) {
+        // Open on the status row with its cursor already on the status you are,
+        // so the first thing the menu offers is a one-press change away from it.
+        _row = _menuRowStatus;
+        final at = settableAvailabilities.indexOf(widget.state.myAvailability ?? 'Active');
+        _status = at < 0 ? 0 : at;
+      }
+    });
+  }
+
+  void _closeMenu() {
+    if (!_menuOpen) return;
+    HapticFeedback.selectionClick();
+    setState(() => _menuOpen = false);
+  }
+
+  /// One D-pad step while the menu is open. Up/Down walk the rows; Left/Right move
+  /// inside the emote strip and are inert on the single-target rows — the same
+  /// clamp-at-the-ends feel the office's walk has when it meets a wall.
+  void _move(String direction) {
+    setState(() {
+      switch (direction) {
+        case 'Up':
+          _row = (_row - 1).clamp(0, _menuRowCount - 1);
+        case 'Down':
+          _row = (_row + 1).clamp(0, _menuRowCount - 1);
+        case 'Left':
+          if (_row == _menuRowStatus) _status = (_status - 1).clamp(0, settableAvailabilities.length - 1);
+          if (_row == _menuRowEmotes) _emote = (_emote - 1).clamp(0, _emotes.length - 1);
+        case 'Right':
+          if (_row == _menuRowStatus) _status = (_status + 1).clamp(0, settableAvailabilities.length - 1);
+          if (_row == _menuRowEmotes) _emote = (_emote + 1).clamp(0, _emotes.length - 1);
+      }
+    });
+    HapticFeedback.selectionClick();
+  }
+
+  /// Puts a refusal in front of the person, the app's one existing way: an action
+  /// returns null on success or a sentence to show. The messenger is captured
+  /// before the await because the press may have moved on by the time it answers.
+  Future<void> _run(Future<String?> Function() action) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final failed = await action();
+    if (failed == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(failed)));
+  }
+
+  // The four menu actions, shared by a thumb tapping a row and the A button
+  // choosing the highlighted one. Camera and a reaction do their thing and close;
+  // Activity and Settings hand back to the home shell, which switches tab (that
+  // tab switch takes the handheld off screen, so there is nothing left to close).
+  void _doStatus(String availability) {
+    _closeMenu();
+    _run(() => widget.state.setAvailability(availability));
+  }
+
+  void _doCamera() {
+    _closeMenu();
+    _run(() => widget.state.setCameraOn(!widget.state.call.cameraOn));
+  }
+
+  void _doReact(String emote) {
+    _closeMenu();
+    _run(() => widget.state.sendEmoteLocalFirst(emote));
+  }
+
+  void _doActivity() {
+    _closeMenu();
+    widget.onOpenActivity();
+  }
+
+  void _doSettings() {
+    _closeMenu();
+    widget.onOpenSettings();
+  }
+
+  /// A press of the A button while the menu is open: do whatever the cursor is on.
+  void _confirm() {
+    switch (_row) {
+      case _menuRowStatus:
+        _doStatus(settableAvailabilities[_status]);
+      case _menuRowCamera:
+        _doCamera();
+      case _menuRowEmotes:
+        _doReact(_emotes[_emote]);
+      case _menuRowActivity:
+        _doActivity();
+      case _menuRowSettings:
+        _doSettings();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -137,16 +281,41 @@ class GameboyShell extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
           child: Column(
             children: [
-              Expanded(child: _Screen(state: state, child: child)),
+              Expanded(
+                child: _Screen(
+                  state: widget.state,
+                  // The Select menu is the screen's overlay, not the device's: it
+                  // is handed in here so it clips to the LCD well and leaves the
+                  // plastic body showing around it.
+                  menu: _menuOpen
+                      ? _GameboyMenu(
+                          state: widget.state,
+                          focusedRow: _row,
+                          focusedStatus: _status,
+                          focusedEmote: _emote,
+                          onStatus: _doStatus,
+                          onCamera: _doCamera,
+                          onReact: _doReact,
+                          onActivity: _doActivity,
+                          onSettings: _doSettings,
+                          onDismiss: _closeMenu,
+                        )
+                      : null,
+                  child: widget.child,
+                ),
+              ),
               // The purple band between the screen and the controls. Measured off
               // the mock: the gap there is ~10% of the screen width, which lands at
               // ~40 logical pixels on a phone — a deliberate breath between the LCD
               // and the D-pad, not the tight 8px of before.
               const SizedBox(height: 40),
               _ControlsDeck(
-                state: state,
-                onOpenSettings: onOpenSettings,
-                onOpenActivity: onOpenActivity,
+                state: widget.state,
+                menuOpen: _menuOpen,
+                onMenuMove: _move,
+                onMenuConfirm: _confirm,
+                onMenuClose: _closeMenu,
+                onMenuToggle: _toggleMenu,
               ),
             ],
           ),
@@ -161,8 +330,8 @@ class GameboyShell extends StatelessWidget {
 /// into the top of a real one. It sits *inside* the dark purple surround, above
 /// the LCD well, so the bezel reads as wider along the top the way the mock's
 /// does. The name is taken *off* the LCD title so it is not printed twice (see
-/// `map_screen.dart`). The head count is the LCD's job, carried on the "N here"
-/// chip inside the screen.
+/// `map_screen.dart`). The head count is the LCD's job, carried on the status
+/// strip inside the screen.
 class _Header extends StatelessWidget {
   const _Header({required this.state});
 
@@ -171,8 +340,7 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Listens on [state] alone: the name comes from the space, which only the
-    // self plane changes, not a walk. The LCD's own head count watches presence
-    // separately, so the two never contend for the same listenable.
+    // self plane changes, not a walk.
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
@@ -227,6 +395,164 @@ class _Header extends StatelessWidget {
   }
 }
 
+/// The LCD's own status strip, along the top of the screen well on the black.
+///
+/// It answers the four things worth knowing without opening anything: your Gather
+/// status (Active, Busy, Away), whether the mic is live, whether the camera is
+/// live, and how many people are in the room. The status is a coloured dot and its
+/// name, the same value the rest of the app draws (`availabilityColor` /
+/// `availabilityLabel`) but re-cut in the pixel face; the mic and camera are glyphs
+/// that glow the live-green when on and sit dim when off; the head count is the
+/// same pill the normal app bar carried. Drawn here rather than in the map's app
+/// bar (which stands down in Gameboy mode) so the whole strip is one pixel-styled
+/// thing the shell owns — and the status can be changed from the Select menu, so
+/// what this shows is a live readout of a setting one press away.
+class _LcdStatusBar extends StatelessWidget {
+  const _LcdStatusBar({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) {
+        final call = state.call;
+        // "Here" counts the office, me included — the same sum the map's own chip
+        // makes, kept in step by using the same two fields rather than a second
+        // getter that could drift.
+        final present = state.peopleOnMap.length + (state.mePerson == null ? 0 : 1);
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(3, 1, 3, 1),
+          child: Row(
+            children: [
+              _StatusReadout(availability: state.myAvailability ?? 'Active'),
+              const SizedBox(width: 12),
+              _StatusGlyph(
+                icon: call.micOn ? Icons.mic : Icons.mic_off,
+                colour: call.micOn ? _online : _scGlyphOff,
+                label: call.micOn ? 'Microphone on' : 'Microphone off',
+              ),
+              const SizedBox(width: 11),
+              _StatusGlyph(
+                icon: call.cameraOn ? Icons.videocam_rounded : Icons.videocam_off_rounded,
+                colour: call.cameraOn ? _online : _scGlyphOff,
+                label: call.cameraOn ? 'Camera on' : 'Camera off',
+              ),
+              const Spacer(),
+              _HeadCountChip(present: present),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Your Gather status on the LCD: a dot in the status's own colour and its name
+/// in the pixel face. The colour and the wording are the app's — `availabilityColor`
+/// and `availabilityLabel`, so nobody has to learn a second vocabulary — only the
+/// type is themed.
+class _StatusReadout extends StatelessWidget {
+  const _StatusReadout({required this.availability});
+
+  final String availability;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Status: ${availabilityLabel(availability)}',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(
+              color: availabilityColor(context.tokens, availability),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 7),
+          Text(
+            availabilityLabel(availability),
+            style: const TextStyle(
+              fontFamily: _pixelFont,
+              fontWeight: FontWeight.w700,
+              color: _scWhite,
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One status glyph: an icon that carries its meaning in its colour, with the
+/// meaning spoken for a screen reader so the colour is not the only channel.
+class _StatusGlyph extends StatelessWidget {
+  const _StatusGlyph({required this.icon, required this.colour, required this.label});
+
+  final IconData icon;
+  final Color colour;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: label,
+      child: Icon(icon, size: 18, color: colour),
+    );
+  }
+}
+
+/// The head count, re-cut for the LCD: the same "N here" pill the map's app bar
+/// carried, in the pixel face on the screen's dark. The dot glows the live-green
+/// when anyone is in, so an empty room reads at a glance too.
+class _HeadCountChip extends StatelessWidget {
+  const _HeadCountChip({required this.present});
+
+  final int present;
+
+  @override
+  Widget build(BuildContext context) {
+    final here = present > 0;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: _scMid,
+        borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: _scBorder, width: 1.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: here ? _online : _scGlyphOff,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '$present here',
+            style: const TextStyle(
+              fontFamily: _pixelFont,
+              fontWeight: FontWeight.w700,
+              color: _scWhite,
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// The recessed screen: a raised purple lip that carries the header along its
 /// top, a near-black well with a thin bright inner line, and the office clipped
 /// inside it. The bezel is wider at the top — the header (room name + power light)
@@ -234,11 +560,19 @@ class _Header extends StatelessWidget {
 /// LCD, the way the mock draws it. The bottom padding the shell adds for its
 /// vanished nav rail is stripped on the well, so the map's own legend sits snug to
 /// the screen's edge rather than floating a rail's height above it.
+///
+/// Inside the well, the office is topped by the [_LcdStatusBar] and may be covered
+/// by the Select [menu] — both are the screen's furniture and so clip to it,
+/// leaving the plastic body around the screen untouched.
 class _Screen extends StatelessWidget {
-  const _Screen({required this.state, required this.child});
+  const _Screen({required this.state, required this.child, this.menu});
 
   final AppState state;
   final Widget child;
+
+  /// The Select menu overlay, or null when it is closed. Drawn over the office,
+  /// inside the LCD.
+  final Widget? menu;
 
   @override
   Widget build(BuildContext context) {
@@ -275,13 +609,38 @@ class _Screen extends StatelessWidget {
                 borderRadius: BorderRadius.circular(9),
                 border: Border.all(color: _scBorder, width: 1.5),
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: MediaQuery.removePadding(
-                  context: context,
-                  removeBottom: true,
-                  child: child,
-                ),
+              child: Column(
+                children: [
+                  _LcdStatusBar(state: state),
+                  const SizedBox(height: 6),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: MediaQuery.removePadding(
+                              context: context,
+                              removeBottom: true,
+                              child: child,
+                            ),
+                          ),
+                          // The menu rides over the office, inside the LCD. An
+                          // AnimatedSwitcher so it fades in and out rather than
+                          // snapping — the one soft touch on a hard-edged face,
+                          // bought because an instant full-screen flip of the LCD
+                          // reads as a glitch.
+                          Positioned.fill(
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 160),
+                              child: menu ?? const SizedBox.shrink(key: ValueKey('gb-menu-closed')),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -295,16 +654,27 @@ class _Screen extends StatelessWidget {
 /// cart buttons show their live state, and on [AppState.positions] so the D-pad
 /// dims exactly when there is nowhere to walk — the same two listenables the
 /// normal dock splits its controls across.
+///
+/// While the Select menu is open ([menuOpen]) the deck quietly repoints the
+/// hardware at it: the D-pad becomes the cursor, A chooses, Start backs out, and B
+/// goes inert. The menu owns the meaning of the keys for as long as it is up, the
+/// way a real handheld's buttons mean different things on a menu than in a game.
 class _ControlsDeck extends StatelessWidget {
   const _ControlsDeck({
     required this.state,
-    required this.onOpenSettings,
-    required this.onOpenActivity,
+    required this.menuOpen,
+    required this.onMenuMove,
+    required this.onMenuConfirm,
+    required this.onMenuClose,
+    required this.onMenuToggle,
   });
 
   final AppState state;
-  final VoidCallback onOpenSettings;
-  final VoidCallback onOpenActivity;
+  final bool menuOpen;
+  final void Function(String direction) onMenuMove;
+  final VoidCallback onMenuConfirm;
+  final VoidCallback onMenuClose;
+  final VoidCallback onMenuToggle;
 
   /// Puts a refusal in front of the person, the app's one existing way: an action
   /// returns null on success or a sentence to show. The messenger is captured
@@ -330,37 +700,6 @@ class _ControlsDeck extends StatelessWidget {
     }
   }
 
-  void _openMenu(BuildContext context) {
-    HapticFeedback.selectionClick();
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: _scDark,
-      showDragHandle: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
-      ),
-      builder: (sheetContext) => _GameboyMenu(
-        state: state,
-        onCamera: () async {
-          Navigator.of(sheetContext).pop();
-          await _run(context, () => state.setCameraOn(!state.call.cameraOn));
-        },
-        onReact: (emote) async {
-          Navigator.of(sheetContext).pop();
-          await _run(context, () => state.sendEmoteLocalFirst(emote));
-        },
-        onSettings: () {
-          Navigator.of(sheetContext).pop();
-          onOpenSettings();
-        },
-        onActivity: () {
-          Navigator.of(sheetContext).pop();
-          onOpenActivity();
-        },
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -379,8 +718,10 @@ class _ControlsDeck extends StatelessWidget {
               height: _dpadSize,
               child: Stack(
                 children: [
-                  // D-pad, bottom-left. Dimmed, not removed, when there is nowhere
-                  // to walk — a wall is found by walking into it, not a dead control.
+                  // D-pad, bottom-left. In the office it walks and dims when there
+                  // is nowhere to go; while the menu is up it drives the cursor
+                  // instead and is always live, because there is always a row to
+                  // move to.
                   Positioned(
                     left: 2,
                     top: 0,
@@ -388,36 +729,40 @@ class _ControlsDeck extends StatelessWidget {
                       listenable: state.positions,
                       builder: (context, _) => _GbDpad(
                         key: const Key('gb-dpad'),
-                        enabled: state.canWalk,
-                        onPress: state.walk,
-                        onRelease: state.stopWalking,
+                        enabled: menuOpen || state.canWalk,
+                        onPress: menuOpen ? onMenuMove : state.walk,
+                        onRelease: menuOpen ? () {} : state.stopWalking,
                       ),
                     ),
                   ),
-                  // A, raised and to the right: the cart. Lit while it is latched on.
+                  // A, raised and to the right: the cart, or — in the menu — the
+                  // choose key. Lit while the cart is latched on; plain in the menu.
                   Positioned(
                     right: 18,
                     top: 30,
                     child: _GbRoundButton(
                       label: 'A',
                       size: 64,
-                      lit: state.boost,
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        state.boost = !state.boost;
-                      },
+                      lit: !menuOpen && state.boost,
+                      onTap: menuOpen
+                          ? onMenuConfirm
+                          : () {
+                              HapticFeedback.selectionClick();
+                              state.boost = !state.boost;
+                            },
                     ),
                   ),
                   // B, below and left of A: mute. Lit means the mic is live, so the
-                  // button glows when you are the one being heard.
+                  // button glows when you are the one being heard. Inert in the
+                  // menu — it has no job there, and a stray mute mid-menu surprises.
                   Positioned(
                     right: 98,
                     top: 66,
                     child: _GbRoundButton(
                       label: 'B',
                       size: 64,
-                      lit: call.micOn,
-                      onTap: () => _run(context, () => state.setMicOn(!call.micOn)),
+                      lit: !menuOpen && call.micOn,
+                      onTap: menuOpen ? null : () => _run(context, () => state.setMicOn(!call.micOn)),
                     ),
                   ),
                 ],
@@ -440,9 +785,13 @@ class _ControlsDeck extends StatelessWidget {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          _GbPill(label: 'SELECT', onTap: () => _openMenu(context)),
+                          // Select opens the menu, and closes it again — a thumb
+                          // that opened it reaches for the same key to put it away.
+                          _GbPill(label: 'SELECT', onTap: onMenuToggle),
                           const SizedBox(width: 22),
-                          _GbPill(label: 'START', onTap: () => _goHome(context)),
+                          // Start goes home in the office, and backs out of the menu
+                          // while it is up.
+                          _GbPill(label: 'START', onTap: menuOpen ? onMenuClose : () => _goHome(context)),
                         ],
                       ),
                     ),
@@ -644,7 +993,8 @@ class _CrossPainter extends CustomPainter {
 
 /// One round button, A or B. Pressed is a push down into its own shadow rather
 /// than a colour change; lit rings the button in the live-green accent for a
-/// control that is currently *on*.
+/// control that is currently *on*. A null [onTap] is the button's disabled state —
+/// it still draws, so the face stays where a thumb expects it, but does nothing.
 class _GbRoundButton extends StatefulWidget {
   const _GbRoundButton({
     required this.label,
@@ -656,7 +1006,7 @@ class _GbRoundButton extends StatefulWidget {
   final String label;
   final double size;
   final bool lit;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   State<_GbRoundButton> createState() => _GbRoundButtonState();
@@ -678,9 +1028,9 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
       toggled: lit,
       label: widget.label,
       child: GestureDetector(
-        onTapDown: (_) => _set(true),
-        onTapUp: (_) => _set(false),
-        onTapCancel: () => _set(false),
+        onTapDown: widget.onTap == null ? null : (_) => _set(true),
+        onTapUp: widget.onTap == null ? null : (_) => _set(false),
+        onTapCancel: widget.onTap == null ? null : () => _set(false),
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 90),
@@ -864,76 +1214,239 @@ class _GrillePainter extends CustomPainter {
   bool shouldRepaint(_GrillePainter old) => false;
 }
 
-/// The Select menu: the controls that are not one of the four physical buttons,
-/// one tap each. Camera and the eight reactions do their thing and close; Settings
-/// and Activity hand back to the home shell, which switches tab.
+/// The Select menu, drawn inside the LCD: the controls that are not one of the
+/// four physical buttons, worked by thumb or by the hardware. A scrim dims the
+/// office behind it (tap it to close), and the rows carry a cursor the D-pad
+/// moves — [focusedRow] is which row is lit, [focusedEmote] which emote within the
+/// strip. Camera and the eight reactions do their thing and close; Settings and
+/// Activity hand back to the home shell, which switches tab.
 class _GameboyMenu extends StatelessWidget {
   const _GameboyMenu({
     required this.state,
+    required this.focusedRow,
+    required this.focusedStatus,
+    required this.focusedEmote,
+    required this.onStatus,
     required this.onCamera,
     required this.onReact,
-    required this.onSettings,
     required this.onActivity,
+    required this.onSettings,
+    required this.onDismiss,
   });
 
   final AppState state;
+  final int focusedRow;
+  final int focusedStatus;
+  final int focusedEmote;
+  final ValueChanged<String> onStatus;
   final VoidCallback onCamera;
   final ValueChanged<String> onReact;
-  final VoidCallback onSettings;
   final VoidCallback onActivity;
+  final VoidCallback onSettings;
+  final VoidCallback onDismiss;
 
   @override
   Widget build(BuildContext context) {
     final cameraOn = state.call.cameraOn;
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _MenuRow(
-              icon: cameraOn ? Icons.videocam_rounded : Icons.videocam_off_rounded,
-              lit: cameraOn,
-              title: cameraOn ? 'Turn the camera off' : 'Turn the camera on',
-              onTap: onCamera,
+    return Stack(
+      key: const ValueKey('gb-menu-open'),
+      children: [
+        // The scrim: the office dimmed, not hidden, so the menu reads as laid over
+        // the room rather than a different screen. Tapping it is the touch way out.
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: onDismiss,
+            child: const ColoredBox(color: Color(0xD011131C)),
+          ),
+        ),
+        Positioned.fill(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _StatusStrip(
+                  current: state.myAvailability ?? 'Active',
+                  focused: focusedRow == _menuRowStatus,
+                  focusedStatus: focusedStatus,
+                  onStatus: onStatus,
+                ),
+                const SizedBox(height: 8),
+                _MenuRow(
+                  icon: cameraOn ? Icons.videocam_rounded : Icons.videocam_off_rounded,
+                  lit: cameraOn,
+                  focused: focusedRow == _menuRowCamera,
+                  title: cameraOn ? 'Turn the camera off' : 'Turn the camera on',
+                  onTap: onCamera,
+                ),
+                const SizedBox(height: 8),
+                _EmoteStrip(
+                  focused: focusedRow == _menuRowEmotes,
+                  focusedEmote: focusedEmote,
+                  onReact: onReact,
+                ),
+                const SizedBox(height: 8),
+                _MenuRow(
+                  icon: Icons.notifications_rounded,
+                  title: 'Activity',
+                  focused: focusedRow == _menuRowActivity,
+                  onTap: onActivity,
+                ),
+                const SizedBox(height: 8),
+                _MenuRow(
+                  icon: Icons.settings_rounded,
+                  title: 'Settings',
+                  focused: focusedRow == _menuRowSettings,
+                  onTap: onSettings,
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            // The eight reactions, divided across the row like the dock's tray.
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-              decoration: BoxDecoration(
-                color: _scMid,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: _scBorder, width: 1.5),
-              ),
-              child: Row(
-                children: [
-                  for (final emote in _emotes)
-                    Expanded(
-                      child: Semantics(
-                        button: true,
-                        label: 'Send $emote',
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(6),
-                          onTap: () => onReact(emote),
-                          child: SizedBox(
-                            height: 40,
-                            child: Center(child: Text(emote, style: const TextStyle(fontSize: 22))),
-                          ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The three Gather statuses as a row, each a dot in its own colour over its name.
+/// The one you are on wears a filled tint (the app's selected-state recipe); the
+/// cursor rings whichever the D-pad is over, so A sets the obvious one. A thumb can
+/// tap any of them directly. This is the menu's only way to *change* status — the
+/// strip on the LCD above only reports it.
+class _StatusStrip extends StatelessWidget {
+  const _StatusStrip({
+    required this.current,
+    required this.focused,
+    required this.focusedStatus,
+    required this.onStatus,
+  });
+
+  /// The status you are, so the matching cell reads as selected.
+  final String current;
+  final bool focused;
+  final int focusedStatus;
+  final ValueChanged<String> onStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+      decoration: BoxDecoration(
+        color: _scMid,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: focused ? _online : _scBorder, width: focused ? 2 : 1.5),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < settableAvailabilities.length; i++)
+            Expanded(
+              child: Builder(builder: (context) {
+                final availability = settableAvailabilities[i];
+                final colour = availabilityColor(t, availability);
+                final selected = availability == current;
+                final onCursor = focused && i == focusedStatus;
+                return Semantics(
+                  button: true,
+                  selected: selected,
+                  label: 'Set status to ${availabilityLabel(availability)}',
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () => onStatus(availability),
+                    child: Container(
+                      height: 44,
+                      margin: const EdgeInsets.symmetric(horizontal: 2),
+                      decoration: BoxDecoration(
+                        // The one you are wears a wash of its own colour; the cursor
+                        // rings whichever cell it is over.
+                        color: selected ? colour.withValues(alpha: 0.16) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: onCursor ? _online : Colors.transparent,
+                          width: 2,
                         ),
                       ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(color: colour, shape: BoxShape.circle),
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            availabilityLabel(availability),
+                            style: const TextStyle(
+                              fontFamily: _pixelFont,
+                              fontWeight: FontWeight.w700,
+                              color: _scWhite,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                ],
+                  ),
+                );
+              }),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The eight reactions, divided across the row like the dock's tray. The strip
+/// lights its border when the cursor is on it, and rings the one emote the cursor
+/// sits on, so A sends the obvious one; a thumb can still tap any of them.
+class _EmoteStrip extends StatelessWidget {
+  const _EmoteStrip({
+    required this.focused,
+    required this.focusedEmote,
+    required this.onReact,
+  });
+
+  final bool focused;
+  final int focusedEmote;
+  final ValueChanged<String> onReact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+      decoration: BoxDecoration(
+        color: _scMid,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: focused ? _online : _scBorder, width: focused ? 2 : 1.5),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < _emotes.length; i++)
+            Expanded(
+              child: Semantics(
+                button: true,
+                label: 'Send ${_emotes[i]}',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () => onReact(_emotes[i]),
+                  child: Container(
+                    height: 40,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(6),
+                      // The cursor's ring, only while the strip is the focused row.
+                      border: Border.all(
+                        color: focused && i == focusedEmote ? _online : Colors.transparent,
+                        width: 2,
+                      ),
+                    ),
+                    child: Center(child: Text(_emotes[i], style: const TextStyle(fontSize: 22))),
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 8),
-            _MenuRow(icon: Icons.notifications_rounded, title: 'Activity', onTap: onActivity),
-            const SizedBox(height: 8),
-            _MenuRow(icon: Icons.settings_rounded, title: 'Settings', onTap: onSettings),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -945,12 +1458,18 @@ class _MenuRow extends StatelessWidget {
     required this.title,
     required this.onTap,
     this.lit = false,
+    this.focused = false,
   });
 
   final IconData icon;
   final String title;
   final VoidCallback onTap;
+
+  /// The control is currently on (camera live) — tints it the live-green.
   final bool lit;
+
+  /// The D-pad cursor is on this row — rings it so A's target is unmistakable.
+  final bool focused;
 
   @override
   Widget build(BuildContext context) {
@@ -964,7 +1483,8 @@ class _MenuRow extends StatelessWidget {
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: _scBorder, width: 1.5),
+            // A bright ring when the cursor is here, the bezel line otherwise.
+            border: Border.all(color: focused ? _online : _scBorder, width: focused ? 2 : 1.5),
           ),
           padding: const EdgeInsets.all(16),
           child: Row(

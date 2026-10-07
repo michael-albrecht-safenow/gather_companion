@@ -227,6 +227,9 @@ void main() {
 
       await tester.tap(find.text('SELECT'));
       await tester.pumpAndSettle();
+      // The menu scrolls inside the LCD now, so the bottom row can sit below the
+      // fold on a short screen — bring it up before choosing it.
+      await tester.ensureVisible(find.text('Settings'));
       await tester.tap(find.text('Settings'));
       await tester.pumpAndSettle();
 
@@ -243,6 +246,123 @@ void main() {
       await tester.tap(find.text('START'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('the LCD status bar', () {
+    // Scoped to the shell so an offstage tab or the map's own chrome cannot be
+    // mistaken for the HUD glyph.
+    Finder inShell(Finder matching) =>
+        find.descendant(of: find.byType(GameboyShell), matching: matching);
+
+    testWidgets('carries status, mic and camera at a glance', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      // Your Gather status by name, with mic and camera reading off — the three
+      // always on the screen regardless of a call.
+      expect(inShell(find.text('Active')), findsOneWidget);
+      expect(inShell(find.byIcon(Icons.mic_off)), findsOneWidget);
+      expect(inShell(find.byIcon(Icons.videocam_off_rounded)), findsOneWidget);
+    });
+
+    testWidgets('the head count lives on the LCD, not a doubled app bar', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      // The map's own app bar stands down in Gameboy mode, so the only "N here" is
+      // the one the shell draws on the screen.
+      expect(
+        find.descendant(of: find.byType(MapScreen), matching: find.byType(AppBar)),
+        findsNothing,
+        reason: 'the map app bar is gone in Gameboy mode',
+      );
+      expect(inShell(find.textContaining('here')), findsOneWidget);
+    });
+  });
+
+  group('the Select menu on the LCD', () {
+    testWidgets('opens inside the screen and the D-pad drives it, not the avatar', (tester) async {
+      final state = configure(_SpyState())
+        ..setGameboyMode(true)
+        ..debugCanWalk = true;
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      await tester.tap(find.text('SELECT'));
+      await tester.pumpAndSettle();
+      expect(find.text('Activity'), findsOneWidget, reason: 'the menu is open in the LCD');
+
+      // With the menu up the cross moves the cursor — it must not also walk.
+      final pad = tester.getRect(find.byKey(const Key('gb-dpad')));
+      final gesture = await tester.startGesture(Offset(pad.center.dx, pad.top + pad.height * 0.12));
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+      expect(state.walked, isEmpty, reason: 'the D-pad moved the cursor, not the avatar');
+    });
+
+    testWidgets('A chooses the highlighted row and closes the menu', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      await tester.tap(find.text('SELECT'));
+      await tester.pumpAndSettle();
+      expect(find.text('Activity'), findsOneWidget);
+
+      // The cursor starts on the status row; A chooses the highlighted status. With
+      // no live roster behind it the set refuses with a sentence rather than
+      // throwing, and the menu closes behind it.
+      await tester.tap(find.text('A'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Activity'), findsNothing, reason: 'the menu closed after choosing');
+    });
+
+    testWidgets('offers the Gather statuses to change to', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      await tester.tap(find.text('SELECT'));
+      await tester.pumpAndSettle();
+
+      // The three settable statuses are offered as a row to pick from. 'Busy' and
+      // 'Away' live only in the menu (the LCD strip reads 'Active'), so finding them
+      // is finding the picker.
+      expect(find.text('Busy'), findsOneWidget);
+      expect(find.text('Away'), findsOneWidget);
+
+      // Choosing one is wired through to setAvailability and closes the menu — it
+      // refuses with a sentence here rather than throwing, there being no roster.
+      await tester.tap(find.text('Busy'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Busy'), findsNothing, reason: 'the menu closed after choosing a status');
+    });
+
+    testWidgets('Start backs out of the menu without leaving the office', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      await tester.tap(find.text('SELECT'));
+      await tester.pumpAndSettle();
+      expect(find.text('Activity'), findsOneWidget);
+
+      await tester.tap(find.text('START'));
+      await tester.pumpAndSettle();
+      expect(find.text('Activity'), findsNothing, reason: 'Start closed the menu');
+      expect(find.byType(GameboyShell), findsOneWidget, reason: 'still in the office');
     });
   });
 }

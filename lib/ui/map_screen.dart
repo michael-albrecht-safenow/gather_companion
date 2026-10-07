@@ -90,16 +90,21 @@ class _MapScreenState extends State<MapScreen> {
       // Where the space name and the head count live: the map is the screen, and a
       // strip above it repeating what it already shows was costing the map a fifth
       // of a phone.
-      appBar: AppBar(
+      //
+      // In Gameboy mode the whole bar stands down: the handheld draws its own pixel
+      // status strip inside the LCD (space name on the shell header, and a
+      // conn/mic/cam/head-count HUD on the screen — see `gameboy_shell.dart`), so an
+      // app-themed bar here would both double the head count and waste a strip of the
+      // LCD. The follower pill is the one thing not carried over; it is rare and can
+      // fold into the HUD later.
+      appBar: widget.state.gameboyMode
+          ? null
+          : AppBar(
         backgroundColor: t.background,
         // Default title spacing, like the other two tabs: the three app bars sit
         // in one shell, and a title that shifts sideways as you change tab reads
         // as a layout bug rather than a choice.
-        //
-        // In Gameboy mode the name moves up onto the handheld's own header (see
-        // `gameboy_shell.dart`), so it is dropped here to avoid printing twice —
-        // the head-count chip in `actions` stays, which is the LCD's own job.
-        title: widget.state.gameboyMode ? null : _Where(space: widget.state.spaceName),
+        title: _Where(space: widget.state.spaceName),
         actions: [
           // The follower count leads and the head count anchors the corner, so
           // the pill that is always there never moves when the other arrives.
