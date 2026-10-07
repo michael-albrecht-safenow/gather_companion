@@ -27,6 +27,7 @@ void main() {
     String? floorId,
     num? x,
     num? y,
+    PersonStatus? status,
   }) =>
       RosterRow(
         id: id,
@@ -38,6 +39,7 @@ void main() {
         floorId: floorId,
         x: x,
         y: y,
+        status: status,
       );
 
   Roster rosterOf(List<RosterRow> rows) => Roster(selfId: kSelfId, rows: rows);
@@ -166,6 +168,81 @@ void main() {
         ]));
       addTearDown(state.dispose);
       expect(state.meetings, isEmpty);
+    });
+  });
+
+  group('directoryChanges', () {
+    // The tab listens to this ticker, not to every roster, so it must fire for the
+    // fields Dial renders off a row — and stay silent on the footsteps it does not.
+    int ticksOf(void Function(AppState) drive) {
+      final state = AppState()..debugMap = schematicOffice();
+      addTearDown(state.dispose);
+      var ticks = 0;
+      state.directoryChanges.addListener(() => ticks++);
+      drive(state);
+      return ticks;
+    }
+
+    PersonStatus status(String text) => PersonStatus(text: text, type: 'Custom');
+
+    test('wakes when a status line changes, presence unmoved', () {
+      final ticks = ticksOf((state) {
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada', x: 1, y: 1, status: status('Heads down')),
+        ]));
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada', x: 1, y: 1, status: status('Back at 3')),
+        ]));
+      });
+      expect(ticks, 2, reason: 'first roster, then the status edit');
+    });
+
+    test('wakes when a row gains a position to warp to', () {
+      final ticks = ticksOf((state) {
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada'), // unplaced — not reachable
+        ]));
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada', x: 1, y: 1), // now placed
+        ]));
+      });
+      expect(ticks, 2, reason: 'reachability flipped, so the Warp button must repaint');
+    });
+
+    test('wakes when a clustered member crosses into another room', () {
+      // Lounge is x6..13, y9..12 on the schematic office.
+      final ticks = ticksOf((state) {
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada', clusterId: 'c1', x: 0, y: 0), // open floor
+          row('b', name: 'Bob', clusterId: 'c1', x: 1, y: 0),
+        ]));
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada', clusterId: 'c1', x: 8, y: 10), // into the Lounge
+          row('b', name: 'Bob', clusterId: 'c1', x: 9, y: 11),
+        ]));
+      });
+      expect(ticks, 2, reason: 'the meeting is now named by a room, so its card changes');
+    });
+
+    test('sleeps through a footstep that moves nothing it renders', () {
+      final ticks = ticksOf((state) {
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada', x: 1, y: 1),
+        ]));
+        // Same person, a step over — no cluster, same room-less open floor.
+        state.debugApplyRoster(rosterOf([
+          const RosterRow(id: kSelfId, name: 'You'),
+          row('a', name: 'Ada', x: 2, y: 1),
+        ]));
+      });
+      expect(ticks, 1, reason: 'only the first roster; the footstep must not repaint the tab');
     });
   });
 

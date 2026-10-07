@@ -683,13 +683,39 @@ class AppState extends ChangeNotifier {
   /// compared to the last — so it is fine to run on every roster.
   void _noteDirectory(Roster roster) {
     final parts = <String>[
-      for (final row in roster.rows)
-        '${row.id}:${row.isPresent ? 1 : 0}:${row.availability ?? ''}:${row.clusterId ?? ''}',
+      for (final row in roster.rows) _directoryDigestPart(row),
     ]..sort();
     final digest = parts.join('|');
     if (digest == _lastDirectoryDigest) return;
     _lastDirectoryDigest = digest;
     _directoryChanges.tick();
+  }
+
+  /// One row's contribution to the directory digest: every projected field the Dial
+  /// tab draws off it, and nothing a footstep moves.
+  ///
+  /// Presence, availability and `clusterId` are the sort and the dots. The rest is
+  /// what [directory] and [meetings] *derive* and render: whether there is a finite
+  /// position to warp to ([Contact.isReachable]), the floor that decides a warp is
+  /// reachable, the status line under the name, and — for a row in a cluster — the
+  /// *named room* its tile falls in, the input to [Meeting.roomName]. The room, not
+  /// the raw tile, on purpose: a step inside one room leaves the name unchanged and
+  /// the tab asleep, which is the whole point of this being its own listenable.
+  String _directoryDigestPart(RosterRow row) {
+    final x = row.x, y = row.y;
+    final placed = x != null && y != null && x.isFinite && y.isFinite;
+    // The room label is a meeting's, so only a clustered member can move it; resolving
+    // it for everyone would walk the room list on every roster for no rendered change.
+    var room = '';
+    if (placed && row.clusterId != null) {
+      final map = debugMap ?? _collector?.mapFor(row.floorId);
+      if (map != null) {
+        room = _innermostNamedRoomAt(map, x.round(), y.round())?.name ?? '';
+      }
+    }
+    final status = row.status;
+    return '${row.id}:${row.isPresent ? 1 : 0}:${row.availability ?? ''}:${row.clusterId ?? ''}'
+        ':${placed ? 1 : 0}:${row.floorId ?? ''}:$room:${status?.text ?? ''}';
   }
 
   /// Whether I am in a call: a conversation Gather has put me in, or anybody the
@@ -2356,6 +2382,7 @@ class AppState extends ChangeNotifier {
     _positions.tick();
     // Same order as the real listener, and not a shortened version of it: a seam
     // that skips a step is a seam that passes while the app does the wrong thing.
+    _noteDirectory(roster);
     _noteCluster(roster);
     _noteSpeakers(roster);
     _onFold(_tracker.applyRoster(roster));
@@ -2420,6 +2447,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _positions.dispose();
+    _directoryChanges.dispose();
     unawaited(_notices.close());
     unawaited(_followMe.close());
     // A face resolved a millisecond before the app closed would otherwise
