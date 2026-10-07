@@ -283,6 +283,36 @@ void main() {
       );
       expect(inShell(find.textContaining('here')), findsOneWidget);
     });
+
+    testWidgets('carries the follower count onto the LCD, not off with the app bar', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      // Someone is following you — the app's whole reason. In Gameboy mode the map
+      // app bar that used to carry this is gone, so the HUD has to.
+      state.debugApplySnapshot(PresenceSnapshot(
+        self: const SelfState(spaceId: 'space-1', spaceName: 'HQ'),
+        players: const [PlayerRef(id: 'p1', name: 'Mara', isFollowingMe: true)],
+        health: const CollectorHealth(logTail: true, cdp: true),
+        at: DateTime(2026, 8, 4, 12, 30),
+      ));
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      // The eye glyph and the count, spoken as the same sentence the app bar used.
+      expect(inShell(find.byIcon(Icons.visibility)), findsOneWidget);
+      expect(inShell(find.bySemanticsLabel('One person is following you')), findsOneWidget);
+    });
+
+    testWidgets('shows no follower chip when nobody is following', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      // The default snapshot has an empty roster, so the chip stays away — it leads
+      // only when there is a follower, the way the app bar's pill did.
+      expect(inShell(find.byIcon(Icons.visibility)), findsNothing);
+    });
   });
 
   group('the Select menu on the LCD', () {
@@ -363,6 +393,37 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Activity'), findsNothing, reason: 'Start closed the menu');
       expect(find.byType(GameboyShell), findsOneWidget, reason: 'still in the office');
+    });
+
+    testWidgets('a D-pad walk down scrolls the lit row into the LCD so A cannot fire a hidden one', (tester) async {
+      // Settings sits below the fold of the LCD menu at the default test size —
+      // the sibling 'Start closes the menu' path reaches it only via the tester's
+      // own ensureVisible. Here the app has to do the scrolling itself.
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      await tester.tap(find.text('SELECT'));
+      await tester.pumpAndSettle();
+
+      // Walk the cursor down to the last row (Settings). Pressing the bottom of the
+      // cross is a Down; four of them land on Settings from the status row.
+      final pad = tester.getRect(find.byKey(const Key('gb-dpad')));
+      final down = Offset(pad.center.dx, pad.top + pad.height * 0.88);
+      for (var i = 0; i < 4; i++) {
+        final g = await tester.startGesture(down);
+        await tester.pump();
+        await g.up();
+        await tester.pumpAndSettle();
+      }
+
+      // The lit row is now in the well and hit-testable where it is drawn — tapping
+      // it reaches the real action rather than missing an off-screen row. Without
+      // the ensureVisible this tap would miss and SettingsScreen would never open.
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SettingsScreen), findsOneWidget, reason: 'the scrolled-in row was the real, hittable one');
     });
   });
 }

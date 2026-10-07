@@ -162,6 +162,28 @@ class _GameboyShellState extends State<GameboyShell> {
   int _status = 0;
   int _emote = 0;
 
+  /// One key per menu row (`_menuRow*`). The LCD is short enough that Settings can
+  /// sit below the fold, so a D-pad move has to scroll the lit row back into the
+  /// well — otherwise the highlight walks off-screen and A fires a row nobody can
+  /// see. The keys hang on the rows in [_GameboyMenu]; [_revealRow] rides them.
+  final List<GlobalKey> _rowKeys = List.generate(_menuRowCount, (_) => GlobalKey());
+
+  /// Scroll the focused row into view after a vertical move. Every row is built
+  /// eagerly inside the menu's scroll view, so the context is already there; the
+  /// post-frame hop just waits for the highlight's setState to lay out first.
+  void _revealRow() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = _rowKeys[_row].currentContext;
+      if (context == null) return;
+      Scrollable.ensureVisible(
+        context,
+        alignment: 0.5,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
   void _toggleMenu() {
     HapticFeedback.selectionClick();
     setState(() {
@@ -190,8 +212,10 @@ class _GameboyShellState extends State<GameboyShell> {
       switch (direction) {
         case 'Up':
           _row = (_row - 1).clamp(0, _menuRowCount - 1);
+          _revealRow();
         case 'Down':
           _row = (_row + 1).clamp(0, _menuRowCount - 1);
+          _revealRow();
         case 'Left':
           if (_row == _menuRowStatus) _status = (_status - 1).clamp(0, settableAvailabilities.length - 1);
           if (_row == _menuRowEmotes) _emote = (_emote - 1).clamp(0, _emotes.length - 1);
@@ -290,6 +314,7 @@ class _GameboyShellState extends State<GameboyShell> {
                   menu: _menuOpen
                       ? _GameboyMenu(
                           state: widget.state,
+                          rowKeys: _rowKeys,
                           focusedRow: _row,
                           focusedStatus: _status,
                           focusedEmote: _emote,
@@ -441,6 +466,14 @@ class _LcdStatusBar extends StatelessWidget {
                 label: call.cameraOn ? 'Camera on' : 'Camera off',
               ),
               const Spacer(),
+              // The follower count, carried onto the LCD so Gameboy mode keeps the
+              // app's core signal — somebody is watching you move. Shown only when
+              // there is one, the way the map's app bar leads with it, and set
+              // before the head count so the pill that is always there never shifts.
+              if (state.followers.isNotEmpty) ...[
+                _FollowerChip(count: state.followers.length),
+                const SizedBox(width: 8),
+              ],
               _HeadCountChip(present: present),
             ],
           ),
@@ -548,6 +581,49 @@ class _HeadCountChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The follower count, re-cut for the LCD: the eye the map's app bar spoke as a
+/// tinted pill, redrawn in the pixel face on the screen's dark so Gameboy mode
+/// still shows that someone is following you. Lit green like the live glyphs,
+/// because a follower is always someone currently watching.
+class _FollowerChip extends StatelessWidget {
+  const _FollowerChip({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: count == 1 ? 'One person is following you' : '$count people are following you',
+      child: ExcludeSemantics(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: _scMid,
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(color: _scBorder, width: 1.5),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.visibility, size: 13, color: _online),
+              const SizedBox(width: 6),
+              Text(
+                '$count',
+                style: const TextStyle(
+                  fontFamily: _pixelFont,
+                  fontWeight: FontWeight.w700,
+                  color: _scWhite,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1223,6 +1299,7 @@ class _GrillePainter extends CustomPainter {
 class _GameboyMenu extends StatelessWidget {
   const _GameboyMenu({
     required this.state,
+    required this.rowKeys,
     required this.focusedRow,
     required this.focusedStatus,
     required this.focusedEmote,
@@ -1235,6 +1312,10 @@ class _GameboyMenu extends StatelessWidget {
   });
 
   final AppState state;
+
+  /// One key per row (`_menuRow*`), owned by the shell so a D-pad move can scroll
+  /// the lit row back into the LCD well.
+  final List<GlobalKey> rowKeys;
   final int focusedRow;
   final int focusedStatus;
   final int focusedEmote;
@@ -1266,39 +1347,54 @@ class _GameboyMenu extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _StatusStrip(
-                  current: state.myAvailability ?? 'Active',
-                  focused: focusedRow == _menuRowStatus,
-                  focusedStatus: focusedStatus,
-                  onStatus: onStatus,
+                KeyedSubtree(
+                  key: rowKeys[_menuRowStatus],
+                  child: _StatusStrip(
+                    current: state.myAvailability ?? 'Active',
+                    focused: focusedRow == _menuRowStatus,
+                    focusedStatus: focusedStatus,
+                    onStatus: onStatus,
+                  ),
                 ),
                 const SizedBox(height: 8),
-                _MenuRow(
-                  icon: cameraOn ? Icons.videocam_rounded : Icons.videocam_off_rounded,
-                  lit: cameraOn,
-                  focused: focusedRow == _menuRowCamera,
-                  title: cameraOn ? 'Turn the camera off' : 'Turn the camera on',
-                  onTap: onCamera,
+                KeyedSubtree(
+                  key: rowKeys[_menuRowCamera],
+                  child: _MenuRow(
+                    icon: cameraOn ? Icons.videocam_rounded : Icons.videocam_off_rounded,
+                    lit: cameraOn,
+                    focused: focusedRow == _menuRowCamera,
+                    title: cameraOn ? 'Turn the camera off' : 'Turn the camera on',
+                    onTap: onCamera,
+                  ),
                 ),
                 const SizedBox(height: 8),
-                _EmoteStrip(
-                  focused: focusedRow == _menuRowEmotes,
-                  focusedEmote: focusedEmote,
-                  onReact: onReact,
+                KeyedSubtree(
+                  key: rowKeys[_menuRowEmotes],
+                  child: _EmoteStrip(
+                    focused: focusedRow == _menuRowEmotes,
+                    focusedEmote: focusedEmote,
+                    onReact: onReact,
+                  ),
                 ),
                 const SizedBox(height: 8),
-                _MenuRow(
-                  icon: Icons.notifications_rounded,
-                  title: 'Activity',
-                  focused: focusedRow == _menuRowActivity,
-                  onTap: onActivity,
+                KeyedSubtree(
+                  key: rowKeys[_menuRowActivity],
+                  child: _MenuRow(
+                    icon: Icons.notifications_rounded,
+                    title: 'Activity',
+                    focused: focusedRow == _menuRowActivity,
+                    onTap: onActivity,
+                  ),
                 ),
                 const SizedBox(height: 8),
-                _MenuRow(
-                  icon: Icons.settings_rounded,
-                  title: 'Settings',
-                  focused: focusedRow == _menuRowSettings,
-                  onTap: onSettings,
+                KeyedSubtree(
+                  key: rowKeys[_menuRowSettings],
+                  child: _MenuRow(
+                    icon: Icons.settings_rounded,
+                    title: 'Settings',
+                    focused: focusedRow == _menuRowSettings,
+                    onTap: onSettings,
+                  ),
                 ),
               ],
             ),

@@ -93,10 +93,10 @@ class _MapScreenState extends State<MapScreen> {
       //
       // In Gameboy mode the whole bar stands down: the handheld draws its own pixel
       // status strip inside the LCD (space name on the shell header, and a
-      // conn/mic/cam/head-count HUD on the screen — see `gameboy_shell.dart`), so an
-      // app-themed bar here would both double the head count and waste a strip of the
-      // LCD. The follower pill is the one thing not carried over; it is rare and can
-      // fold into the HUD later.
+      // status/mic/cam/followers/head-count HUD on the screen — see
+      // `gameboy_shell.dart`), so an app-themed bar here would both double the head
+      // count and waste a strip of the LCD. The follower count rides into that HUD
+      // too, so the "someone is following you" signal survives the skin.
       appBar: widget.state.gameboyMode
           ? null
           : AppBar(
