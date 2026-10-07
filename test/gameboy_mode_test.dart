@@ -16,6 +16,7 @@ import 'package:gather_companion/src/ui_preferences.dart';
 import 'package:gather_companion/theme/gather_theme.dart';
 import 'package:gather_companion/ui/call_screen.dart';
 import 'package:gather_companion/ui/control_bar.dart';
+import 'package:gather_companion/ui/dial_screen.dart';
 import 'package:gather_companion/ui/gameboy_shell.dart';
 import 'package:gather_companion/ui/home_shell.dart';
 import 'package:gather_companion/ui/map_screen.dart';
@@ -60,9 +61,13 @@ void main() {
         ),
       );
 
+  // Gameboy mode opens on the office: the handheld wraps it, so there is no
+  // floating Office dock to tap — the shell is already here. Just settle and
+  // confirm the office is on screen before the test acts on it.
   Future<void> toOffice(WidgetTester tester) async {
-    await tester.tap(find.byTooltip('Office'));
     await tester.pumpAndSettle();
+    expect(find.byType(GameboyShell), findsOneWidget,
+        reason: 'Gameboy mode opens on the office');
   }
 
   group('the settings toggle', () {
@@ -97,6 +102,26 @@ void main() {
 
     testWidgets('defaults off when nothing is stored', (tester) async {
       expect(await UiPreferences().loadGameboyMode(), isFalse);
+    });
+  });
+
+  group('the startup tab', () {
+    testWidgets('Gameboy mode opens on the office', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(GameboyShell), findsOneWidget, reason: 'the handheld wraps the office');
+      expect(find.byType(DialScreen), findsNothing, reason: 'Dial is not the Gameboy home');
+    });
+
+    testWidgets('normal mode opens on Dial', (tester) async {
+      final state = configure(AppState());
+      await tester.pumpWidget(wrap(state));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(DialScreen), findsOneWidget);
+      expect(find.byType(GameboyShell), findsNothing, reason: 'no handheld without Gameboy mode');
     });
   });
 
@@ -216,6 +241,7 @@ void main() {
       await tester.tap(find.text('SELECT'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Dial'), findsOneWidget);
       expect(find.text('Activity'), findsOneWidget);
       expect(find.text('Settings'), findsOneWidget);
       expect(find.textContaining('camera'), findsOneWidget);
@@ -237,6 +263,24 @@ void main() {
 
       expect(find.byType(SettingsScreen), findsOneWidget);
       expect(find.byType(GameboyShell), findsNothing, reason: 'left the office for settings');
+    });
+
+    testWidgets('the Dial row leaves the office for the dialer', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await toOffice(tester);
+
+      await tester.tap(find.text('SELECT'));
+      await tester.pumpAndSettle();
+      // The menu scrolls inside the LCD, so the Dial row can sit below the fold on
+      // a short screen — bring it up before choosing it.
+      await tester.ensureVisible(find.text('Dial'));
+      await tester.tap(find.text('Dial'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(DialScreen), findsOneWidget);
+      expect(find.byType(GameboyShell), findsNothing, reason: 'left the office for the dialer');
     });
 
     testWidgets('Start is wired and does not throw with no desk to return to', (tester) async {
@@ -410,20 +454,21 @@ void main() {
       await tester.pumpAndSettle();
 
       // Walk the cursor down to the last row (Settings). Pressing the bottom of the
-      // cross is a Down; four of them land on Settings from the status row.
+      // cross is a Down; from the status row it is five of them past Camera, Emotes,
+      // Dial and Activity onto Settings.
       final pad = tester.getRect(find.byKey(const Key('gb-dpad')));
       final down = Offset(pad.center.dx, pad.top + pad.height * 0.88);
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < 5; i++) {
         final g = await tester.startGesture(down);
         await tester.pump();
         await g.up();
         await tester.pumpAndSettle();
       }
 
-      // The lit row is now in the well and hit-testable where it is drawn — tapping
-      // it reaches the real action rather than missing an off-screen row. Without
-      // the ensureVisible this tap would miss and SettingsScreen would never open.
-      await tester.tap(find.text('Settings'));
+      // Confirm with A, not a direct tap on 'Settings': the row is the cursor's now,
+      // and the app had to scroll it into the well for A to land on the real action
+      // rather than firing an off-screen one.
+      await tester.tap(find.text('A'));
       await tester.pumpAndSettle();
       expect(find.byType(SettingsScreen), findsOneWidget, reason: 'the scrolled-in row was the real, hittable one');
     });
