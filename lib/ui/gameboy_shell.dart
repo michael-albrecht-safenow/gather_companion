@@ -138,7 +138,11 @@ class GameboyShell extends StatelessWidget {
           child: Column(
             children: [
               Expanded(child: _Screen(state: state, child: child)),
-              const SizedBox(height: 8),
+              // The purple band between the screen and the controls. Measured off
+              // the mock: the gap there is ~10% of the screen width, which lands at
+              // ~40 logical pixels on a phone — a deliberate breath between the LCD
+              // and the D-pad, not the tight 8px of before.
+              const SizedBox(height: 40),
               _ControlsDeck(
                 state: state,
                 onOpenSettings: onOpenSettings,
@@ -800,7 +804,9 @@ class _GbPillState extends State<_GbPill> {
               style: const TextStyle(
                 fontFamily: _pixelFont,
                 fontWeight: FontWeight.w700,
-                color: _hw150,
+                // Dark grey, engraved into the body like the keys they name — not
+                // the lavender chrome text.
+                color: _n700,
                 fontSize: 13,
                 letterSpacing: 0.5,
               ),
