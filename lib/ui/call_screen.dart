@@ -91,6 +91,17 @@ class CallTile {
   /// A list rather than one emoji because a reaction is an act and not a status:
   /// three taps are three of them, overlapping. See `../src/reactions.dart`.
   final List<ReactionFlight> reactions;
+
+  /// Whether this tile has a frame to show, as opposed to a face to draw.
+  ///
+  /// Not `stream != null`: a paused camera keeps its stream, so that would leave
+  /// a dead texture — and a fit button — floating over the avatar. Not
+  /// `videoLive` either: that is derived from the camera track alone, so a
+  /// screen share with the camera off reads as `false` while [stream] holds the
+  /// very screen frames this screen most wants to show. A screen share stays
+  /// renderable whatever the camera is doing; everyone else shows video only
+  /// while their camera is live.
+  bool get showsVideo => stream != null && (videoLive || sharingScreen);
 }
 
 typedef CallTileBuilder = Widget Function(BuildContext context, CallTile tile);
@@ -845,8 +856,9 @@ class _Spotlight extends StatelessWidget {
                   child: _OverviewButton(onTap: onReturn),
                 ),
                 // Crop/letterbox, top-right, opposite the way-out button. Only on
-                // a face with live video — there is nothing to fit otherwise.
-                if (big.stream != null)
+                // a face with a frame on screen — there is nothing to fit over an
+                // avatar, whether the camera is off, paused, or never opened.
+                if (big.showsVideo)
                   Positioned(
                     top: 8,
                     right: 8,
@@ -1087,18 +1099,19 @@ class _VideoTileState extends State<_VideoTile> {
   @override
   void didUpdateWidget(_VideoTile old) {
     super.didUpdateWidget(old);
-    // `videoLive` as well as the stream. Somebody turning their camera back on
-    // keeps the same stream id, so comparing streams alone would leave the
-    // renderer detached and show a frozen avatar over a live track.
+    // `showsVideo` as well as the stream. Somebody turning their camera back on,
+    // or starting a screen share, keeps the same stream id, so comparing streams
+    // alone would leave the renderer detached and show a frozen avatar over a
+    // live track.
     if (old.tile.stream?.id != widget.tile.stream?.id ||
-        old.tile.videoLive != widget.tile.videoLive) {
+        old.tile.showsVideo != widget.tile.showsVideo) {
       _attach();
     }
   }
 
   void _attach() {
     if (!_ready) return;
-    _renderer.srcObject = widget.tile.videoLive ? widget.tile.stream : null;
+    _renderer.srcObject = widget.tile.showsVideo ? widget.tile.stream : null;
   }
 
   @override
@@ -1123,7 +1136,7 @@ class _VideoTileState extends State<_VideoTile> {
     // reattach the texture at arbitrary moments. `initState` and
     // `didUpdateWidget` are the two places the stream can actually have changed.
     Widget? video;
-    if (_ready && tile.videoLive && tile.stream != null) {
+    if (_ready && tile.showsVideo) {
       video = RTCVideoView(
         _renderer,
         mirror: tile.isSelf,

@@ -9,6 +9,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:gather_client/gather_client.dart';
 import 'package:gather_companion/src/app_state.dart';
 import 'package:gather_companion/src/media/call.dart';
@@ -910,4 +911,60 @@ void main() {
       await tester.pump(const Duration(seconds: 2)); // flush the cluster debounce
     });
   });
+
+  group('a tile shows video rather than a face when', () {
+    // A platform-free stand-in: `showsVideo` only asks whether the stream is
+    // there, never touches a track, so a Fake standing in for the one stream
+    // `flutter test` cannot construct is enough to exercise the predicate.
+    final stream = _FakeStream();
+
+    CallTile tile({
+      required bool videoLive,
+      required bool sharingScreen,
+      MediaStream? stream,
+    }) =>
+        CallTile(
+          id: 'x',
+          label: 'X',
+          isSelf: false,
+          videoLive: videoLive,
+          muted: false,
+          sharingScreen: sharingScreen,
+          stream: stream,
+        );
+
+    test('a screen share is on, even with the camera off', () {
+      // The PR's whole point: a screen-only share — camera off, so `videoLive`
+      // is false — must still render its frames, not fall back to an avatar.
+      expect(
+        tile(videoLive: false, sharingScreen: true, stream: stream).showsVideo,
+        isTrue,
+      );
+    });
+
+    test('the camera is live', () {
+      expect(
+        tile(videoLive: true, sharingScreen: false, stream: stream).showsVideo,
+        isTrue,
+      );
+    });
+
+    test('but not when the camera is paused with the stream still attached', () {
+      // A paused camera keeps its stream; without the `videoLive` gate this would
+      // leave a dead texture — and a fit button — over the avatar.
+      expect(
+        tile(videoLive: false, sharingScreen: false, stream: stream).showsVideo,
+        isFalse,
+      );
+    });
+
+    test('and not when there is nothing on the wire at all', () {
+      expect(
+        tile(videoLive: true, sharingScreen: true, stream: null).showsVideo,
+        isFalse,
+      );
+    });
+  });
 }
+
+class _FakeStream extends Fake implements MediaStream {}
