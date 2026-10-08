@@ -1,4 +1,5 @@
-/// The faces. Everybody the SFU is sending us, plus your own camera.
+/// The faces. Everybody the SFU is sending us, plus your own tile — always
+/// present, your camera when it is on and an avatar when it is not.
 ///
 /// ## Why this is a route and not a panel
 ///
@@ -300,9 +301,12 @@ class _CallScreenState extends State<CallScreen> {
       return;
     }
 
-    // Ourselves included, because the self tile takes a share of the screen
-    // without anybody having to send it to us.
-    final count = ids.length + (call.media.capturing ? 1 : 0);
+    // Off the rendered tile list, not the SFU participant count: the self tile
+    // and any roster-only face (mic and camera both off, or not negotiated yet)
+    // each take a cell the SFU is not sending, and all of them squeeze the faces
+    // that are. Counting only `ids + 1` would over-request a layer for a grid
+    // that is really one cell busier.
+    final count = _tiles(widget.state).length;
     _applyWatching(
       ids,
       switch (count) {
@@ -524,23 +528,29 @@ List<CallTile> _tiles(AppState state) {
   final live = handle is LiveCall ? handle : null;
 
   final tiles = <CallTile>[
-    // Ourselves first, and only while the camera is actually open — a self tile
-    // showing an avatar when nothing is captured is just a second name badge.
-    if (call.media.capturing)
-      CallTile(
-        id: state.mePerson?.id ?? 'self',
-        label: 'You',
-        isSelf: true,
-        videoLive: call.cameraOn,
-        muted: !call.micOn,
-        sharingScreen: false,
-        stream: live?.localStream,
-        // Measured here rather than read back off the roster: Gather agrees a
-        // beat later, and a beat is visible on your own face. See
-        // `AppState.amSpeaking`.
-        speaking: state.amSpeaking,
-        reactions: state.reactions.forPerson(state.mePerson?.id),
-      ),
+    // Ourselves first, and always — before the camera is ever opened too. The
+    // tile is how you check how you look to the others, or confirm your camera
+    // is off; a face and a name are exactly what the others see of you then, so
+    // an avatar-only self tile is the honest answer, not noise. Camera off falls
+    // through to the `PersonAvatar` placeholder via `_defaultTile`.
+    CallTile(
+      // Off `meId`, not `mePerson`: the roster names me a beat before it places
+      // me, and until then `mePerson` is null — keyed off it, my own avatar
+      // would be missing for the first moment of every call.
+      id: state.meId ?? 'self',
+      label: 'You',
+      isSelf: true,
+      videoLive: call.cameraOn,
+      muted: !call.micOn,
+      sharingScreen: false,
+      stream: live?.localStream,
+      photoUrl: state.meId == null ? null : state.photoUrlFor(state.meId!),
+      // Measured here rather than read back off the roster: Gather agrees a
+      // beat later, and a beat is visible on your own face. See
+      // `AppState.amSpeaking`.
+      speaking: state.amSpeaking,
+      reactions: state.reactions.forPerson(state.meId),
+    ),
   ];
 
   for (final person in call.participants) {

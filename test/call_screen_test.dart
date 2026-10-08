@@ -251,9 +251,13 @@ void main() {
     await show(
       tester,
       stateWith(
-        const CallState(participants: [
-          CallParticipant(srcId: 'account-1', hasAudio: true, audioPaused: true),
-        ]),
+        // Our own mic is open, so the only mute pip on screen is Mira's.
+        const CallState(
+          media: LocalMediaState(capturing: true, audioEnabled: true),
+          participants: [
+            CallParticipant(srcId: 'account-1', hasAudio: true, audioPaused: true),
+          ],
+        ),
         rows: const [RosterRow(id: 'space-1', name: 'Mira', userAccountId: 'account-1')],
       ),
     );
@@ -266,11 +270,13 @@ void main() {
     expect(muted.top, name.top);
   });
 
-  testWidgets('an empty call says so rather than showing a blank screen',
+  testWidgets('alone in a call you see your own tile, not a blank screen',
       (tester) async {
     await show(tester, stateWith(const CallState()));
 
-    expect(find.textContaining('Nobody is in this conversation yet'), findsOneWidget);
+    // Nobody else, but your own tile is still there — the point of it is that you
+    // can always check how you look, even before anyone arrives.
+    expect(find.text('You'), findsOneWidget);
     expect(find.text('Nobody else here'), findsOneWidget);
   });
 
@@ -312,9 +318,13 @@ void main() {
     await show(
       tester,
       stateWith(
-        const CallState(participants: [
-          CallParticipant(srcId: 'account-1', hasAudio: true, audioPaused: true),
-        ]),
+        // Our own mic is open, so the only mute pip is the muted remote's.
+        const CallState(
+          media: LocalMediaState(capturing: true, audioEnabled: true),
+          participants: [
+            CallParticipant(srcId: 'account-1', hasAudio: true, audioPaused: true),
+          ],
+        ),
         rows: const [
           RosterRow(id: 'space-1', name: 'Mira', userAccountId: 'account-1'),
         ],
@@ -325,17 +335,21 @@ void main() {
     expect(find.byIcon(Icons.mic_off), findsOneWidget);
   });
 
-  testWidgets('the self tile appears only once the hardware is open',
+  testWidgets('the self tile is always there, before any hardware is open',
       (tester) async {
+    // No camera, no microphone ever touched. You still get a tile — it is how
+    // you check how you look to the room, or confirm your camera is off.
     await show(tester, stateWith(const CallState()));
-    expect(find.text('You'), findsNothing);
+    expect(find.text('You'), findsOneWidget);
+    // Still nobody else — the header counts the room, not the tiles.
+    expect(find.text('Nobody else here'), findsOneWidget);
 
+    // Opening the camera does not add a second self tile.
     await show(
       tester,
       stateWith(const CallState(media: LocalMediaState(capturing: true))),
     );
     expect(find.text('You'), findsOneWidget);
-    // Still nobody else — the header counts the room, not the tiles.
     expect(find.text('Nobody else here'), findsOneWidget);
   });
 
@@ -353,7 +367,7 @@ void main() {
     expect(find.text('3 other people'), findsOneWidget);
   });
 
-  testWidgets('a face filling the screen is asked for at full size',
+  testWidgets('a single remote shares the screen with your own tile',
       (tester) async {
     final call = FakeCall();
     final state = stateWith(const CallState(participants: [
@@ -362,10 +376,11 @@ void main() {
       ..debugAttachCall(call);
     await show(tester, state);
 
-    // Nobody sends more than their smallest layer until a consumer asks, so
-    // without this the one face on a phone screen stays a thumbnail.
+    // Two tiles now — the one remote face plus your own, always present — so the
+    // remote gets half a phone, not the whole of it. Only the remote is on the
+    // wire to ask for; your own tile needs nobody to send it.
     expect(call.watching.last.srcIds, ['account-1']);
-    expect(call.watching.last.quality, VideoQuality.full);
+    expect(call.watching.last.quality, VideoQuality.half);
   });
 
   testWidgets('a grid of four asks for thumbnails', (tester) async {
@@ -396,7 +411,7 @@ void main() {
     ]))
       ..debugAttachCall(call);
     await show(tester, state);
-    expect(call.watching.last.quality, VideoQuality.full);
+    expect(call.watching.last.quality, VideoQuality.half);
 
     // The map draws no video, so once this route is gone nobody is looking at
     // anything — and until it is said, a colleague keeps encoding a big layer
@@ -418,7 +433,7 @@ void main() {
         ),
       ]);
 
-    final tile = tilesFor(state).single;
+    final tile = tilesFor(state).firstWhere((t) => !t.isSelf);
     expect(tile.sharingScreen, isTrue);
     // No live call behind this state, so there is no stream to pick — the point
     // is that the tile carries the flag the layout reads.
@@ -442,7 +457,7 @@ void main() {
         rows: [me, luca],
       );
 
-      final tile = tilesFor(state).single;
+      final tile = tilesFor(state).firstWhere((t) => !t.isSelf);
       expect(tile.label, 'Luca');
       expect(tile.speaking, isTrue, reason: "off the roster's own `speaking`");
     });
@@ -525,10 +540,11 @@ void main() {
 
       // Both, in press order. A second tap adds to what is in the air rather
       // than replacing it — three claps are three claps.
-      expect([for (final f in tilesFor(state).single.reactions) f.emote], ['🎉', '🔥']);
+      final lucaTile = tilesFor(state).firstWhere((t) => !t.isSelf);
+      expect([for (final f in lucaTile.reactions) f.emote], ['🎉', '🔥']);
 
       await tester.pump(reactionLinger);
-      expect(tilesFor(state).single.reactions, isEmpty,
+      expect(tilesFor(state).firstWhere((t) => !t.isSelf).reactions, isEmpty,
           reason: 'nothing on the wire ever says a reaction ended');
     });
 
@@ -753,14 +769,16 @@ void main() {
       addTearDown(state.dispose);
       await showAuto(tester, state);
 
-      await tester.tap(find.byKey(const ValueKey('space-1')));
+      // Person 0, which sits in the first grid row beside the self tile — Person 1
+      // is now pushed into the second row, below the test viewport.
+      await tester.tap(find.byKey(const ValueKey('space-0')));
       await tester.pump();
-      expect(find.text('Person 1'), findsNWidgets(2), reason: 'manually enlarged');
+      expect(find.text('Person 0'), findsNWidgets(2), reason: 'manually enlarged');
 
       await tester.tap(find.text('Auto'));
       await tester.pump();
       expect(find.byType(GridView), findsNothing, reason: 'the big view held across the switch');
-      expect(find.text('Person 1'), findsNWidgets(2));
+      expect(find.text('Person 0'), findsNWidgets(2));
 
       // Still auto: the next speaker to hold the floor takes the pin's place.
       state.debugApplyRoster(Roster(selfId: 'me', rows: [me, person('0'), person('1'), person('2', speaking: true)]));
@@ -788,9 +806,9 @@ void main() {
       // Enlarge yourself. Your own face has nothing on the media plane to boost,
       // and the remote is now only a strip thumbnail — so the request drops to
       // the low layer rather than staying on the grid's count-based split.
-      // The self tile has no map position in this state, so it takes the 'self'
-      // fallback id rather than a roster id.
-      await tester.tap(find.byKey(const ValueKey('self')));
+      // The self tile keys off the coordinate-independent roster self id, so it
+      // is 'me' even with no map position — not the 'self' fallback.
+      await tester.tap(find.byKey(const ValueKey('me')));
       await tester.pump();
       expect(call.watching.last.quality, VideoQuality.thumbnail);
       expect(call.watching.last.srcIds, ['account-1']);
