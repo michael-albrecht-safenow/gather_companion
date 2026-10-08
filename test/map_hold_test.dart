@@ -33,6 +33,7 @@ void main() {
       addTearDown(state.dispose);
 
       // We are in space s1, and a roster has landed — so the office is now held.
+      collector.spaceId = 's1';
       state.debugApplySnapshot(_inSpace('s1'));
       state.debugApplyRoster(Roster(selfId: kSelfId, rows: [selfOfficeRow(kSelfStartTile)]));
       expect(state.map, isNotNull, reason: 'the live reader has the office');
@@ -48,14 +49,76 @@ void main() {
       final state = AppState()..debugAttachCollector(collector);
       addTearDown(state.dispose);
 
+      collector.spaceId = 's1';
       state.debugApplySnapshot(_inSpace('s1'));
       state.debugApplyRoster(Roster(selfId: kSelfId, rows: [selfOfficeRow(kSelfStartTile)]));
 
-      // The reader empties *and* we are now in a different space: the held office
-      // belongs to s1 and must not be served under s2.
+      // The reader empties *and* the collector has resolved a different space: the
+      // held office belongs to s1 and must not be served under s2.
       collector.hasMap = false;
-      state.debugApplySnapshot(_inSpace('s2'));
+      collector.spaceId = 's2';
       expect(state.map, isNull, reason: 'the held office is stale once the space changed');
+    });
+
+    test('a move to another floor drops the held office rather than drawing the old floor', () {
+      final collector = FakeCollector();
+      final state = AppState()..debugAttachCollector(collector);
+      addTearDown(state.dispose);
+
+      // Held on the ground floor, which is the only floor the collector has a plan for.
+      collector.mapFloorId = kFloorId;
+      state.debugApplySnapshot(_inSpace('s1'));
+      state.debugApplyRoster(Roster(selfId: kSelfId, rows: [selfOfficeRow(kSelfStartTile)]));
+      expect(state.map, isNotNull, reason: 'the live reader has the ground floor');
+
+      // Self steps onto a floor whose plan has not arrived: the live lookup is null,
+      // but the held office belongs to the ground floor and must not stand in for it —
+      // its geometry would be wrong under the new floor's occupants.
+      state.debugApplyRoster(
+        Roster(selfId: kSelfId, rows: [selfOfficeRow(kSelfStartTile, floorId: 'upstairs')]),
+      );
+      expect(state.map, isNull, reason: 'the held office is the wrong floor now');
+    });
+
+    test('an unknown space identity refuses to serve the held office', () {
+      final collector = FakeCollector();
+      final state = AppState()..debugAttachCollector(collector);
+      addTearDown(state.dispose);
+
+      // The collector has not resolved a space yet, and no dump has named one: the
+      // current-space key is null. A null key is not proof that we are still in the
+      // office the hold was taken in, so `null == null` must not open the fallback.
+      collector.spaceId = null;
+      state.debugApplySnapshot(PresenceSnapshot(
+        self: const SelfState(spaceId: null),
+        players: const [],
+        health: const CollectorHealth(),
+        at: DateTime.fromMillisecondsSinceEpoch(0),
+      ));
+      state.debugApplyRoster(Roster(selfId: kSelfId, rows: [selfOfficeRow(kSelfStartTile)]));
+
+      collector.hasMap = false;
+      expect(state.map, isNull, reason: 'an unknown space identity cannot vouch for the hold');
+    });
+
+    test('a map that finishes after the last roster is still held across a reconnect', () {
+      final collector = FakeCollector();
+      final state = AppState()..debugAttachCollector(collector);
+      addTearDown(state.dispose);
+
+      // The roster lands before the floor plan has finished building: a map-only patch
+      // publishes no roster, so the roster-time refresh stashes nothing.
+      state.debugApplySnapshot(_inSpace('s1'));
+      collector.hasMap = false;
+      state.debugApplyRoster(Roster(selfId: kSelfId, rows: [selfOfficeRow(kSelfStartTile)]));
+
+      // The plan arrives and the getter serves — and stashes — it.
+      collector.hasMap = true;
+      expect(state.map, isNotNull, reason: 'the live plan is there now');
+
+      // The next reconnect empties the reader: the late map must still be held.
+      collector.hasMap = false;
+      expect(state.map, isNotNull, reason: 'the late office carries the gap');
     });
   });
 

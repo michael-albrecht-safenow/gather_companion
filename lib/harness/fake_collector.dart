@@ -78,12 +78,25 @@ class FakeCollector implements Collector {
   @override
   bool get hasState => true;
 
+  @override
+  String? spaceId = 'space';
+
   /// When false, [mapFor] returns null — standing in for the fresh empty reader a
   /// real reconnect swaps in, so a test can prove the held office survives it.
   bool hasMap = true;
 
+  /// When set, the fake has a plan only for this floor; any other floor reads null,
+  /// the way a floor you have just stepped onto has not loaded yet — so a test can
+  /// move self across floors and watch the held office drop rather than draw the
+  /// wrong floor's geometry. Null (the default) answers for every floor with the one
+  /// schematic office, which is what the single-floor tests assume.
+  String? mapFloorId;
+
   @override
-  SpaceMap? mapFor(String? floorId) => hasMap ? schematicOffice() : null;
+  SpaceMap? mapFor(String? floorId) =>
+      hasMap && (mapFloorId == null || floorId == null || floorId == mapFloorId)
+          ? schematicOffice()
+          : null;
   @override
   SpaceArt? artFor(String? floorId, {bool dark = true}) => null;
   @override

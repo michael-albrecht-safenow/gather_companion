@@ -78,6 +78,13 @@ abstract interface class Collector {
 
   // ---- what the app reads ----------------------------------------------------
 
+  /// The space this collector resolved and connected to, once it has one.
+  ///
+  /// The ground truth of which office the live reader is populated for — unlike the
+  /// roster-derived snapshot, it does not go blank between dumps, so a held map can
+  /// pin itself to it and know when a reconnect lands in a different space.
+  String? get spaceId;
+
   /// Our own `SpaceUser` id, once the dump has told us which row is us.
   String? get selfId;
 

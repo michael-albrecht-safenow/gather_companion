@@ -142,6 +142,7 @@ class DirectCollector implements Collector {
 
   /// Explicitly configured space, if any; otherwise resolved per connect.
   final String? _configuredSpaceId;
+  @override
   String? spaceId;
 
   GameProtocolReader reader = GameProtocolReader();

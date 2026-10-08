@@ -425,6 +425,12 @@ class AppState extends ChangeNotifier {
   SpaceArt? _heldArt;
   String? _heldMapSpaceId;
 
+  /// The floor the held office belongs to, so a move to another floor does not keep
+  /// drawing the old plan. A reconnect empties the roster, so the live floor reads
+  /// null mid-blip — that is not a floor change and must keep the hold, so the
+  /// getters only drop it when a *known* floor differs from this one.
+  String? _heldMapFloorId;
+
   /// True while the getters are serving the held copy, so the diagnostic below
   /// fires once per disruption rather than on every rebuild. Reset when a live map
   /// returns.
@@ -436,12 +442,18 @@ class AppState extends ChangeNotifier {
   /// the live reader is momentarily empty and we are still in the same space.
   SpaceMap? get map {
     if (debugMap != null) return debugMap;
-    final live = _collector?.mapFor(_myRow()?.floorId);
+    final floorId = _myRow()?.floorId;
+    final live = _collector?.mapFor(floorId);
     if (live != null) {
       _holdingMap = false;
+      // A live map is the freshest office there is: stash it now so the next
+      // reconnect's empty reader has it to fall back on, even if the plan finished
+      // arriving after the last roster (a map-only patch publishes no roster, so
+      // `_noteMine` never fired for it).
+      _stashHeld(live, floorId);
       return live;
     }
-    if (_heldMap != null && _heldMapSpaceId == _currentMapSpaceId) {
+    if (_canHold(floorId) && _heldMap != null) {
       if (!_holdingMap) {
         _holdingMap = true;
         _log('map: live lookup null — holding last office');
@@ -461,19 +473,42 @@ class AppState extends ChangeNotifier {
   /// and must not blank out from under a map that stayed.
   SpaceArt? get art {
     if (debugArt != null) return debugArt;
-    final live = _collector?.artFor(_myRow()?.floorId, dark: true);
+    final floorId = _myRow()?.floorId;
+    final live = _collector?.artFor(floorId, dark: true);
     if (live != null) return live;
-    if (_heldArt != null && _heldMapSpaceId == _currentMapSpaceId) {
+    if (_canHold(floorId) && _heldArt != null) {
       return _heldArt;
     }
     return null;
   }
 
-  /// The current space's key, the same expression [_spaceIdForCall] keys the call
-  /// on: the snapshot's self wins, with the stored id as the fallback before the
-  /// first dump. Survives a reconnect — `_snapshot` is only wiped on detach/clear —
-  /// which is exactly what lets the held office outlast the blip.
-  String? get _currentMapSpaceId => _snapshot.self.spaceId ?? _spaceId;
+  /// Whether the held office may stand in for a null live lookup right now.
+  ///
+  /// Two things disqualify it. The space must still be the one the hold was taken
+  /// in — and we must *know* that space: a null identity (no dump yet, or a reader
+  /// that drifted to another space) is not proof of a match, so `null == null` must
+  /// not pass. The floor must also still be the held one, except that a reconnect
+  /// empties the roster and the live floor reads null — not a floor change, so a
+  /// null floor keeps the hold.
+  bool _canHold(String? liveFloorId) =>
+      _heldMapSpaceId != null &&
+      _heldMapSpaceId == _currentMapSpaceId &&
+      (liveFloorId == null || liveFloorId == _heldMapFloorId);
+
+  /// The space the live reader is populated for, as the ground truth of which office
+  /// the hold belongs to.
+  ///
+  /// The collector's own resolved id leads, because it is the one thing that cannot
+  /// drift out from under the hold: `PresenceTracker.applyRoster` rebuilds the
+  /// snapshot without a space id, so `_snapshot.self.spaceId` reads null the moment a
+  /// roster lands, and `_resolveSpace` can pick a *different* most-recent space on a
+  /// reconnect when no id was configured. Keying on the resolved id means a genuine
+  /// space change invalidates the held office and an unknown id (null, before the
+  /// reader has resolved one) refuses the fallback outright — `null == null` must not
+  /// pass for two offices that only share not-knowing. The snapshot and stored id
+  /// stay as fallbacks for the window before the collector has one.
+  String? get _currentMapSpaceId =>
+      _collector?.spaceId ?? _snapshot.self.spaceId ?? _spaceId;
 
   /// Stashes the live map, art and current space, so the getters can fall back to
   /// them while a reconnect's fresh reader is briefly empty.
@@ -482,11 +517,22 @@ class AppState extends ChangeNotifier {
   /// fresh dump has repopulated the reader. No roster arrives mid-reconnect, so the
   /// held copy stays untouched for the whole blip.
   void _refreshHeldMap() {
-    final live = _collector?.mapFor(_myRow()?.floorId);
+    final floorId = _myRow()?.floorId;
+    final live = _collector?.mapFor(floorId);
     if (live == null) return;
+    _stashHeld(live, floorId);
+  }
+
+  /// Pins [live] and its floor as the office to fall back on, with the art and space
+  /// that go with it. The builder hands back the same map instance until a patch
+  /// rebuilds it, so an unchanged map skips the art lookup rather than re-fetching it
+  /// on every rebuild.
+  void _stashHeld(SpaceMap live, String? floorId) {
+    if (identical(live, _heldMap) && floorId == _heldMapFloorId) return;
     _heldMap = live;
-    _heldArt = _collector?.artFor(_myRow()?.floorId, dark: true);
+    _heldArt = _collector?.artFor(floorId, dark: true);
     _heldMapSpaceId = _currentMapSpaceId;
+    _heldMapFloorId = floorId;
   }
 
   /// Test seam, as [debugMap].
@@ -756,6 +802,7 @@ class AppState extends ChangeNotifier {
     _heldMap = null;
     _heldArt = null;
     _heldMapSpaceId = null;
+    _heldMapFloorId = null;
     _holdingMap = false;
   }
 
