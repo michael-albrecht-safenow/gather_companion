@@ -283,8 +283,8 @@ class _CallScreenState extends State<CallScreen> {
     }
 
     // Ourselves included, because the self tile takes a share of the screen
-    // without anybody having to send it to us.
-    final count = ids.length + (call.media.capturing ? 1 : 0);
+    // without anybody having to send it to us — and it is always present now.
+    final count = ids.length + 1;
     _applyWatching(
       ids,
       switch (count) {
@@ -459,23 +459,27 @@ List<CallTile> _tiles(AppState state) {
   final live = handle is LiveCall ? handle : null;
 
   final tiles = <CallTile>[
-    // Ourselves first, and only while the camera is actually open — a self tile
-    // showing an avatar when nothing is captured is just a second name badge.
-    if (call.media.capturing)
-      CallTile(
-        id: state.mePerson?.id ?? 'self',
-        label: 'You',
-        isSelf: true,
-        videoLive: call.cameraOn,
-        muted: !call.micOn,
-        sharingScreen: false,
-        stream: live?.localStream,
-        // Measured here rather than read back off the roster: Gather agrees a
-        // beat later, and a beat is visible on your own face. See
-        // `AppState.amSpeaking`.
-        speaking: state.amSpeaking,
-        reactions: state.reactions.forPerson(state.mePerson?.id),
-      ),
+    // Ourselves first, and always — before the camera is ever opened too. The
+    // tile is how you check how you look to the others, or confirm your camera
+    // is off; a face and a name are exactly what the others see of you then, so
+    // an avatar-only self tile is the honest answer, not noise. Camera off falls
+    // through to the `PersonAvatar` placeholder via `_defaultTile`.
+    CallTile(
+      id: state.mePerson?.id ?? 'self',
+      label: 'You',
+      isSelf: true,
+      videoLive: call.cameraOn,
+      muted: !call.micOn,
+      sharingScreen: false,
+      stream: live?.localStream,
+      photoUrl:
+          state.mePerson == null ? null : state.photoUrlFor(state.mePerson!.id),
+      // Measured here rather than read back off the roster: Gather agrees a
+      // beat later, and a beat is visible on your own face. See
+      // `AppState.amSpeaking`.
+      speaking: state.amSpeaking,
+      reactions: state.reactions.forPerson(state.mePerson?.id),
+    ),
   ];
 
   for (final person in call.participants) {
