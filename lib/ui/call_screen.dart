@@ -91,6 +91,17 @@ class CallTile {
   /// A list rather than one emoji because a reaction is an act and not a status:
   /// three taps are three of them, overlapping. See `../src/reactions.dart`.
   final List<ReactionFlight> reactions;
+
+  /// Whether this tile has a frame to show, as opposed to a face to draw.
+  ///
+  /// Not `stream != null`: a paused camera keeps its stream, so that would leave
+  /// a dead texture — and a fit button — floating over the avatar. Not
+  /// `videoLive` either: that is derived from the camera track alone, so a
+  /// screen share with the camera off reads as `false` while [stream] holds the
+  /// very screen frames this screen most wants to show. A screen share stays
+  /// renderable whatever the camera is doing; everyone else shows video only
+  /// while their camera is live.
+  bool get showsVideo => stream != null && (videoLive || sharingScreen);
 }
 
 typedef CallTileBuilder = Widget Function(BuildContext context, CallTile tile);
@@ -149,6 +160,13 @@ class _CallScreenState extends State<CallScreen> {
   SpotlightMode _mode = SpotlightMode.manual;
   String? _manualId;
   String? _autoPinned;
+
+  /// The big view's crop override and the tile it applies to. Null id means no
+  /// override is live, so every big face falls back to its type's default (see
+  /// [_cropBig]). Pinned to an id so the choice stays with the face it was made
+  /// on and does not leak onto the next person promoted.
+  String? _cropForId;
+  bool _cropOverride = false;
 
   late final SpotlightDirector _director = widget.director ?? SpotlightDirector();
 
@@ -410,8 +428,16 @@ class _CallScreenState extends State<CallScreen> {
                                     tiles: tiles,
                                     spotlightId: spotlight,
                                     buildTile: build,
+                                    // The big face gets a fit toggle and pinch-zoom;
+                                    // the strip stays on the plain builder. A test
+                                    // that injects [buildTile] overrides the big tile
+                                    // too, keeping the platform view out of the tree.
+                                    buildBig: widget.buildTile ?? _bigTile,
                                     onTapTile: _onTapTile,
                                     onReturn: _returnToOverview,
+                                    cropOn: _cropBig(_tileFor(tiles, spotlight)),
+                                    onToggleCrop: () =>
+                                        _toggleCrop(_tileFor(tiles, spotlight)),
                                   ),
                       ),
                     ],
@@ -443,6 +469,40 @@ class _CallScreenState extends State<CallScreen> {
   /// gets a fresh renderer rather than a reused one.
   static Widget _defaultTile(BuildContext context, CallTile tile) =>
       tile.stream == null ? _TileFrame(tile: tile) : _VideoTile(tile: tile);
+
+  /// The big-view builder: the one tile that gets a fit toggle and pinch-zoom.
+  /// The grid and strip stay on [_defaultTile], which always covers.
+  Widget _bigTile(BuildContext context, CallTile tile) => tile.stream == null
+      ? _TileFrame(tile: tile)
+      : _VideoTile(
+          tile: tile,
+          zoomable: true,
+          fit: _cropBig(tile)
+              ? RTCVideoViewObjectFit.RTCVideoViewObjectFitCover
+              : RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+        );
+
+  /// The tile behind a spotlight id. Falls back to the first tile the way
+  /// [_Spotlight] itself does, so the fit lookup never dereferences nothing.
+  CallTile _tileFor(List<CallTile> tiles, String id) {
+    for (final tile in tiles) {
+      if (tile.id == id) return tile;
+    }
+    return tiles.first;
+  }
+
+  /// Whether the big view crops (cover) rather than letterboxes (contain). A
+  /// screen share defaults to no-crop — cropping a shared screen hides its edges
+  /// — and a camera face to crop, where cover is what a face wants. [_toggleCrop]
+  /// pins an override to the tile it was pressed on, so promoting a new face
+  /// returns to that face's default rather than carrying the last choice across.
+  bool _cropBig(CallTile big) =>
+      _cropForId == big.id ? _cropOverride : bigCropsByDefault(big);
+
+  void _toggleCrop(CallTile big) => setState(() {
+        _cropOverride = !_cropBig(big);
+        _cropForId = big.id;
+      });
 }
 
 /// Call state plus roster, folded into what a tile needs.
@@ -452,6 +512,11 @@ class _CallScreenState extends State<CallScreen> {
 /// scattered through `build`.
 @visibleForTesting
 List<CallTile> tilesFor(AppState state) => _tiles(state);
+
+/// How the big view fills by default, before any tap on the fit button: a camera
+/// face crops (cover), a shared screen letterboxes (contain) so its edges show.
+@visibleForTesting
+bool bigCropsByDefault(CallTile tile) => !tile.sharingScreen;
 
 List<CallTile> _tiles(AppState state) {
   final call = state.call;
@@ -734,15 +799,27 @@ class _Spotlight extends StatelessWidget {
     required this.tiles,
     required this.spotlightId,
     required this.buildTile,
+    required this.buildBig,
     required this.onTapTile,
     required this.onReturn,
+    required this.cropOn,
+    required this.onToggleCrop,
   });
 
   final List<CallTile> tiles;
   final String spotlightId;
   final CallTileBuilder buildTile;
+
+  /// The builder for the big face. Separate from [buildTile] so the big view can
+  /// carry the fit toggle and pinch-zoom the strip does not.
+  final CallTileBuilder buildBig;
   final void Function(CallTile) onTapTile;
   final VoidCallback onReturn;
+
+  /// Whether the big view is cropping (cover) right now, and the tap that flips
+  /// it. Drives the fit button's icon and label.
+  final bool cropOn;
+  final VoidCallback onToggleCrop;
 
   /// The strip's height, enough for a face plate under a 3:4 thumbnail.
   static const _stripHeight = 96.0;
@@ -768,7 +845,7 @@ class _Spotlight extends StatelessWidget {
                 Positioned.fill(
                   child: KeyedSubtree(
                     key: ValueKey('big-${big.id}'),
-                    child: buildTile(context, big),
+                    child: buildBig(context, big),
                   ),
                 ),
                 // Back to the grid. Over the top-left of the big face, where it
@@ -778,6 +855,15 @@ class _Spotlight extends StatelessWidget {
                   left: 8,
                   child: _OverviewButton(onTap: onReturn),
                 ),
+                // Crop/letterbox, top-right, opposite the way-out button. Only on
+                // a face with a frame on screen — there is nothing to fit over an
+                // avatar, whether the camera is off, paused, or never opened.
+                if (big.showsVideo)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: _CropButton(cropOn: cropOn, onTap: onToggleCrop),
+                  ),
               ],
             ),
           ),
@@ -868,6 +954,72 @@ class _OverviewButton extends StatelessWidget {
   }
 }
 
+/// Crop vs letterbox for the big face, over its top-right.
+///
+/// Same black scrim as [_OverviewButton] for the same reason — it sits on video
+/// of unpredictable brightness. The label names the result of the tap, not the
+/// current state: "Fit" while cropped offers the whole frame; "Fill" while
+/// letterboxed offers the crop.
+/// The fit button, exposed so a widget test can assert its label and tap without
+/// a spotlighted video stream — which `flutter test` has no platform to make.
+@visibleForTesting
+class CropButton extends StatelessWidget {
+  const CropButton({super.key, required this.cropOn, required this.onTap});
+
+  final bool cropOn;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) =>
+      _CropButton(cropOn: cropOn, onTap: onTap);
+}
+
+class _CropButton extends StatelessWidget {
+  const _CropButton({required this.cropOn, required this.onTap});
+
+  final bool cropOn;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = cropOn ? Icons.fit_screen_outlined : Icons.crop_outlined;
+    final label = cropOn ? 'Fit' : 'Fill';
+    return Semantics(
+      button: true,
+      label: cropOn ? 'Fit whole screen' : 'Fill the view',
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(8),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 48),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 15, color: Colors.white),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Nobody extends StatelessWidget {
   const _Nobody();
 
@@ -902,9 +1054,21 @@ class _Nobody extends StatelessWidget {
 
 /// One face, with its own renderer.
 class _VideoTile extends StatefulWidget {
-  const _VideoTile({required this.tile});
+  const _VideoTile({
+    required this.tile,
+    this.fit = RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+    this.zoomable = false,
+  });
 
   final CallTile tile;
+
+  /// How the frame fills the tile. Cover (crop) for faces; contain (letterbox)
+  /// is offered on the big view so a shared screen shows its edges.
+  final RTCVideoViewObjectFit fit;
+
+  /// Wraps the video in an [InteractiveViewer] for pinch-zoom and pan. Only the
+  /// big spotlight tile sets this; the grid and strip are tap-to-enlarge.
+  final bool zoomable;
 
   @override
   State<_VideoTile> createState() => _VideoTileState();
@@ -935,18 +1099,19 @@ class _VideoTileState extends State<_VideoTile> {
   @override
   void didUpdateWidget(_VideoTile old) {
     super.didUpdateWidget(old);
-    // `videoLive` as well as the stream. Somebody turning their camera back on
-    // keeps the same stream id, so comparing streams alone would leave the
-    // renderer detached and show a frozen avatar over a live track.
+    // `showsVideo` as well as the stream. Somebody turning their camera back on,
+    // or starting a screen share, keeps the same stream id, so comparing streams
+    // alone would leave the renderer detached and show a frozen avatar over a
+    // live track.
     if (old.tile.stream?.id != widget.tile.stream?.id ||
-        old.tile.videoLive != widget.tile.videoLive) {
+        old.tile.showsVideo != widget.tile.showsVideo) {
       _attach();
     }
   }
 
   void _attach() {
     if (!_ready) return;
-    _renderer.srcObject = widget.tile.videoLive ? widget.tile.stream : null;
+    _renderer.srcObject = widget.tile.showsVideo ? widget.tile.stream : null;
   }
 
   @override
@@ -979,16 +1144,20 @@ class _VideoTileState extends State<_VideoTile> {
     // with this tile — a theme change, a parent rebuild — so doing it here would
     // reattach the texture at arbitrary moments. `initState` and
     // `didUpdateWidget` are the two places the stream can actually have changed.
-    return _TileFrame(
-      tile: tile,
-      video: _ready && tile.videoLive && tile.stream != null
-          ? RTCVideoView(
-              _renderer,
-              mirror: tile.isSelf,
-              objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-            )
-          : null,
-    );
+    Widget? video;
+    if (_ready && tile.showsVideo) {
+      video = RTCVideoView(
+        _renderer,
+        mirror: tile.isSelf,
+        objectFit: widget.fit,
+      );
+      // Only the video layer is wrapped, so the name and mute plates that
+      // [_TileFrame] stacks on top stay put while the frame zooms and pans.
+      if (widget.zoomable) {
+        video = InteractiveViewer(minScale: 1, maxScale: 5, child: video);
+      }
+    }
+    return _TileFrame(tile: tile, video: video);
   }
 }
 
