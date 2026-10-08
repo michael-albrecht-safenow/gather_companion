@@ -966,7 +966,7 @@ class _VideoTileState extends State<_VideoTile> {
     // renderer off to drain and be freed once the backlog has run, rather than
     // disposing it here under the live frame path.
     if (_ready) {
-      unawaited(_retireRenderer(_renderer));
+      unawaited(retireRenderer(_renderer));
     }
     super.dispose();
   }
@@ -1001,7 +1001,12 @@ class _VideoTileState extends State<_VideoTile> {
 /// `State.dispose()` frees the texture under an in-flight frame and crashes with
 /// EXC_BAD_ACCESS in `-[FlutterRTCVideoRenderer renderFrame:]`. Half a second is
 /// far longer than a frame interval and costs one lingering texture per swap.
-Future<void> _retireRenderer(RTCVideoRenderer renderer) async {
+///
+/// Public, not `_private`, so a test can drive it against a mocked platform
+/// channel: the full `_VideoTile` cannot be built under `flutter test` (its
+/// renderer needs a `MethodChannel`), so this helper is where the detach/delay/
+/// dispose ordering is guarded against a regression to synchronous disposal.
+Future<void> retireRenderer(RTCVideoRenderer renderer) async {
   renderer.srcObject = null;
   await Future<void>.delayed(const Duration(milliseconds: 500));
   await renderer.dispose();
