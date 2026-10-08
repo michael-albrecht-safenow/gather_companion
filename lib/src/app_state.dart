@@ -439,6 +439,14 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
+  /// My roster id, the moment the roster names me — before any position lands.
+  ///
+  /// [mePerson] is for the map and so withholds me until I have finite
+  /// coordinates; call membership can arrive a beat ahead of them. The call
+  /// screen keys my own avatar off this so the picture is there for the whole
+  /// call, not only once Gather has placed me.
+  String? get meId => _roster?.selfId;
+
   /// Where I am, in tiles, or null before the first roster. Rounded, because its
   /// callers ask questions about tiles — which room am I in — rather than drawing.
   ({int x, int y})? get myTile {

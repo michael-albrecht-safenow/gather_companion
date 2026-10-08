@@ -847,7 +847,7 @@ Mic and camera drive a real capture session and publish to Gather's SFU, the sam
 mediasoup media plane the desktop client uses, with Gather's own three-layer
 simulcast declared and the server steering which layer is sent. Whoever is standing
 near you shows up as faces on a call screen, everybody the SFU is sending plus your
-own camera. The SFU is connected on the first publish rather than at join, because a
+own tile, always shown — your camera when it is on, an avatar when it is not. The SFU is connected on the first publish rather than at join, because a
 companion app is in a pocket far more often than it is used to talk. Mute is two
 things on purpose: a device mute, which is what makes iOS drop its recording
 indicator, and a `produce-pause`, which is what makes a colleague's client draw the

@@ -805,9 +805,9 @@ void main() {
       // Enlarge yourself. Your own face has nothing on the media plane to boost,
       // and the remote is now only a strip thumbnail — so the request drops to
       // the low layer rather than staying on the grid's count-based split.
-      // The self tile has no map position in this state, so it takes the 'self'
-      // fallback id rather than a roster id.
-      await tester.tap(find.byKey(const ValueKey('self')));
+      // The self tile keys off the coordinate-independent roster self id, so it
+      // is 'me' even with no map position — not the 'self' fallback.
+      await tester.tap(find.byKey(const ValueKey('me')));
       await tester.pump();
       expect(call.watching.last.quality, VideoQuality.thumbnail);
       expect(call.watching.last.srcIds, ['account-1']);
