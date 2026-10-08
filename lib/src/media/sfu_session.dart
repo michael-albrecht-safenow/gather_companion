@@ -162,6 +162,15 @@ class SfuSession {
   /// Peers we have asked the server to send us.
   final Set<String> _subscribed = {};
 
+  /// Peers the SFU has refused to let us consume since the last successful one.
+  ///
+  /// The discriminator the receive-path watchdog keys on. A room where everyone
+  /// is legitimately silent also builds no consumers, but it produces no
+  /// denials either, so this stays empty and the watchdog never fires — it is
+  /// only the deaf join, where every `consume-request` comes back
+  /// `consume-not-allowed`, that fills this.
+  final Set<String> _consumeDenied = {};
+
   /// Peers we want but the router could not place yet. See [_addressFor].
   final Set<String> _awaitingAddr = {};
   Timer? _addrRetry;
@@ -982,6 +991,122 @@ class SfuSession {
     });
   }
 
+  Timer? _recvHealTimer;
+
+  /// How long the watchdog waits before each heal attempt.
+  ///
+  /// Five seconds to start, doubling to a thirty-second cap. The first delay is
+  /// a grace window: a single transient denial during normal churn is healed by
+  /// the ordinary retry paths long before this fires, so only a cascade that is
+  /// still silent after the grace triggers a rebuild.
+  Duration _recvHealBackoff = const Duration(seconds: 5);
+
+  /// Set while [_rebuildReceive] runs, so overlapping fires do not stack.
+  bool _healing = false;
+
+  /// Arm the watchdog that heals a receive path which never came up.
+  ///
+  /// Shaped like [_scheduleAddrRetry]: a self-cancelling one-shot with a
+  /// reentrancy guard and a `_stopped` check. The lazy recv transport is only
+  /// built on the first successful consume, so a join where the SFU denies every
+  /// consume builds no transport and stays deaf for the whole call. This notices
+  /// the "subscribed to peers but holding no consumers, and denials are why"
+  /// state and rebuilds the receive path, retrying with growing backoff until a
+  /// consumer finally lands (which cancels it from the success hook).
+  void _scheduleRecvHeal() {
+    if (_recvHealTimer != null || _stopped) return;
+    _recvHealTimer = Timer(_recvHealBackoff, () async {
+      _recvHealTimer = null;
+
+      // Drop denials from peers we no longer subscribe to. unsubscribe() leaves
+      // the denial behind, so without this a stale denial from a departed peer
+      // reads as evidence that the current cluster is deaf, and could rebuild a
+      // healthy in-flight receive path for the peer that replaced it.
+      _consumeDenied.removeWhere((srcId) => !_subscribed.contains(srcId));
+
+      // Re-evaluate against current state, not the state that armed us. If a
+      // consumer has since been built, or we are no longer subscribed to
+      // anyone, or the denials have cleared, there is nothing to heal — reset
+      // the backoff and stand down.
+      if (_stopped ||
+          _subscribed.isEmpty ||
+          _consumers.isNotEmpty ||
+          _consumeDenied.isEmpty) {
+        _recvHealBackoff = const Duration(seconds: 5);
+        return;
+      }
+
+      await _rebuildReceive();
+
+      // Grow the backoff and re-arm. The rebuild re-issues consumes but does not
+      // guarantee one succeeds, so the watchdog keeps trying for the life of the
+      // call; a successful consume is the only thing that cancels it.
+      final next = _recvHealBackoff.inSeconds * 2;
+      _recvHealBackoff = Duration(seconds: next > 30 ? 30 : next);
+      _scheduleRecvHeal();
+    });
+  }
+
+  /// Tear down and rebuild the receive path for every subscribed peer.
+  ///
+  /// The receive half of [_onNodeReconnected], applied across all peers rather
+  /// than one node's, and deliberately touching nothing on the send side: the
+  /// send transport and our producers are left alone, so a heal never interrupts
+  /// outbound audio. Re-requesting each peer drives a fresh `consume-try`, which
+  /// is what finally builds the recv transport that the deaf join never got.
+  Future<void> _rebuildReceive() async {
+    if (_healing) return;
+    _healing = true;
+    try {
+      _log('sfu: no inbound media on a non-empty cluster; '
+          'rebuilding the receive path');
+
+      final peers = _subscribed.toList();
+
+      // Forget the receive state for every peer, the same clears a reconnect
+      // does for one node's peers.
+      for (final srcId in peers) {
+        _peerNode.remove(srcId);
+        _announced.remove(srcId);
+        for (final tag in SfuTag.values) {
+          _closeConsumer(srcId, tag);
+        }
+      }
+
+      // Close every recv transport. In the pure deaf case there are none, so
+      // this is a no-op there; it also covers a recv transport that came up
+      // poisoned and is itself the reason nothing flows.
+      for (final transport in _recvTransports.values) {
+        transport.close();
+      }
+      _recvTransports.clear();
+
+      // Fail any consume still in flight rather than let it sit out its
+      // twenty-second timeout — the transport it was waiting on is gone.
+      for (final pending in _pendingConsumers.values) {
+        if (!pending.isCompleted) {
+          pending.completeError(const SfuException('receive path rebuilt'));
+        }
+      }
+
+      // Re-assert the standing the SFU authorises consumes against before
+      // asking again — cheap insurance that mirrors reconnect recovery.
+      final node = _node;
+      if (node != null) _replayAllow(node);
+      _sendConversation();
+
+      for (final srcId in peers) {
+        unawaited(_requestPeer(srcId));
+      }
+
+      // Next watchdog fire re-evaluates against denials that arrive after the
+      // rebuild, not the ones that triggered it.
+      _consumeDenied.clear();
+    } finally {
+      _healing = false;
+    }
+  }
+
   /// Set by [stop], so timers and retries do not outlive the session.
   bool _stopped = false;
 
@@ -1146,8 +1271,19 @@ class SfuSession {
       // upstream who does know what to do with it.
       case 'move-off':
       case 'disable-video':
+        _log('sfu: ${n.name} ${n.data}');
+
+      // The SFU has refused a consume. On its own this is merely logged, but a
+      // refusal is also the one signal that distinguishes a deaf join — where
+      // every request comes back this way and no recv transport is ever built —
+      // from a legitimately quiet room. Record who was refused and arm the
+      // receive-path watchdog; it leaves normal churn alone and only rebuilds a
+      // cluster that is still silent after the grace window.
       case 'consume-not-allowed':
         _log('sfu: ${n.name} ${n.data}');
+        final srcId = n.data['srcId'];
+        if (srcId is String) _consumeDenied.add(srcId);
+        _scheduleRecvHeal();
     }
   }
 
@@ -1340,6 +1476,15 @@ class SfuSession {
             throw SfuException('consuming ${tag.wire} from $srcId timed out'),
       );
       _consumers[key] = consumer;
+
+      // One consumer proves the receive path works, so the fault signal and the
+      // watchdog it arms are stale now: clear the denials, cancel any pending
+      // heal, and reset the backoff so a later cascade starts from the full
+      // grace window rather than mid-climb.
+      _consumeDenied.clear();
+      _recvHealTimer?.cancel();
+      _recvHealTimer = null;
+      _recvHealBackoff = const Duration(seconds: 5);
 
       // Unusual, and easy to miss: the SFU wants telling that the consumer was
       // actually built. Measured going *back* to the server after its own ack.
@@ -1621,6 +1766,11 @@ class SfuSession {
     _turnTimer = null;
     _addrRetry?.cancel();
     _addrRetry = null;
+    _recvHealTimer?.cancel();
+    _recvHealTimer = null;
+    _consumeDenied.clear();
+    _recvHealBackoff = const Duration(seconds: 5);
+    _healing = false;
     _spatialDebounce?.cancel();
     _spatialDebounce = null;
     _awaitingAddr.clear();

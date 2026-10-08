@@ -18,6 +18,7 @@ import 'package:gather_companion/src/media/call.dart';
 import 'package:gather_companion/src/media/sfu_session.dart';
 
 import 'fake_mediasoup.dart';
+import 'fake_signalling.dart';
 import 'sfu_rig.dart';
 
 void main() {
@@ -459,6 +460,221 @@ void main() {
         'consumerId': 'consumer-$them-audio',
       });
       expect(rig.session.remotes.single.paused, isNot(contains(SfuTag.audio)));
+    });
+  });
+
+  group('receive-side deafness', () {
+    // The deaf join from issue #20: the SFU answers a consume-request with
+    // `consume-not-allowed` instead of `consume-try`, so `_consume` never runs
+    // and the lazy recv transport is never built. The watchdog has to notice and
+    // rebuild the receive path.
+
+    int consumeRequestsFor(FakeSignalling node, String srcId) => node.sent
+        .where((f) => f.method == 'consume-request' && f.args['srcId'] == srcId)
+        .length;
+
+    test('heals a deaf join by re-requesting, then builds a consumer', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+
+        // Deaf: the request came back denied rather than announced.
+        rig.node().push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+        expect(rig.session.remotes, isEmpty);
+
+        rig.node().drain();
+
+        // The grace window passes and the watchdog rebuilds, re-requesting them.
+        clock.elapse(const Duration(seconds: 6));
+        clock.flushMicrotasks();
+        expect(consumeRequestsFor(rig.node(), them), greaterThan(0),
+            reason: 'the rebuild should have re-asked for the denied peer');
+
+        // This time the server announces, and a consumer is built.
+        rig.announce(them, {'audio': 'p-audio'});
+        clock.flushMicrotasks();
+        expect(rig.session.remotes, isNotEmpty);
+        expect(rig.session.remotes.single.srcId, them);
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('retries with growing backoff and never gives up', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+
+        // Every request stays denied: each re-request the rebuild issues is met
+        // with another `consume-not-allowed`, so the watchdog keeps climbing.
+        rig.node().push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+
+        // Re-arm the denial after each rebuild so the heal-needed check holds
+        // and the backoff keeps doubling: 5s, 10s, 20s, 30s (capped).
+        void denyAfter(Duration window) {
+          final before = consumeRequestsFor(rig.node(), them);
+          clock.elapse(window);
+          clock.flushMicrotasks();
+          expect(consumeRequestsFor(rig.node(), them), greaterThan(before),
+              reason: 'a re-request was expected after ${window.inSeconds}s');
+          rig.node().push(
+              'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+          clock.flushMicrotasks();
+        }
+
+        denyAfter(const Duration(seconds: 6)); // 5s window
+        denyAfter(const Duration(seconds: 11)); // 10s window
+        denyAfter(const Duration(seconds: 21)); // 20s window
+        denyAfter(const Duration(seconds: 31)); // 30s cap
+        denyAfter(const Duration(seconds: 31)); // still capped, still trying
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('stops once a consumer is built', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+
+        rig.node().push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+        clock.elapse(const Duration(seconds: 6));
+        clock.flushMicrotasks();
+
+        // The heal re-requested; this time the peer is announced and consumed.
+        rig.announce(them, {'audio': 'p-audio'});
+        clock.flushMicrotasks();
+        expect(rig.session.remotes, isNotEmpty);
+
+        rig.node().drain();
+
+        // Well past the capped backoff, with no fresh denial: nothing re-fires.
+        clock.elapse(const Duration(seconds: 90));
+        clock.flushMicrotasks();
+        expect(rig.node().has('consume-request'), isFalse,
+            reason: 'a built consumer cancels the watchdog for good');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a silent room with no denial never triggers a rebuild', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+
+        // Joined muted with no camera: an empty producer map, and no denial.
+        rig.announce(them, {});
+        clock.flushMicrotasks();
+        expect(rig.session.remotes, isEmpty);
+
+        rig.node().drain();
+
+        clock.elapse(const Duration(seconds: 90));
+        clock.flushMicrotasks();
+        expect(rig.node().has('consume-request'), isFalse,
+            reason: 'no denial means nothing to heal');
+        expect(rig.node().has('transport-create'), isFalse);
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a stale denial from a departed peer never rebuilds a live one', () {
+      fakeAsync((clock) {
+        const other = 'acct-other';
+        rig.addresses[other] = nodeA;
+
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        // A peer is denied, arming the watchdog.
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.node().push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+
+        // Membership turns over before the timer fires: the denied peer leaves
+        // and a replacement joins, whose receive path is healthily in flight
+        // (requested, not yet a consumer). unsubscribe() leaves the denial
+        // behind, so without pruning it reads as proof the cluster is deaf.
+        rig.session.unsubscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.session.subscribe(other).ignore();
+        clock.flushMicrotasks();
+        final asked = consumeRequestsFor(rig.node(), other);
+        expect(asked, greaterThan(0),
+            reason: 'the replacement should have been requested once');
+
+        // The watchdog fires carrying only the departed peer's denial. It must
+        // stand down, not tear down and re-request the replacement's live path.
+        clock.elapse(const Duration(seconds: 90));
+        clock.flushMicrotasks();
+        expect(consumeRequestsFor(rig.node(), other), asked,
+            reason: "a departed peer's denial must not rebuild a live peer");
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a heal leaves the send side untouched', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+        rig.session
+            .publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio)
+            .ignore();
+        // The fake builds the producer on the event queue, not a microtask, so
+        // a zero-length elapse is needed to let it land.
+        clock.elapse(Duration.zero);
+        clock.flushMicrotasks();
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+
+        final sendTransport = rig.device.transports
+            .firstWhere((t) => t.producerCallback != null);
+        expect(sendTransport.producers, isNotEmpty);
+
+        rig.node().push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+        rig.node().drain();
+
+        clock.elapse(const Duration(seconds: 6));
+        clock.flushMicrotasks();
+
+        // The rebuild touches only the receive path: no new send transport, and
+        // the producer that carries our microphone is still open.
+        final sendCreates = rig.node().sent.where((f) =>
+            f.method == 'transport-create' && f.args['direction'] == 'send');
+        expect(sendCreates, isEmpty);
+        expect(sendTransport.producers.every((p) => !p.closed), isTrue);
+        expect(rig.session.publishing(SfuTag.audio), isTrue);
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
     });
   });
 }
