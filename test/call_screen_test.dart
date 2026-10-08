@@ -837,4 +837,77 @@ void main() {
       await tester.pump(const Duration(seconds: 2)); // flush the cluster debounce
     });
   });
+
+  group('the big view crops or letterboxes', () {
+    CallTile tile({required bool sharingScreen}) => CallTile(
+          id: 'x',
+          label: 'X',
+          isSelf: false,
+          videoLive: true,
+          muted: false,
+          sharingScreen: sharingScreen,
+        );
+
+    test('a camera face crops by default, a shared screen letterboxes', () {
+      expect(bigCropsByDefault(tile(sharingScreen: false)), isTrue,
+          reason: 'cover is what a face wants');
+      expect(bigCropsByDefault(tile(sharingScreen: true)), isFalse,
+          reason: 'a shared screen shows its edges, not a cropped middle');
+    });
+
+    testWidgets('the fit button names the result of the tap and reports it', (tester) async {
+      var taps = 0;
+      Future<void> pumpButton(bool cropOn) => tester.pumpWidget(MaterialApp(
+            theme: buildGatherTheme(),
+            home: Scaffold(
+              body: CropButton(cropOn: cropOn, onTap: () => taps++),
+            ),
+          ));
+
+      // Cropped now: the button offers the whole frame.
+      await pumpButton(true);
+      expect(find.text('Fit'), findsOneWidget);
+      expect(find.text('Fill'), findsNothing);
+      expect(find.byIcon(Icons.fit_screen_outlined), findsOneWidget);
+
+      await tester.tap(find.text('Fit'));
+      expect(taps, 1);
+
+      // Letterboxed now: the button offers the crop.
+      await pumpButton(false);
+      expect(find.text('Fill'), findsOneWidget);
+      expect(find.text('Fit'), findsNothing);
+      expect(find.byIcon(Icons.crop_outlined), findsOneWidget);
+
+      await tester.tap(find.text('Fill'));
+      expect(taps, 2);
+    });
+
+    testWidgets('no fit button over a big face with nothing on the wire', (tester) async {
+      // The spotlight tiles here are roster-only — `hasVideo` without a stream a
+      // platform-free test can make — so there is nothing to fit and the button
+      // stays away. The toggle only earns its place once a frame is arriving.
+      final state = stateWith(
+        const CallState(participants: [
+          CallParticipant(srcId: 'account-0', hasVideo: true),
+          CallParticipant(srcId: 'account-1', hasVideo: true),
+        ]),
+        rows: const [
+          RosterRow(id: 'me', name: 'Jonas', clusterId: 'c1', connected: true),
+          RosterRow(id: 'space-0', name: 'Person 0', clusterId: 'c1', userAccountId: 'account-0'),
+          RosterRow(id: 'space-1', name: 'Person 1', clusterId: 'c1', userAccountId: 'account-1'),
+        ],
+      );
+      addTearDown(state.dispose);
+      await show(tester, state);
+
+      await tester.tap(find.byKey(const ValueKey('space-0')));
+      await tester.pump();
+
+      expect(find.text('Everyone'), findsOneWidget, reason: 'the big view is up');
+      expect(find.text('Fit'), findsNothing);
+      expect(find.text('Fill'), findsNothing);
+      await tester.pump(const Duration(seconds: 2)); // flush the cluster debounce
+    });
+  });
 }
