@@ -1018,6 +1018,12 @@ class SfuSession {
     _recvHealTimer = Timer(_recvHealBackoff, () async {
       _recvHealTimer = null;
 
+      // Drop denials from peers we no longer subscribe to. unsubscribe() leaves
+      // the denial behind, so without this a stale denial from a departed peer
+      // reads as evidence that the current cluster is deaf, and could rebuild a
+      // healthy in-flight receive path for the peer that replaced it.
+      _consumeDenied.removeWhere((srcId) => !_subscribed.contains(srcId));
+
       // Re-evaluate against current state, not the state that armed us. If a
       // consumer has since been built, or we are no longer subscribed to
       // anyone, or the denials have cleared, there is nothing to heal — reset

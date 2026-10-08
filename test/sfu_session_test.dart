@@ -599,6 +599,45 @@ void main() {
       });
     });
 
+    test('a stale denial from a departed peer never rebuilds a live one', () {
+      fakeAsync((clock) {
+        const other = 'acct-other';
+        rig.addresses[other] = nodeA;
+
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        // A peer is denied, arming the watchdog.
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.node().push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+
+        // Membership turns over before the timer fires: the denied peer leaves
+        // and a replacement joins, whose receive path is healthily in flight
+        // (requested, not yet a consumer). unsubscribe() leaves the denial
+        // behind, so without pruning it reads as proof the cluster is deaf.
+        rig.session.unsubscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.session.subscribe(other).ignore();
+        clock.flushMicrotasks();
+        final asked = consumeRequestsFor(rig.node(), other);
+        expect(asked, greaterThan(0),
+            reason: 'the replacement should have been requested once');
+
+        // The watchdog fires carrying only the departed peer's denial. It must
+        // stand down, not tear down and re-request the replacement's live path.
+        clock.elapse(const Duration(seconds: 90));
+        clock.flushMicrotasks();
+        expect(consumeRequestsFor(rig.node(), other), asked,
+            reason: "a departed peer's denial must not rebuild a live peer");
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
     test('a heal leaves the send side untouched', () {
       fakeAsync((clock) {
         rig.session.start().ignore();
