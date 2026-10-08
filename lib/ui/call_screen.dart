@@ -955,9 +955,18 @@ class _VideoTileState extends State<_VideoTile> {
     // stopped underneath it is the crash this ordering avoids. Only once it is
     // initialised: setting `srcObject` before that throws, which a tile closed in
     // the moment after it opened would otherwise do — `_init` disposes those.
+    //
+    // But detaching is not enough. The native `FlutterRTCVideoRenderer`
+    // dispatches each `renderFrame:` onto the main queue; when a tile is swapped
+    // out — which auto-spotlight does on every active-speaker change, and a
+    // manual tap does on every switch — frames can already be sitting in that
+    // backlog. Freeing the renderer synchronously pulls the texture out from
+    // under those queued blocks and the next one dereferences freed memory:
+    // EXC_BAD_ACCESS at `-[FlutterRTCVideoRenderer renderFrame:]`. So hand the
+    // renderer off to drain and be freed once the backlog has run, rather than
+    // disposing it here under the live frame path.
     if (_ready) {
-      _renderer.srcObject = null;
-      _renderer.dispose();
+      unawaited(retireRenderer(_renderer));
     }
     super.dispose();
   }
@@ -981,6 +990,26 @@ class _VideoTileState extends State<_VideoTile> {
           : null,
     );
   }
+}
+
+/// Free a renderer that a tile has finished with, but only after the native
+/// main-queue frame backlog has had a chance to drain.
+///
+/// Nulling `srcObject` stops further frames being enqueued; the delay lets any
+/// `renderFrame:` blocks already dispatched run against a renderer that is still
+/// alive before the texture is torn down. Without it, disposing synchronously in
+/// `State.dispose()` frees the texture under an in-flight frame and crashes with
+/// EXC_BAD_ACCESS in `-[FlutterRTCVideoRenderer renderFrame:]`. Half a second is
+/// far longer than a frame interval and costs one lingering texture per swap.
+///
+/// Public, not `_private`, so a test can drive it against a mocked platform
+/// channel: the full `_VideoTile` cannot be built under `flutter test` (its
+/// renderer needs a `MethodChannel`), so this helper is where the detach/delay/
+/// dispose ordering is guarded against a regression to synchronous disposal.
+Future<void> retireRenderer(RTCVideoRenderer renderer) async {
+  renderer.srcObject = null;
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  await renderer.dispose();
 }
 
 /// The chrome around a tile: the fallback face, the name, the mute pip.
