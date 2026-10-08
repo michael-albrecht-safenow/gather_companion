@@ -156,12 +156,13 @@ const Map<String, ({int x, int y})> kCastStartTiles = {
 /// is what lights `AppState.inHuddle` and the "In a call" banner. The speaking
 /// ring on the map still reads the row's own `speaking` flag (see
 /// `AppState.peopleOnMap`).
-RosterRow selfOfficeRow(({int x, int y}) at, {String direction = 'Down', bool speaking = false, String? clusterId}) => RosterRow(
+RosterRow selfOfficeRow(({int x, int y}) at, {String direction = 'Down', bool speaking = false, String? clusterId, String floorId = kFloorId}) => RosterRow(
       id: kSelfId,
       name: 'You',
       connected: true,
       availability: 'Active',
       clusterId: clusterId,
+      floorId: floorId,
       x: at.x,
       y: at.y,
       direction: direction,

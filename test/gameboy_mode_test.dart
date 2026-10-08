@@ -219,6 +219,45 @@ void main() {
       expect(find.byType(ControlBar), findsOneWidget);
     });
 
+    // The whole point of the hold: the LCD must keep drawing the office when the
+    // reconnect swaps in a fresh empty reader, instead of flashing the black "Not
+    // connected" placeholder the user actually saw. The handheld embeds `MapScreen`
+    // as its screen body, whose `map == null ? _Waiting : _Plan` branch reads the
+    // `map` getter — which now returns the held office — so this proves the fix
+    // reaches the pixels inside the shell, not just `state.map` in isolation.
+    testWidgets('the LCD keeps the office on a reconnect rather than going black', (tester) async {
+      final collector = FakeCollector();
+      final state = configure(AppState())
+        ..setGameboyMode(true)
+        ..debugAttachCollector(collector)
+        // A roster lands with a whole reader behind it: the office is drawn, and
+        // held against the next reconnect.
+        ..debugApplyRoster(const Roster(selfId: 'me', rows: [
+          RosterRow(id: 'me', name: 'You', x: 5, y: 5, floorId: 'f1', connected: true),
+        ]));
+      await tester.pumpWidget(wrap(state));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byType(GameboyShell), findsOneWidget);
+      expect(find.byType(MapScreen), findsOneWidget);
+      expect(find.text('Not connected'), findsNothing,
+          reason: 'the office is up, so no black placeholder');
+      expect(state.map, isNotNull);
+
+      // The reconnect: `DirectCollector` swaps in a fresh empty reader, so the live
+      // lookup goes null. No roster flows mid-reconnect, so the held office stands.
+      collector.hasMap = false;
+      state.debugApplyLink(const LinkStatus(LinkState.retrying, 'Network changed — reconnecting.'));
+      await tester.pump();
+
+      expect(state.map, isNotNull, reason: 'the held office carries the gap');
+      expect(find.text('Not connected'), findsNothing,
+          reason: 'the LCD must not blank to the black placeholder on a reconnect');
+      expect(find.textContaining('The map comes from Gather'), findsNothing,
+          reason: 'nor show the waiting copy under it');
+    });
+
     testWidgets('A latches the cart', (tester) async {
       final state = configure(AppState())..setGameboyMode(true);
       await tester.pumpWidget(wrap(state));
