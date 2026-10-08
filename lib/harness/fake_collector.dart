@@ -78,8 +78,12 @@ class FakeCollector implements Collector {
   @override
   bool get hasState => true;
 
+  /// When false, [mapFor] returns null — standing in for the fresh empty reader a
+  /// real reconnect swaps in, so a test can prove the held office survives it.
+  bool hasMap = true;
+
   @override
-  SpaceMap? mapFor(String? floorId) => schematicOffice();
+  SpaceMap? mapFor(String? floorId) => hasMap ? schematicOffice() : null;
   @override
   SpaceArt? artFor(String? floorId, {bool dark = true}) => null;
   @override
