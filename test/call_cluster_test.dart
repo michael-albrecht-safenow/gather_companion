@@ -44,6 +44,22 @@ void main() {
         connected: true,
       );
 
+  /// A placed row, so [Roster.nearby] can judge who is still in range — the
+  /// relation that tells a transient cluster flap from a walk-away.
+  RosterRow placed(String id,
+          {String? cluster, String? account, num x = 0, num y = 0}) =>
+      RosterRow(
+        id: id,
+        name: id,
+        x: x,
+        y: y,
+        floorId: 'f1',
+        clusterIdKnown: true,
+        clusterId: cluster,
+        userAccountId: account,
+        connected: true,
+      );
+
   /// An [AppState] with a call attached and nothing else running.
   ({AppState state, FakeCall call}) wired() {
     final call = FakeCall();
@@ -262,6 +278,106 @@ void main() {
         {'acct-near'}
       ]);
       expect(call.told, isEmpty);
+    });
+  });
+
+  // ---- issue #22: the cluster flaps to (none) while walking -------------------
+
+  test('a transient clusterId drop does not tear the call down', () {
+    withClock((clock) {
+      final (:state, :call) = wired();
+
+      // Standing together: the conversation forms and both are in range.
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', cluster: 'c1', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+      expect(state.inHuddle, isTrue);
+      expect(call.conversations, ['c1']);
+      expect(call.told, [
+        {'acct-them'}
+      ]);
+
+      // Our own `clusterId` flickers to null while walking, but we are still
+      // standing next to them — the #22 flap. The banner, the conversation name
+      // and the subscription must all ride through it.
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+
+      expect(state.inHuddle, isTrue);
+      expect(state.huddleRows.map((r) => r.id), ['them']);
+      expect(call.conversations, ['c1']); // not cleared to null
+      expect(call.told, [
+        {'acct-them'}
+      ]); // not dropped to empty
+    });
+  });
+
+  test('walking away from the cluster still drops the call', () {
+    withClock((clock) {
+      final (:state, :call) = wired();
+
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', cluster: 'c1', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+      expect(state.inHuddle, isTrue);
+
+      // We leave: our `clusterId` is null *and* we are now far from them, so no
+      // prior member is in range and the release is immediate.
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', account: 'acct-me', x: 100),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+
+      expect(state.inHuddle, isFalse);
+      expect(state.huddleRows, isEmpty);
+      expect(call.conversations, ['c1', null]);
+      expect(call.told, [
+        {'acct-them'},
+        <String>{},
+      ]);
+    });
+  });
+
+  test('a held cluster is let go after the safety cap', () {
+    withClock((clock) {
+      final (:state, :call) = wired();
+
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', cluster: 'c1', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+
+      // Our `clusterId` stays null while they linger in range and the server
+      // never re-forms the bubble: a hold that never resolves must not last
+      // forever.
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+
+      // Just short of the cap: still held.
+      clock.elapse(const Duration(seconds: 11));
+      clock.flushMicrotasks();
+      expect(state.inHuddle, isTrue);
+
+      // Past the cap: released, banner and conversation and subscription alike.
+      clock.elapse(const Duration(seconds: 3));
+      clock.flushMicrotasks();
+      expect(state.inHuddle, isFalse);
+      expect(call.conversations, ['c1', null]);
+      expect(call.told, [
+        {'acct-them'},
+        <String>{},
+      ]);
     });
   });
 }
