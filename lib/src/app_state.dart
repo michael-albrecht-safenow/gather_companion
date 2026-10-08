@@ -1046,6 +1046,12 @@ class AppState extends ChangeNotifier {
   Future<String?> leaveHuddle() async {
     final collector = _collector;
     if (collector == null) return 'Not connected to Gather.';
+    // Mark the leave so the next empty roster is released at once instead of
+    // held as a flap. Tapping Leave puts us out of the cluster while we are
+    // still standing with the same peers, which is exactly what a #22 flicker
+    // looks like to the proximity test — so the intent is tracked rather than
+    // guessed at. See [_leaving].
+    _leaving = true;
     return _sent(collector.leaveCluster(), 'Could not leave the conversation.');
   }
 
@@ -1205,6 +1211,10 @@ class AppState extends ChangeNotifier {
       // Forming and growing stay prompt — only an *empty* reading is ever held.
       _clusterHoldTimer?.cancel();
       _clusterHoldTimer = null;
+      // Back in a cluster: a Leave we tapped before this did not take (or we
+      // have re-formed since), so drop the intent rather than let it suppress a
+      // later genuine flap.
+      _leaving = false;
       _commitStableCluster(liveRows, roster.myClusterId);
     } else {
       // The live cluster is empty. Our own `clusterId` flickers to null for a few
@@ -1216,7 +1226,20 @@ class AppState extends ChangeNotifier {
       // nobody we were talking to is near any more, we have left, and the release
       // is immediate.
       final near = <String>{for (final row in roster.nearby) row.id};
-      final transient = _stableHuddleRows.any((p) => near.contains(p.id));
+      final peerStillNear = _stableHuddleRows.any((p) => near.contains(p.id));
+      // Two more things disqualify an empty from being held, each so the hold
+      // only ever protects a call that genuinely existed:
+      //
+      //  * An explicit Leave is a decision, not a flap, and looks identical to a
+      //    flicker to the proximity test above — so [leaveHuddle] flags it and
+      //    we release at once. Consumed here: it governs this one transition.
+      //  * A walk-through that never lasted past the join debounce never became
+      //    a subscription ([_lastAppliedCluster] is still empty), so there is no
+      //    call to protect, and holding it would be the very "open a call by
+      //    walking past a group" the debounce exists to prevent.
+      final established = _lastAppliedCluster.isNotEmpty;
+      final transient = peerStillNear && established && !_leaving;
+      _leaving = false;
       if (transient) {
         // Bounded, so a peer row that lingers cannot keep a dead call alive.
         _clusterHoldTimer ??= Timer(const Duration(seconds: 12), () {
@@ -1293,6 +1316,12 @@ class AppState extends ChangeNotifier {
   /// The safety cap on a hold, so a peer row that lingers on the roster cannot
   /// keep a dead call alive forever.
   Timer? _clusterHoldTimer;
+
+  /// Set by [leaveHuddle], consumed by the next empty [_noteCluster]: an explicit
+  /// Leave puts us out of the cluster while we are still beside the peers we just
+  /// left, which the proximity test cannot tell from a #22 flap. The intent is
+  /// tracked instead so the call is released at once rather than held for 12s.
+  bool _leaving = false;
 
   /// De-dupes [_logSelfCluster]; our own row's cluster signature, last logged.
   String? _lastSelfClusterSig;

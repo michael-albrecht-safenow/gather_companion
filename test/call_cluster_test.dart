@@ -9,6 +9,7 @@ library;
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
+import 'package:gather_companion/harness/fake_collector.dart';
 import 'package:gather_companion/src/app_state.dart';
 
 import 'fake_call.dart';
@@ -338,6 +339,66 @@ void main() {
 
       expect(state.inHuddle, isFalse);
       expect(state.huddleRows, isEmpty);
+      expect(call.conversations, ['c1', null]);
+      expect(call.told, [
+        {'acct-them'},
+        <String>{},
+      ]);
+    });
+  });
+
+  test('a positioned walk-through is not held into a call', () {
+    withClock((clock) {
+      final (:state, :call) = wired();
+
+      // Placed this time — close enough that `nearby` would call them in range,
+      // the condition that holds a flap. In and straight out again, faster than
+      // the join debounce, so the brief membership never became a subscription.
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', cluster: 'c1', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      clock.elapse(const Duration(milliseconds: 200));
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+
+      // Proximity alone would hold this — they are still in range — but nothing
+      // was ever applied, so there is no call to protect. Released at once, and
+      // the subscription never opened: one empty delivery and no membership.
+      expect(state.inHuddle, isFalse);
+      expect(call.told, [<String>{}]);
+    });
+  });
+
+  test('tapping Leave drops the call even while the peers are still in range',
+      () {
+    withClock((clock) {
+      final (:state, :call) = wired();
+      state.debugAttachCollector(FakeCollector());
+
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', cluster: 'c1', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+      expect(state.inHuddle, isTrue);
+
+      // We ask to leave but do not move. Gather drops us from the cluster while
+      // we are still standing beside them, which to the proximity test looks
+      // exactly like a #22 flap — but a Leave is a decision, not a flicker, so
+      // the hold is bypassed and the release is immediate.
+      state.leaveHuddle();
+      clock.flushMicrotasks();
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        placed('me', account: 'acct-me'),
+        placed('them', cluster: 'c1', account: 'acct-them', x: 1),
+      ]));
+      settle(clock);
+
+      expect(state.inHuddle, isFalse);
       expect(call.conversations, ['c1', null]);
       expect(call.told, [
         {'acct-them'},
