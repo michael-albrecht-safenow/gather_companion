@@ -715,13 +715,18 @@ class AppState extends ChangeNotifier {
   /// What makes "leave the conversation" a control that is only offered when
   /// there is one to leave, the same rule the D-pad follows: a button that cannot
   /// do anything is indistinguishable from a broken one.
-  List<String> get huddle => debugHuddle ?? [for (final row in _roster?.myCluster ?? const []) row.name ?? 'Someone'];
+  List<String> get huddle => debugHuddle ?? [for (final row in _stableHuddleRows) row.name ?? 'Someone'];
 
   bool get inHuddle => huddle.isNotEmpty;
 
   /// The rows behind [huddle], for a screen that needs to put a face to a name and
   /// match it against the media plane rather than only print it.
-  List<RosterRow> get huddleRows => _roster?.myCluster ?? const [];
+  ///
+  /// The *held* cluster, not the live roster: our own `clusterId` flickers to null
+  /// for a few seconds while walking (issue #22), and reading the live roster made
+  /// the banner and the faces blink out with it. [_noteCluster] holds the last
+  /// membership across such a flap.
+  List<RosterRow> get huddleRows => _stableHuddleRows;
 
   /// My availability and status line as the tree last heard about them.
   ({String? availability, String? text, String? emoji})? _mine;
@@ -1049,6 +1054,12 @@ class AppState extends ChangeNotifier {
   Future<String?> leaveHuddle() async {
     final collector = _collector;
     if (collector == null) return 'Not connected to Gather.';
+    // Mark the leave so the next empty roster is released at once instead of
+    // held as a flap. Tapping Leave puts us out of the cluster while we are
+    // still standing with the same peers, which is exactly what a #22 flicker
+    // looks like to the proximity test — so the intent is tracked rather than
+    // guessed at. See [_leaving].
+    _leaving = true;
     return _sent(collector.leaveCluster(), 'Could not leave the conversation.');
   }
 
@@ -1199,13 +1210,74 @@ class AppState extends ChangeNotifier {
   /// sentence, while leaving late means still hearing a conversation you have
   /// walked away from, which is the worse of the two.
   void _noteCluster(Roster roster) {
+    _logSelfCluster(roster);
+
+    final liveRows = roster.myCluster;
+
+    if (liveRows.isNotEmpty) {
+      // A conversation we are in: take it at once and drop any pending hold.
+      // Forming and growing stay prompt — only an *empty* reading is ever held.
+      _clusterHoldTimer?.cancel();
+      _clusterHoldTimer = null;
+      // Back in a cluster: a Leave we tapped before this did not take (or we
+      // have re-formed since), so drop the intent rather than let it suppress a
+      // later genuine flap.
+      _leaving = false;
+      _commitStableCluster(liveRows, roster.myClusterId);
+    } else {
+      // The live cluster is empty. Our own `clusterId` flickers to null for a few
+      // seconds while walking (issue #22), and that is not the same event as
+      // walking away — the tell is proximity. If somebody from the cluster we last
+      // held is still *in range* (Gather's own `nearby` relation), we are standing
+      // with them and the empty is a transient server flap: hold the call across
+      // it rather than blink the banner and clear the SFU metadata to `""`. If
+      // nobody we were talking to is near any more, we have left, and the release
+      // is immediate.
+      final near = <String>{for (final row in roster.nearby) row.id};
+      final peerStillNear = _stableHuddleRows.any((p) => near.contains(p.id));
+      // Two more things disqualify an empty from being held, each so the hold
+      // only ever protects a call that genuinely existed:
+      //
+      //  * An explicit Leave is a decision, not a flap, and looks identical to a
+      //    flicker to the proximity test above — so [leaveHuddle] flags it and
+      //    we release at once. Consumed here: it governs this one transition.
+      //  * A walk-through that never lasted past the join debounce never became
+      //    a subscription ([_lastAppliedCluster] is still empty), so there is no
+      //    call to protect, and holding it would be the very "open a call by
+      //    walking past a group" the debounce exists to prevent.
+      final established = _lastAppliedCluster.isNotEmpty;
+      final transient = peerStillNear && established && !_leaving;
+      _leaving = false;
+      if (transient) {
+        // Bounded, so a peer row that lingers cannot keep a dead call alive.
+        _clusterHoldTimer ??= Timer(const Duration(seconds: 12), () {
+          _clusterHoldTimer = null;
+          _commitStableCluster(const [], null);
+        });
+      } else {
+        _clusterHoldTimer?.cancel();
+        _clusterHoldTimer = null;
+        _commitStableCluster(const [], null);
+      }
+    }
+
+    // Consume-allow widens from the *held* cluster plus whoever is live-nearby, so
+    // the people we are talking to keep permission to hear us through a flap. Run
+    // every roster — `nearby` moves even when the cluster does not.
     _noteNeighbours(roster);
-    _noteConversation(roster);
+  }
+
+  /// Point the media subscription at the held cluster, behind the asymmetric
+  /// debounce. Called from [_commitStableCluster] rather than off the raw roster,
+  /// so the subscription follows exactly what the banner does — audio rides
+  /// through a transient flap and is dropped on a genuine release, including the
+  /// one the safety cap fires.
+  void _applyClusterMedia() {
     // Their `UserAccount.id`, which is what the media plane is keyed on — see
     // `RosterRow.userAccountId`. Somebody whose row has not carried it yet is
     // skipped rather than guessed at, and picked up on a later roster.
     final wanted = <String>{
-      for (final row in roster.myCluster) ?row.userAccountId,
+      for (final row in _stableHuddleRows) ?row.userAccountId,
     };
 
     if (wanted.length == _clusterWanted.length &&
@@ -1216,7 +1288,7 @@ class AppState extends ChangeNotifier {
     // The one line that says whether Gather ever formed a conversation for us. An
     // empty set after walking up to somebody is the fingerprint of the desk-desync
     // bug: the server never counted us as adjacent, so there is nobody to listen to
-    // and no call to start. See [_noteConversation] for the id that pairs with it.
+    // and no call to start. See [_commitStableCluster] for the id that pairs with it.
     _log('cluster: members -> ${wanted.length}'
         '${wanted.isEmpty ? '' : ' (${wanted.join(',')})'}');
 
@@ -1243,19 +1315,80 @@ class AppState extends ChangeNotifier {
   Set<String> _lastAppliedCluster = const {};
   Timer? _clusterDebounce;
 
-  /// Tell the media plane which conversation we are in, by Gather's own id.
+  /// The cluster as the banner, the SFU conversation name and the media
+  /// subscription all read it: the last non-empty membership, held across a
+  /// transient empty for as long as we are standing with the people in it. See
+  /// [_noteCluster] for the proximity test that tells a flap from a walk-away.
+  List<RosterRow> _stableHuddleRows = const [];
+
+  /// The safety cap on a hold, so a peer row that lingers on the roster cannot
+  /// keep a dead call alive forever.
+  Timer? _clusterHoldTimer;
+
+  /// Set by [leaveHuddle], consumed by the next empty [_noteCluster]: an explicit
+  /// Leave puts us out of the cluster while we are still beside the peers we just
+  /// left, which the proximity test cannot tell from a #22 flap. The intent is
+  /// tracked instead so the call is released at once rather than held for 12s.
+  bool _leaving = false;
+
+  /// De-dupes [_logSelfCluster]; our own row's cluster signature, last logged.
+  String? _lastSelfClusterSig;
+
+  /// Move the banner, the conversation name and (via [_noteCluster]) the media
+  /// subscription to [rows]/[id] together, so they can never disagree about
+  /// whether we are in a call.
   ///
   /// `set-player-conversation-metadata` is in the measured method table and the
-  /// desktop client sends it on every change, so this does too. Undebounced and
-  /// separate from the membership on purpose: it is a name, not a subscription,
-  /// and naming the room you are in late is the one part of this that costs
-  /// nothing to get right immediately.
-  void _noteConversation(Roster roster) {
-    final id = roster.myClusterId;
-    if (id == _conversation) return;
-    _conversation = id;
-    _log('cluster: conversation id -> ${id ?? '(none)'}');
-    unawaited(_call?.setConversation(id) ?? Future<void>.value());
+  /// desktop client sends it on every change — including `clusterId: ""` on
+  /// leaving, so the SFU stops counting us a member of a bubble we have walked out
+  /// of. It is folded in here, rather than sent undebounced off the raw roster,
+  /// precisely so a transient empty (issue #22) does not clear it mid-call.
+  void _commitStableCluster(List<RosterRow> rows, String? id) {
+    final rowsChanged = !_sameCluster(_stableHuddleRows, rows);
+    _stableHuddleRows = rows;
+    if (id != _conversation) {
+      _conversation = id;
+      _log('cluster: conversation id -> ${id ?? '(none)'}');
+      unawaited(_call?.setConversation(id) ?? Future<void>.value());
+    }
+    _applyClusterMedia();
+    if (rowsChanged) notifyListeners();
+  }
+
+  /// The same people, by `SpaceUser.id`, order aside.
+  bool _sameCluster(List<RosterRow> a, List<RosterRow> b) {
+    if (a.length != b.length) return false;
+    final ids = <String>{for (final r in a) r.id};
+    return b.every((r) => ids.contains(r.id));
+  }
+
+  /// Record our own row's `clusterId` as the server actually sends it — absent,
+  /// explicit null, or an id — next to `connected`, so a pulled `media.log` can
+  /// say whether a flap to (none) was the server dropping us or a client-side
+  /// roster merge losing the key. That is the one fact the `cluster:` lines cannot
+  /// show, and the one that decides where the #22 flap comes from. Logged only on
+  /// a change, so a roster four times a second does not fill the file.
+  void _logSelfCluster(Roster roster) {
+    RosterRow? me;
+    final id = roster.selfId;
+    if (id != null) {
+      for (final row in roster.rows) {
+        if (row.id == id) {
+          me = row;
+          break;
+        }
+      }
+    }
+    final key = me == null
+        ? 'no-self'
+        : !me.clusterIdKnown
+            ? 'absent'
+            : me.clusterId ?? 'null';
+    final sig = '$key/${me?.connected}';
+    if (sig == _lastSelfClusterSig) return;
+    _lastSelfClusterSig = sig;
+    _log('cluster: self clusterId=$key connected=${me?.connected} '
+        'members=${roster.myCluster.length}');
   }
 
   String? _conversation;
@@ -1292,7 +1425,11 @@ class AppState extends ChangeNotifier {
       // Being in somebody's conversation is a strictly stronger claim than
       // standing near them, so this can only ever widen the set, and widening it
       // is cheap — allowing somebody negotiates nothing.
-      for (final row in roster.myCluster) ?row.userAccountId,
+      //
+      // The *held* cluster, not the live roster, so a transient flap (issue #22)
+      // does not drop consume-allow for the person we are talking to and leave
+      // them unable to hear us for the length of the flap.
+      for (final row in _stableHuddleRows) ?row.userAccountId,
     };
     if (wanted.length == _visibleTo.length && _visibleTo.containsAll(wanted)) {
       return;
@@ -2580,6 +2717,8 @@ class AppState extends ChangeNotifier {
     // otherwise fire into a call that has already been torn down.
     _clusterDebounce?.cancel();
     _clusterDebounce = null;
+    _clusterHoldTimer?.cancel();
+    _clusterHoldTimer = null;
     unawaited(_detach());
     // After `_detach`, which clears it: a `ChangeNotifier` notified after it has
     // been disposed throws, and `_detach` reaches that line before its first
