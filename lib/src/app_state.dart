@@ -1189,6 +1189,50 @@ class AppState extends ChangeNotifier {
 
   Set<String> _speakers = const {};
 
+  /// Wakes the call screen when a hand goes up or down in our conversation, and
+  /// reconciles our own hand against the roster the desktop also writes.
+  ///
+  /// The same narrow question as [_noteSpeakers], for the same reason: the
+  /// presence fold does not count a raised hand as a state change, so without this
+  /// a colleague's badge would hang at whatever it was when some unrelated frame
+  /// last woke the screen. Bounded to the huddle we are in, not the whole space.
+  ///
+  /// Our own hand is local-first in [setHandRaised], but the roster is the
+  /// authority the *desktop* writes to as well: raising or lowering the hand on the
+  /// computer moves our own row under us, and this phone must follow it or its
+  /// button and self tile go stale. We follow an actual transition on our own row
+  /// and ignore a roster that merely repeats the value we already hold, so the
+  /// optimistic press is confirmed by its own echo rather than stuttered by it.
+  void _noteHands(Roster roster) {
+    final mine = _myRow()?.clusterId;
+    final hands = <String>{
+      if (mine != null)
+        for (final row in roster.rows)
+          if (row.id != roster.selfId && row.clusterId == mine && row.handRaised)
+            row.id,
+    };
+
+    final ownHand = _myRow()?.handRaised ?? false;
+    var ownChanged = false;
+    if (ownHand != _rosterHandRaised) {
+      _rosterHandRaised = ownHand;
+      if (ownHand != _myHandRaised) {
+        _myHandRaised = ownHand;
+        ownChanged = true;
+      }
+    }
+
+    if (setEquals(hands, _handsUp) && !ownChanged) return;
+    _handsUp = hands;
+    notifyListeners();
+  }
+
+  Set<String> _handsUp = const {};
+
+  /// Our own hand as the last roster had it, to tell a desktop raise or lower from
+  /// a roster that only echoes the value this phone already holds. See [_noteHands].
+  bool _rosterHandRaised = false;
+
   /// Whether *we* are talking, measured from our own microphone.
   ///
   /// Read here rather than off the roster, even though the roster carries it
@@ -2515,6 +2559,7 @@ class AppState extends ChangeNotifier {
           _noteDirectory(roster);
           _noteCluster(roster);
           _noteSpeakers(roster);
+          _noteHands(roster);
           final out = _tracker.applyRoster(roster);
           _onFold(out);
           _noteMine();
@@ -2824,6 +2869,7 @@ class AppState extends ChangeNotifier {
     _noteDirectory(roster);
     _noteCluster(roster);
     _noteSpeakers(roster);
+    _noteHands(roster);
     _onFold(_tracker.applyRoster(roster));
     _noteMine();
     _lowerHandIfOutOfMeeting();

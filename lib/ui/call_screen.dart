@@ -1287,7 +1287,16 @@ class _TileFrame extends StatelessWidget {
             // overview — and the same badge rides the spotlight, since both views
             // draw this one frame.
             if (tile.handRaised)
-              const Positioned(top: 8, left: 8, child: _HandBadge()),
+              Positioned(
+                top: 8,
+                left: 8,
+                // Named, not a bare glyph: the badge is a meeting status, and a
+                // screen reader that only heard the name would miss whose hand is up.
+                child: Semantics(
+                  label: '${tile.label} raised their hand',
+                  child: const _HandBadge(),
+                ),
+              ),
             Positioned(
               left: 8,
               right: 8,

@@ -14,12 +14,14 @@ import 'package:gather_companion/src/app_state.dart';
 import 'fake_call.dart';
 
 void main() {
-  RosterRow row(String id, {String? cluster}) => RosterRow(
+  RosterRow row(String id, {String? cluster, bool handRaised = false}) =>
+      RosterRow(
         id: id,
         name: id,
         clusterIdKnown: true,
         clusterId: cluster,
         connected: true,
+        handRaised: handRaised,
         x: 3,
         y: 4,
       );
@@ -103,5 +105,61 @@ void main() {
     // Still in the meeting, so nothing lowers it — a roster arriving is not a
     // reason to put somebody's hand down.
     expect(state.myHandRaised, isTrue);
+  });
+
+  test('a hand lowered on the desktop comes down on this phone', () {
+    final (:state, :rebuilds) = wired();
+    state.debugHuddle = ['luca'];
+    state.setHandRaised(true);
+
+    // The roster echoes our own press back: same value we already hold, so it
+    // confirms the hand rather than moving it.
+    state.debugApplyRoster(Roster(selfId: 'me', rows: [
+      row('me', cluster: 'c1', handRaised: true),
+      row('luca', cluster: 'c1'),
+    ]));
+    expect(state.myHandRaised, isTrue);
+
+    // Now the hand goes down on the desktop. Our own row is the authority both
+    // halves write to, so this phone follows the transition even though nothing
+    // was pressed here.
+    state.debugApplyRoster(Roster(selfId: 'me', rows: [
+      row('me', cluster: 'c1', handRaised: false),
+      row('luca', cluster: 'c1'),
+    ]));
+    expect(state.myHandRaised, isFalse);
+  });
+
+  test('a hand raised on the desktop shows up on this phone', () {
+    final (:state, :rebuilds) = wired();
+    state.debugHuddle = ['luca'];
+    expect(state.myHandRaised, isFalse);
+
+    state.debugApplyRoster(Roster(selfId: 'me', rows: [
+      row('me', cluster: 'c1', handRaised: true),
+      row('luca', cluster: 'c1'),
+    ]));
+
+    expect(state.myHandRaised, isTrue);
+  });
+
+  test("a colleague's hand going up wakes the call screen", () {
+    final (:state, :rebuilds) = wired();
+    state.debugHuddle = ['luca'];
+    state.debugApplyRoster(Roster(selfId: 'me', rows: [
+      row('me', cluster: 'c1'),
+      row('luca', cluster: 'c1'),
+    ]));
+    final before = rebuilds.length;
+
+    // Only Luca's hand moves — no field the presence fold, the directory or the
+    // speaker set considers a change — so without a hand digest this roster would
+    // land silently and his badge would hang until some unrelated frame.
+    state.debugApplyRoster(Roster(selfId: 'me', rows: [
+      row('me', cluster: 'c1'),
+      row('luca', cluster: 'c1', handRaised: true),
+    ]));
+
+    expect(rebuilds.length, greaterThan(before));
   });
 }
