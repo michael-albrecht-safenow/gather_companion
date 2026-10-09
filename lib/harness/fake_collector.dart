@@ -279,6 +279,20 @@ class FakeCollector implements Collector {
   @override
   ({bool ok, String? detail}) setActive(bool active) => (ok: true, detail: null);
 
+  /// How many times [notePresenceDoubt] has been raised, so a test can assert the
+  /// walk engine's stall signal reached the collector.
+  int presenceDoubts = 0;
+
+  @override
+  void notePresenceDoubt() => presenceDoubts++;
+
+  /// How many times [noteMovesConfirmed] has been raised, so a test can assert the
+  /// walk engine's recovery-took signal reached the collector.
+  int movesConfirmed = 0;
+
+  @override
+  void noteMovesConfirmed() => movesConfirmed++;
+
   /// How many times [resync] has been asked for, so a test can assert that a
   /// network change forced a reconnect.
   int resyncs = 0;

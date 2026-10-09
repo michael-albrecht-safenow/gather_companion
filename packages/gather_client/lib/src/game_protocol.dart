@@ -1145,6 +1145,40 @@ class GameProtocolReader {
     }
   }
 
+  /// Whether the server is reflecting *us* back as present — the one thing the
+  /// inbound roster can say about whether other people can see us.
+  ///
+  /// `Connection.entered` and `Connection.isActive` are the fields that would
+  /// answer it directly, but both are write-only: we send them and never read
+  /// them back. What *is* reflected is our own `SpaceUser` row, and the same
+  /// placement a peer's client keys their rendering on. So when our own row is
+  /// absent, marked gone, `connected != true`, or has no tile, that is also how we
+  /// have gone missing from everyone else's office — the readable shadow of the
+  /// unreadable `entered`. A half-open socket ends exactly here: the server's own
+  /// heartbeat eventually times us out and flips `connected` to false (or drops
+  /// the row), which is what others see as us leaving.
+  ///
+  /// Deliberately *not* the full `isPresent` test: `availability == 'Offline'` is
+  /// left out because it is a state a person chooses or drifts into and keeps for
+  /// hours — measured, nine of twelve `connected` rows were Offline, some for a
+  /// day (see [RosterRow.isPresent]). Treating that as a fault would reconnect the
+  /// socket and re-enter under someone who meant to appear away, fighting their
+  /// own choice. The connection-level signals above carry no such ambiguity, and
+  /// the walk engine's unapplied-moves signal covers a server that fails to relay
+  /// us while still calling us connected.
+  ///
+  /// Null [selfId] reads as not-visible: until the `Connection` row has named us
+  /// we cannot claim to be present. Callers must gate this on having entered and
+  /// holding state, or a first connect still assembling its dump looks like a
+  /// disappearance.
+  bool get selfVisible {
+    final me = selfId;
+    if (me == null) return false;
+    final row = _users[me];
+    if (row == null || row.gone || row.connected != true) return false;
+    return row.x != null && row.y != null;
+  }
+
   /// The roster in the shape [PresenceTracker] consumes.
   Roster roster() {
     final rows = <RosterRow>[];
