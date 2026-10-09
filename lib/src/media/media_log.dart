@@ -16,13 +16,24 @@
 /// xcrun devicectl device copy from --device <udid> \
 ///   --domain-type appDataContainer --domain-identifier com.jonasgrunau.gatherCompanion \
 ///   --source tmp/media.log --destination ./media.log
+/// # …and tmp/media.log.1 for the prior rotated segment.
 /// ```
 ///
-/// Truncated on every launch rather than appended to, because a log that has to
-/// be read by eye is only useful if it covers one run. It is opened lazily and
-/// written synchronously: this is a diagnostic, and a diagnostic that loses the
-/// last few lines to a buffer is worthless precisely when it matters — the lines
-/// just before a hang are the ones being looked for.
+/// Appended across launches, not truncated, because the incident worth reading
+/// is usually on the run *before* the one that noticed it: a socket that quietly
+/// stopped being present, a reconnect that never landed. Truncating on launch
+/// wiped exactly that evidence every time the app was relaunched to "try again".
+/// Each run is fenced by a `=== launch … ===` banner so the eye finds its start.
+///
+/// Growth is bounded by rotation, not by forgetting: when the live file passes
+/// [_maxLogBytes] it is rolled to `media.log.1` (the previous `.1` dropped), so
+/// at most two segments survive — the current run and roughly one run before it.
+/// Nothing here is durable: iOS may purge `tmp/` under storage pressure and wipes
+/// it on uninstall.
+///
+/// It is opened lazily and written synchronously: this is a diagnostic, and a
+/// diagnostic that loses the last few lines to a buffer is worthless precisely
+/// when it matters — the lines just before a hang are the ones being looked for.
 library;
 
 import 'dart:io';
@@ -32,6 +43,11 @@ import 'package:flutter/foundation.dart';
 /// The log file for this run, or `null` if the device would not give us one.
 IOSink? _sink;
 bool _tried = false;
+
+/// Roll the live file to `.1` once it passes this. Two segments of this size is
+/// the whole on-disk cost. 5 MiB is tens of thousands of lines — many runs — and
+/// still trivial next to anything else the sandbox holds.
+const int _maxLogBytes = 5 * 1024 * 1024;
 
 /// Where the log is being written, for the code that wants to say so out loud.
 String? mediaLogPath;
@@ -58,7 +74,12 @@ void mediaLogToFile(String line) {
     _tried = true;
     try {
       final file = File('${Directory.systemTemp.path}/media.log');
-      _sink = file.openWrite(mode: FileMode.write);
+      _rotateIfLarge(file);
+      // Append so a relaunch keeps the prior run's evidence; the banner fences
+      // this run off from it. Opened for the whole process life, flushed by the
+      // OS — the synchronous `writeln` below is what guards the last lines.
+      _sink = file.openWrite(mode: FileMode.append)
+        ..writeln('=== launch ${DateTime.now().toIso8601String()} ===');
       mediaLogPath = file.path;
     } on Object {
       _sink = null;
@@ -71,5 +92,24 @@ void mediaLogToFile(String line) {
     sink.writeln('${DateTime.now().toIso8601String()} $line');
   } on Object {
     _sink = null;
+  }
+}
+
+/// Rolls [file] to `<file>.1` when it has outgrown [_maxLogBytes], so the live
+/// file reopened in append mode starts near empty.
+///
+/// Runs once per launch, before the sink opens — rotating a file an `IOSink`
+/// holds open would be a race. The previous `.1` is overwritten: two segments is
+/// the whole budget, and the live file is always the more interesting half.
+/// Every step is best-effort; a log that cannot rotate is still worth appending
+/// to, so failure is swallowed rather than allowed to block the sink.
+void _rotateIfLarge(File file) {
+  try {
+    if (!file.existsSync() || file.lengthSync() < _maxLogBytes) return;
+    final prior = File('${file.path}.1');
+    if (prior.existsSync()) prior.deleteSync();
+    file.renameSync(prior.path);
+  } on Object {
+    // Leave the file as it is; append still works, it just grows one run longer.
   }
 }
