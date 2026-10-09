@@ -131,6 +131,11 @@ class SfuSession {
   SfuSignalling? _node;
   ms.Device? _device;
   ms.Transport? _sendTransport;
+
+  /// The send transport's last reported ICE/DTLS state, or null before the
+  /// first `connectionstatechange`. The send-heal watchdog reads it to tell a
+  /// transport that actually connected from one that only ever acked a produce.
+  String? _sendState;
   final Map<SfuTag, ms.Producer> _producers = {};
 
   String? _sfuAddr;
@@ -523,7 +528,29 @@ class SfuSession {
     // genuinely different failure from anything on the socket, and without this
     // line it is invisible from the logs.
     transport.on('connectionstatechange', (Map data) {
-      _log('sfu: send transport is ${data['connectionState']}');
+      final state = '${data['connectionState']}';
+      _sendState = state;
+      _log('sfu: send transport is $state');
+      if (state == 'connected' || state == 'completed') {
+        // Healthy now, so any armed watchdog and its climbed backoff are stale.
+        _sendHealTimer?.cancel();
+        _sendHealTimer = null;
+        _sendHealBackoff = const Duration(seconds: 6);
+      } else if (state == 'failed' ||
+          state == 'disconnected' ||
+          state == 'closed' ||
+          state == 'connecting') {
+        // An explicit failure, or a `connecting` that may silently stall. The
+        // initial publish arms the watchdog, but once `connected` cancels it a
+        // later `refreshTurn -> restartIce` drops the transport back to
+        // `connecting` with nothing re-arming the timer — so a stall there goes
+        // uncovered. Re-arm on `connecting` too. A `disconnected` can still
+        // recover on its own, so this does not rebuild immediately — it arms the
+        // watchdog, whose grace window re-checks the state before tearing
+        // anything down. `_scheduleSendHeal` is idempotent, so a normal
+        // `connecting -> connected` arms then harmlessly stands down.
+        _scheduleSendHeal();
+      }
     });
 
     // Nothing may produce on this until the handler has built its peer
@@ -619,6 +646,12 @@ class SfuSession {
       transport.produce(
         track: track,
         stream: stream,
+        // The capture lifecycle is owned by CaptureEngine/_ensureCapture, not by
+        // mediasoup. With the package default (`stopTracks: true`), closing a
+        // producer during a send-heal rebuild would `track.stop()` and dispose
+        // the shared capture stream; the republish then hands those dead tracks
+        // back and the room hears silence. Leave the tracks alone on close.
+        stopTracks: false,
         source: tag == SfuTag.screen
             ? 'screen'
             : (tag == SfuTag.audio ? 'mic' : 'webcam'),
@@ -643,6 +676,11 @@ class SfuSession {
       _producers[tag] = producer;
       _log('sfu: publishing ${tag.wire} as ${producer.id}');
       _reportOutboundRtp(tag, producer);
+      // `produce` is acked the moment the signalling lands, long before the
+      // send transport's ICE completes — so a produce can succeed onto a
+      // transport that never connects. Arm the watchdog that notices that and
+      // rebuilds, rather than leaving a live-looking producer carrying nothing.
+      _scheduleSendHeal();
     } finally {
       _pendingProducer = null;
     }
@@ -749,7 +787,7 @@ class SfuSession {
   Future<void> unpublish(SfuTag tag) async {
     final producer = _producers.remove(tag);
     if (producer == null) return;
-    producer.close();
+    _closeProducerQuietly(producer);
     _node?.emit('produce-close', {'tag': tag.wire});
   }
 
@@ -1004,6 +1042,18 @@ class SfuSession {
   /// Set while [_rebuildReceive] runs, so overlapping fires do not stack.
   bool _healing = false;
 
+  Timer? _sendHealTimer;
+
+  /// How long the send-side watchdog waits before each heal attempt.
+  ///
+  /// Six seconds to start, doubling to a thirty-second cap. The first delay is
+  /// the grace window a healthy transport connects well within, so an ordinary
+  /// ICE negotiation is never mistaken for a stall.
+  Duration _sendHealBackoff = const Duration(seconds: 6);
+
+  /// Set while [_rebuildSend] runs, so overlapping fires do not stack.
+  bool _healingSend = false;
+
   /// Arm the watchdog that heals a receive path which never came up.
   ///
   /// Shaped like [_scheduleAddrRetry]: a self-cancelling one-shot with a
@@ -1104,6 +1154,68 @@ class SfuSession {
       _consumeDenied.clear();
     } finally {
       _healing = false;
+    }
+  }
+
+  /// Arm the watchdog that heals a send path the SFU accepted but never
+  /// connected.
+  ///
+  /// The twin of [_scheduleRecvHeal], for the outbound direction. `produce`
+  /// succeeds the instant the signalling lands — long before the send
+  /// transport's ICE/DTLS completes — so on a transient blip the transport can
+  /// sit in `connecting` with a producer the server has accepted riding
+  /// nothing: the colleague's client draws us publishing, the room gets no
+  /// media, and nothing times out because the produce already succeeded. This
+  /// notices "we hold a producer but the transport never reached connected" and
+  /// rebuilds, so the camera or microphone comes back on its own rather than
+  /// after the user leaves the meeting and re-enters.
+  void _scheduleSendHeal() {
+    if (_sendHealTimer != null || _stopped) return;
+    _sendHealTimer = Timer(_sendHealBackoff, () async {
+      _sendHealTimer = null;
+
+      // Re-evaluate against current state, not the state that armed us. Nothing
+      // to heal if we were stopped, hold no producers, or the transport has
+      // since connected — reset the backoff and stand down. A republish after a
+      // rebuild re-arms this through [publish], so standing down on an empty
+      // producer set never strands the send path.
+      final connected = _sendState == 'connected' || _sendState == 'completed';
+      if (_stopped || _producers.isEmpty || connected) {
+        _sendHealBackoff = const Duration(seconds: 6);
+        return;
+      }
+
+      await _rebuildSend();
+
+      // Grow the backoff and re-arm. The rebuild announces a republish but does
+      // not guarantee the next transport connects, so the watchdog keeps trying
+      // for the life of the call; a `connected` statechange is the only thing
+      // that cancels it.
+      final next = _sendHealBackoff.inSeconds * 2;
+      _sendHealBackoff = Duration(seconds: next > 30 ? 30 : next);
+      _scheduleSendHeal();
+    });
+  }
+
+  /// Tear down and rebuild the send path after the transport failed to connect.
+  ///
+  /// The send half of [_onNodeReconnected], reached from the watchdog rather
+  /// than a socket drop. Fails any publish still in flight so it does not sit
+  /// out its own twenty-second timeout, closes the producers and the poisoned
+  /// transport through the guarded close, then asks the owner to put its tracks
+  /// back — which builds a fresh send transport on the next publish. Touches
+  /// nothing on the receive side.
+  Future<void> _rebuildSend() async {
+    if (_healingSend) return;
+    _healingSend = true;
+    try {
+      _log('sfu: send transport never connected; rebuilding the send path');
+      _failPendingProducer(
+          const SfuException('send path rebuilt before it connected'));
+      _closeSendTransportQuietly();
+      _announceRepublish();
+    } finally {
+      _healingSend = false;
     }
   }
 
@@ -1636,9 +1748,7 @@ class SfuSession {
     final moved = _forgetPeersOn(url);
 
     if (url == _sfuAddr) {
-      _dropProducers();
-      _sendTransport?.close();
-      _sendTransport = null;
+      _closeSendTransportQuietly();
       _replayAllow(node);
       _sendConversation();
       _announceRepublish();
@@ -1655,9 +1765,7 @@ class SfuSession {
     _moving = true;
     try {
       final old = _sfuAddr;
-      _dropProducers();
-      _sendTransport?.close();
-      _sendTransport = null;
+      _closeSendTransportQuietly();
       _node = null;
       _sfuAddr = null;
       if (old != null) await _dropNode(old);
@@ -1724,9 +1832,45 @@ class SfuSession {
   /// from creating.
   void _dropProducers() {
     for (final producer in _producers.values) {
-      producer.close();
+      _closeProducerQuietly(producer);
     }
     _producers.clear();
+  }
+
+  /// Close a producer without letting a half-built peer connection's throw
+  /// escape.
+  ///
+  /// A producer on a send transport whose ICE never completed still has a
+  /// live-looking RTCPeerConnection, and mediasoup's `@close` path runs
+  /// `createOffer` on it — which throws `Unable to
+  /// RTCPeerConnection::createOffer: Error (null)` on a pc that never finished
+  /// negotiating. `FlexQueue` swallows it, but the throw aborts the rest of the
+  /// teardown and leaves `_producers`/`_sendTransport` half-cleared. Closing in
+  /// a guard keeps the state honest.
+  void _closeProducerQuietly(ms.Producer producer) {
+    try {
+      producer.close();
+    } on Object catch (error) {
+      _log('sfu: closing a producer threw (ignored): $error');
+    }
+  }
+
+  /// Close the send transport and its producers, swallowing the `createOffer`
+  /// throw a never-connected transport raises on close. Leaves `_sendTransport`
+  /// null and `_sendState` cleared so a fresh transport cannot inherit a stale
+  /// "connected".
+  void _closeSendTransportQuietly() {
+    _dropProducers();
+    final transport = _sendTransport;
+    _sendTransport = null;
+    _sendState = null;
+    if (transport != null) {
+      try {
+        transport.close();
+      } on Object catch (error) {
+        _log('sfu: closing the send transport threw (ignored): $error');
+      }
+    }
   }
 
   void _announceRepublish() {
@@ -1771,6 +1915,10 @@ class SfuSession {
     _consumeDenied.clear();
     _recvHealBackoff = const Duration(seconds: 5);
     _healing = false;
+    _sendHealTimer?.cancel();
+    _sendHealTimer = null;
+    _sendHealBackoff = const Duration(seconds: 6);
+    _healingSend = false;
     _spatialDebounce?.cancel();
     _spatialDebounce = null;
     _awaitingAddr.clear();
@@ -1789,8 +1937,7 @@ class SfuSession {
     _subscribed.clear();
     _peerNode.clear();
 
-    _sendTransport?.close();
-    _sendTransport = null;
+    _closeSendTransportQuietly();
     for (final transport in _recvTransports.values) {
       transport.close();
     }

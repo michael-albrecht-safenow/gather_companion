@@ -292,6 +292,12 @@ class FakeProducer implements ms.Producer {
   bool closed = false;
   bool isPaused = false;
 
+  /// Reproduce the `createOffer: Error (null)` a producer on a never-connected
+  /// send transport throws when closed — the real mediasoup `@close` runs
+  /// `createOffer` on a peer connection that never finished negotiating. Set by
+  /// a test to prove the session's guarded close swallows it.
+  bool throwOnClose = false;
+
   /// Every layer the server steered us to, so the debounce can be asserted on.
   final List<int> maxSpatialLayers = [];
 
@@ -302,7 +308,12 @@ class FakeProducer implements ms.Producer {
   void resume() => isPaused = false;
 
   @override
-  void close() => closed = true;
+  void close() {
+    if (throwOnClose) {
+      throw StateError('Unable to RTCPeerConnection::createOffer: Error (null)');
+    }
+    closed = true;
+  }
 
   @override
   Future<void> setMaxSpatialLayer(int spatialLayer) async =>

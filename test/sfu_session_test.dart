@@ -656,6 +656,12 @@ void main() {
             .firstWhere((t) => t.producerCallback != null);
         expect(sendTransport.producers, isNotEmpty);
 
+        // The send transport connects normally, so the send-side watchdog stands
+        // down and only the receive heal under test is in play.
+        sendTransport.handlers['connectionstatechange']
+            ?.call({'connectionState': 'connected'});
+        clock.flushMicrotasks();
+
         rig.node().push(
             'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
         clock.flushMicrotasks();
@@ -671,6 +677,175 @@ void main() {
         expect(sendCreates, isEmpty);
         expect(sendTransport.producers.every((p) => !p.closed), isTrue);
         expect(rig.session.publishing(SfuTag.audio), isTrue);
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+  });
+
+  group('send-side stall', () {
+    // The camera-enable freeze from the 2026-10-09 media.log: `produce` is acked
+    // the instant the signalling lands, so a producer is built onto a send
+    // transport whose ICE never completes. Nothing times out — the produce
+    // already succeeded — so the room gets no media and, before this watchdog,
+    // the app sat dead until a socket drop eventually tore it down. The send
+    // heal has to notice "a producer, but a transport that never connected" and
+    // rebuild.
+
+    FakeTransport sendTransport() =>
+        rig.device.transports.firstWhere((t) => t.producerCallback != null);
+
+    void publishAudio(FakeAsync clock) {
+      rig.session
+          .publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio)
+          .ignore();
+      // The fake builds the producer on the event queue, not a microtask.
+      clock.elapse(Duration.zero);
+      clock.flushMicrotasks();
+    }
+
+    test('rebuilds a produce the transport never connected, and asks to '
+        'republish', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        publishAudio(clock);
+        final send = sendTransport();
+        expect(send.producers, isNotEmpty);
+        expect(rig.session.publishing(SfuTag.audio), isTrue);
+        final before = rig.republishes;
+
+        // No `connectionstatechange` ever fires: the transport acked the produce
+        // but its ICE stalled. The grace window passes and the watchdog rebuilds.
+        clock.elapse(const Duration(seconds: 6));
+        clock.flushMicrotasks();
+
+        expect(send.closed, isTrue,
+            reason: 'the poisoned send transport is torn down');
+        expect(send.producers.every((p) => p.closed), isTrue);
+        expect(rig.session.publishing(SfuTag.audio), isFalse,
+            reason: 'the dropped producer is forgotten');
+        expect(rig.republishes, greaterThan(before),
+            reason: 'the owner is asked to put its tracks back');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a transport that connects cancels the watchdog', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        publishAudio(clock);
+        final send = sendTransport();
+        final before = rig.republishes;
+
+        // ICE completes before the grace window is out.
+        send.handlers['connectionstatechange']
+            ?.call({'connectionState': 'connected'});
+        clock.flushMicrotasks();
+
+        clock.elapse(const Duration(seconds: 90));
+        clock.flushMicrotasks();
+
+        expect(send.closed, isFalse);
+        expect(rig.session.publishing(SfuTag.audio), isTrue);
+        expect(rig.republishes, before,
+            reason: 'a connected transport means nothing to heal');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a healthy transport that stalls back to connecting re-arms the '
+        'watchdog', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        publishAudio(clock);
+        final send = sendTransport();
+        final before = rig.republishes;
+
+        // ICE completes, so the watchdog stands down and its timer is cancelled.
+        send.handlers['connectionstatechange']
+            ?.call({'connectionState': 'connected'});
+        clock.flushMicrotasks();
+
+        // Later a TURN refresh restarts ICE and the transport drops back to
+        // `connecting`, then silently stalls there — never reporting
+        // `disconnected` or `failed`. With nothing re-arming on `connecting`
+        // this producer would ride a dead transport forever.
+        send.handlers['connectionstatechange']
+            ?.call({'connectionState': 'connecting'});
+        clock.flushMicrotasks();
+
+        clock.elapse(const Duration(seconds: 6));
+        clock.flushMicrotasks();
+
+        expect(send.closed, isTrue,
+            reason: 'the re-stalled send transport is torn down');
+        expect(rig.session.publishing(SfuTag.audio), isFalse);
+        expect(rig.republishes, greaterThan(before),
+            reason: 'the watchdog re-armed on connecting and rebuilt');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('retries with growing backoff and never gives up', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        publishAudio(clock);
+        var rebuilds = rig.republishes;
+
+        // Each window the transport still never connects: the watchdog rebuilds,
+        // asks for a republish, and we put the producer back the way LiveCall's
+        // `_onNeedsRepublish` would. Backoff climbs 6 → 12 → 24 → 30 (capped).
+        for (final window in const [6, 12, 24, 30, 30]) {
+          clock.elapse(Duration(seconds: window));
+          clock.flushMicrotasks();
+          expect(rig.republishes, greaterThan(rebuilds),
+              reason: 'a rebuild was expected after ${window}s');
+          rebuilds = rig.republishes;
+          publishAudio(clock);
+        }
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a never-connected producer tears down without throwing', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        publishAudio(clock);
+        final send = sendTransport();
+        final before = rig.republishes;
+
+        // mediasoup's `@close` runs `createOffer` on the half-built peer
+        // connection and throws. The guarded close must swallow it and still
+        // leave clean state — an escaping throw would fail this test.
+        for (final producer in send.producers) {
+          producer.throwOnClose = true;
+        }
+
+        clock.elapse(const Duration(seconds: 6));
+        clock.flushMicrotasks();
+
+        expect(rig.session.publishing(SfuTag.audio), isFalse,
+            reason: 'the producer is forgotten even though its close threw');
+        expect(rig.republishes, greaterThan(before));
 
         rig.close().ignore();
         clock.elapse(const Duration(seconds: 1));
