@@ -51,6 +51,7 @@ import '../src/app_state.dart';
 import '../src/media/gameboy_sfx.dart';
 import '../theme/gather_theme.dart' show availabilityColor, availabilityLabel, GatherThemeContext;
 import 'call_screen.dart' show callBannerTextFor, openCallScreen;
+import 'gameboy_theme.dart';
 
 // The shell's own palette, kept deliberately apart from [GatherTokens]: the
 // office inside the screen must stay the app's normal colours, so the retro
@@ -58,19 +59,13 @@ import 'call_screen.dart' show callBannerTextFor, openCallScreen;
 // the console design system — hardware plastic in one ramp, screen chrome in
 // another, and a short semantic set for the lights.
 
-// Hardware plastic: one purple ramp from deep shadow to bright highlight. The
-// range is deliberately wide — the housing sits mid-ramp and the moulded
-// controls (cross, pills, grille) sink to the near-black end, so a part always
-// has a darker value to stand against. A control the same value as the body
-// behind it reads as a hollow outline, which is the one thing to avoid.
-const _hw990 = Color(0xFF160A2E); // the deepest: the drop under the cross, its sunk hub
-const _hw950 = Color(0xFF241243); // near-black: the cross face and the hard drop under a part
-const _hw900 = Color(0xFF35205F); // a dark moulded face — the pill slots
-const _hw800 = Color(0xFF48287A); // the bezel and the recessed frame
-const _hw700 = Color(0xFF63379A); // the main housing
-const _hw600 = Color(0xFF7544B4); // a raised face, and the top-edge highlight
-const _hw500 = Color(0xFF8B55C8); // the brightest catch of light on a dome
-const _hw150 = Color(0xFFE6DAF7); // bright lavender-white: legible chrome text
+// Hardware plastic: one ramp from deep shadow to bright highlight, now owned by
+// the active theme ([GbHardware], provided through [GameboyThemeScope] and read
+// as `context.gbHardware`). The range is deliberately wide — the housing sits
+// mid-ramp and the moulded controls (cross, pills, grille) sink to the near-black
+// end, so a part always has a darker value to stand against. A control the same
+// value as the body behind it reads as a hollow outline, which is the one thing
+// to avoid. The purple ramp lives on as `kPurpleHardware` in `gameboy_theme.dart`.
 
 // Neutral hardware greys. The D-pad and the SELECT/START keys are moulded in
 // charcoal, not the body's purple — the console's one grey part, as the design
@@ -104,8 +99,10 @@ const _pixelFont = 'PixelifySans';
 
 /// A pixel shadow: a solid block offset down, no blur. The signature of the
 /// whole look — every moulded part casts one so it reads as sitting proud of the
-/// body rather than painted onto it.
-const _hardShadow = BoxShadow(color: _hw900, blurRadius: 0, offset: Offset(0, 4));
+/// body rather than painted onto it. Built per-theme from `hw900` at the one site
+/// that uses it ([_Screen]), since its colour now rides the active palette.
+BoxShadow _hardShadow(GbHardware hw) =>
+    BoxShadow(color: hw.hw900, blurRadius: 0, offset: const Offset(0, 4));
 
 /// How wide the cross is. Each arm is then a target a thumb can hit without
 /// looking, which is the point of a control used while watching the screen above it.
@@ -372,18 +369,25 @@ class _GameboyShellState extends State<GameboyShell> {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      // A top-lit mid-purple body: a short highlight along the top edge, then the
-      // housing holds one mid value all the way down. It must *not* darken into
-      // the controls' own value — a cross or a pill the same purple as the body
-      // behind it reads as a hollow outline, which is exactly the washed-out look
-      // this replaces.
-      decoration: const BoxDecoration(
+    // The active theme picks the plastic palette; [GameboyThemeScope] hands it to
+    // every widget below through `context.gbHardware`, so the body here and the
+    // controls deeper down all paint from one source that a theme swap rebuilds.
+    final theme = themeById(widget.state.gameboyTheme);
+    final hw = theme.hardware;
+    return GameboyThemeScope(
+      hardware: hw,
+      child: DecoratedBox(
+      // A top-lit body: a short highlight along the top edge, then the housing
+      // holds one mid value all the way down. It must *not* darken into the
+      // controls' own value — a cross or a pill the same colour as the body behind
+      // it reads as a hollow outline, which is exactly the washed-out look this
+      // replaces.
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [_hw600, _hw700, _hw700],
-          stops: [0, 0.22, 1],
+          colors: [hw.hw600, hw.hw700, hw.hw700],
+          stops: const [0, 0.22, 1],
         ),
       ),
       child: SafeArea(
@@ -421,11 +425,12 @@ class _GameboyShellState extends State<GameboyShell> {
                   child: widget.child,
                 ),
               ),
-              // The purple band between the screen and the controls. Measured off
-              // the mock: the gap there is ~10% of the screen width, which lands at
-              // ~40 logical pixels on a phone — a deliberate breath between the LCD
-              // and the D-pad, not the tight 8px of before.
-              const SizedBox(height: 40),
+              // The band between the screen and the controls. Measured off the
+              // mock: the gap there is ~10% of the screen width, which lands at ~40
+              // logical pixels on a phone — a deliberate breath between the LCD and
+              // the D-pad, not the tight 8px of before. A theme may print its brand
+              // here (the DMG wordmark spot); a bare theme keeps the plain gap.
+              _BrandBand(theme: theme),
               _ControlsDeck(
                 state: widget.state,
                 menuOpen: _menuOpen,
@@ -443,6 +448,7 @@ class _GameboyShellState extends State<GameboyShell> {
           ),
         ),
       ),
+      ),
     );
   }
 }
@@ -454,6 +460,25 @@ class _GameboyShellState extends State<GameboyShell> {
 /// does. The name is taken *off* the LCD title so it is not printed twice (see
 /// `map_screen.dart`). The head count is the LCD's job, carried on the status
 /// strip inside the screen.
+/// The band below the LCD, where a theme may print its brand — the spot a real
+/// handheld stamps its wordmark. [GameboyTheme.brandmark] draws it centred; a
+/// theme with none keeps the plain ~40px breath the layout had before, so the
+/// purple shell stays pixel-identical to how it always looked.
+class _BrandBand extends StatelessWidget {
+  const _BrandBand({required this.theme});
+
+  final GameboyTheme theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final mark = theme.brandmark;
+    return SizedBox(
+      height: 40,
+      child: mark == null ? null : Center(child: mark(context)),
+    );
+  }
+}
+
 class _Header extends StatelessWidget {
   const _Header({required this.state});
 
@@ -466,6 +491,7 @@ class _Header extends StatelessWidget {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
+        final hw = context.gbHardware;
         return Padding(
           padding: const EdgeInsets.fromLTRB(4, 0, 4, 2),
           child: Row(
@@ -477,10 +503,10 @@ class _Header extends StatelessWidget {
                   state.spaceName ?? 'The office',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: _pixelFont,
                     fontWeight: FontWeight.w700,
-                    color: _hw150,
+                    color: hw.hw150,
                     fontSize: 19,
                     letterSpacing: 0.5,
                   ),
@@ -499,12 +525,12 @@ class _Header extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 7),
-              const Text(
+              Text(
                 'POWER',
                 style: TextStyle(
                   fontFamily: _pixelFont,
                   fontWeight: FontWeight.w700,
-                  color: _hw150,
+                  color: hw.hw150,
                   fontSize: 13,
                   letterSpacing: 0.5,
                 ),
@@ -986,24 +1012,24 @@ class _Screen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hw = context.gbHardware;
     return Container(
-      // The moulded lip around the well: a dark bezel, darker than the mid-purple
-      // body so the screen reads as sunk into the console rather than laid on top
-      // of it. Wider at the top (the header sits there) than on the other three
-      // sides. It still catches a little light along the top and falls to shadow
-      // at the bottom, and casts the same hard drop the buttons do. The gradient,
-      // not per-side borders, because a rounded corner needs one border colour
-      // all the way round.
+      // The moulded lip around the well: a dark bezel, darker than the body so the
+      // screen reads as sunk into the console rather than laid on top of it. Wider
+      // at the top (the header sits there) than on the other three sides. It still
+      // catches a little light along the top and falls to shadow at the bottom, and
+      // casts the same hard drop the buttons do. The gradient, not per-side borders,
+      // because a rounded corner needs one border colour all the way round.
       padding: const EdgeInsets.fromLTRB(6, 7, 6, 6),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [_hw800, _hw900],
+          colors: [hw.hw800, hw.hw900],
         ),
-        borderRadius: BorderRadius.all(Radius.circular(14)),
-        border: Border.fromBorderSide(BorderSide(color: _hw950, width: 1.5)),
-        boxShadow: [_hardShadow],
+        borderRadius: const BorderRadius.all(Radius.circular(14)),
+        border: Border.fromBorderSide(BorderSide(color: hw.hw950, width: 1.5)),
+        boxShadow: [_hardShadow(hw)],
       ),
       child: Column(
         children: [
@@ -1626,6 +1652,7 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
   @override
   Widget build(BuildContext context) {
     final lit = widget.lit;
+    final hw = context.gbHardware;
     return Semantics(
       button: true,
       toggled: widget.toggled,
@@ -1648,16 +1675,16 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
             // plastic with the letter engraved into them, so the dome is gentle
             // (one step of light near the top) and the depth comes from the hard
             // drop below, not from gloss.
-            gradient: const RadialGradient(
-              center: Alignment(-0.25, -0.35),
+            gradient: RadialGradient(
+              center: const Alignment(-0.25, -0.35),
               radius: 1.05,
-              colors: [_hw500, _hw600],
+              colors: [hw.hw500, hw.hw600],
             ),
-            border: Border.all(color: lit ? _online : _hw950, width: 3),
+            border: Border.all(color: lit ? _online : hw.hw950, width: 3),
             boxShadow: [
               // The hard drop — a deeper, more offset block than a soft shadow, so
               // the key reads as sitting proud of the body; it closes up on press.
-              BoxShadow(color: _hw950, blurRadius: 0, offset: Offset(0, _down ? 2 : 7)),
+              BoxShadow(color: hw.hw950, blurRadius: 0, offset: Offset(0, _down ? 2 : 7)),
               if (lit) const BoxShadow(color: _online, blurRadius: 10, spreadRadius: 0),
             ],
           ),
@@ -1681,7 +1708,7 @@ class _GbRoundButtonState extends State<_GbRoundButton> {
                   fontWeight: FontWeight.w700,
                   // Dark and engraved into the lit dome when idle, the way the
                   // mock prints its A/B; white only when the control is live.
-                  color: lit ? _scWhite : _hw900,
+                  color: lit ? _scWhite : hw.hw900,
                   fontSize: widget.size * 0.42,
                 ),
               ),
@@ -1781,23 +1808,27 @@ class _SpeakerGrille extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const ExcludeSemantics(
+    return ExcludeSemantics(
       child: SizedBox(
         width: 74,
         height: 60,
-        child: CustomPaint(painter: _GrillePainter()),
+        child: CustomPaint(painter: _GrillePainter(barColor: context.gbHardware.hw990)),
       ),
     );
   }
 }
 
 class _GrillePainter extends CustomPainter {
-  const _GrillePainter();
+  const _GrillePainter({required this.barColor});
+
+  /// The deepest hardware value (`hw990`) of the active theme, so the moulded
+  /// grille sinks into whichever body it sits on.
+  final Color barColor;
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = _hw990
+      ..color = barColor
       ..strokeWidth = 5
       ..strokeCap = StrokeCap.round;
     const count = 6;
@@ -1814,7 +1845,7 @@ class _GrillePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_GrillePainter old) => false;
+  bool shouldRepaint(_GrillePainter old) => old.barColor != barColor;
 }
 
 /// The Select menu, drawn inside the LCD: the controls that are not one of the

@@ -23,6 +23,7 @@ import '../src/link_status.dart';
 import '../src/push.dart';
 import '../theme/gather_theme.dart';
 import 'call_screen.dart';
+import 'gameboy_theme.dart';
 import 'media_check_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -123,6 +124,10 @@ class SettingsScreen extends StatelessWidget {
           _Card(
             children: [
               _GameboyRow(state: state),
+              // Only while the handheld is on — the theme has nothing to skin when
+              // the office wears its normal interface, so an always-present row
+              // would be an orphan control.
+              if (state.gameboyMode) _GameboyThemeRow(state: state),
               _SoundEffectsRow(state: state),
             ],
           ),
@@ -346,6 +351,71 @@ class _GameboyRow extends StatelessWidget {
         onTap: () => state.setGameboyMode(!on),
         trailing: _PartySwitch(on: on, pending: false),
       ),
+    );
+  }
+}
+
+/// The hardware theme picker, below Gameboy mode in the Appearance card and shown
+/// only while the mode is on. A pure look choice — it skins the handheld's plastic
+/// and nothing else — so like the mode above it there is no refusal to show; a tap
+/// on a swatch sets the theme at once. The subtitle names the one you are on, and
+/// the swatches let you pick another without leaving the card.
+class _GameboyThemeRow extends StatelessWidget {
+  const _GameboyThemeRow({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = themeById(state.gameboyTheme);
+    return _Row(
+      icon: Icons.palette_rounded,
+      title: 'Theme',
+      subtitle: 'The handheld in ${active.label}.',
+      trailing: _ThemeSwatches(state: state),
+    );
+  }
+}
+
+/// One tappable swatch per theme, the selected one ringed in brand — the same
+/// hand-drawn vocabulary as [_PartySwitch], so the card speaks with one voice
+/// rather than dropping a Material control in among its own.
+class _ThemeSwatches extends StatelessWidget {
+  const _ThemeSwatches({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final selected = state.gameboyTheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final theme in kGameboyThemes) ...[
+          if (theme != kGameboyThemes.first) const SizedBox(width: 10),
+          Semantics(
+            button: true,
+            selected: theme.id == selected,
+            label: '${theme.label} theme',
+            child: GestureDetector(
+              onTap: () => state.setGameboyTheme(theme.id),
+              child: Container(
+                width: 26,
+                height: 26,
+                decoration: BoxDecoration(
+                  color: theme.swatch,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: theme.id == selected ? t.brand : t.border,
+                    width: theme.id == selected ? 3 : 1.5,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

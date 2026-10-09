@@ -21,6 +21,7 @@ import 'package:gather_companion/ui/call_screen.dart';
 import 'package:gather_companion/ui/control_bar.dart';
 import 'package:gather_companion/ui/dial_screen.dart';
 import 'package:gather_companion/ui/gameboy_shell.dart';
+import 'package:gather_companion/ui/gameboy_theme.dart';
 import 'package:gather_companion/ui/home_shell.dart';
 import 'package:gather_companion/ui/map_screen.dart';
 import 'package:gather_companion/ui/settings_screen.dart';
@@ -153,6 +154,96 @@ void main() {
       await configure(AppState()).setSoundEffects(false);
       expect(await UiPreferences().loadSoundEffects(), isFalse,
           reason: 'boot() reads this value, so the off state survives a relaunch');
+    });
+  });
+
+  // The hardware theme is a pure look choice, so it is pinned at the same seams as
+  // the mode and the sound switch: the persistence round-trip, the stored-value
+  // default, the boot read-back, and the UI that swaps the shell's skin — plus the
+  // one rule the picker adds, that it is offered only while the handheld is on.
+  group('the hardware theme', () {
+    Widget wrapSettings(AppState state) => MaterialApp(
+          theme: buildGatherTheme(),
+          home: ListenableBuilder(
+            listenable: state,
+            builder: (context, _) => SettingsScreen(state: state, onUnpair: () {}),
+          ),
+        );
+
+    testWidgets('survives a reload through the preference store', (tester) async {
+      await UiPreferences().saveGameboyThemeId('safenow');
+      expect(await UiPreferences().loadGameboyThemeId(), 'safenow');
+    });
+
+    testWidgets('defaults to purple when nothing is stored', (tester) async {
+      expect(await UiPreferences().loadGameboyThemeId(), 'purple');
+      expect(GameboyThemeId.fromId(null), GameboyThemeId.purple);
+    });
+
+    testWidgets('the picked theme is what a reboot reads back', (tester) async {
+      final state = configure(AppState());
+      expect(state.gameboyTheme, GameboyThemeId.purple, reason: 'purple by default');
+
+      await state.setGameboyTheme(GameboyThemeId.safeNow);
+      expect(state.gameboyTheme, GameboyThemeId.safeNow);
+      expect(await UiPreferences().loadGameboyThemeId(), 'safenow',
+          reason: 'boot() reads this value, so the pick survives a relaunch');
+    });
+
+    testWidgets('the picker is offered only while the handheld is on', (tester) async {
+      final state = configure(AppState());
+      await tester.pumpWidget(wrapSettings(state));
+      await tester.pump();
+
+      // Off: no theme row at all — nothing to skin when the office wears its normal
+      // interface.
+      expect(find.text('Theme'), findsNothing);
+
+      await tester.ensureVisible(find.text('Gameboy mode'));
+      await tester.tap(find.text('Gameboy mode'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Theme'), findsOneWidget, reason: 'the picker appears with the mode');
+      expect(find.text('The handheld in Purple.'), findsOneWidget);
+    });
+
+    testWidgets('picking SafeNow prints its brand below the LCD; purple prints none', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pumpAndSettle();
+
+      // Purple ships a bare band — no wordmark printed on the plastic.
+      expect(find.text('SafeNow'), findsNothing);
+
+      await state.setGameboyTheme(GameboyThemeId.safeNow);
+      await tester.pumpAndSettle();
+
+      // The SafeNow mark is now printed in the band, inside the shell.
+      expect(
+        find.descendant(of: find.byType(GameboyShell), matching: find.text('SafeNow')),
+        findsOneWidget,
+        reason: 'the brand is baked into the SafeNow theme, below the screen',
+      );
+    });
+
+    testWidgets('the body repaints in the theme colour', (tester) async {
+      final state = configure(AppState())..setGameboyMode(true);
+      await tester.pumpWidget(wrap(state));
+      await tester.pumpAndSettle();
+
+      // The root body gradient reads the active hardware ramp; swapping the theme
+      // must change the colour it paints. Probe the scope the shell provides.
+      GbHardware hardwareInShell() =>
+          tester.widget<GameboyThemeScope>(find.byType(GameboyThemeScope)).hardware;
+
+      expect(hardwareInShell().hw700, kPurpleHardware.hw700);
+
+      await state.setGameboyTheme(GameboyThemeId.safeNow);
+      await tester.pumpAndSettle();
+
+      expect(hardwareInShell().hw700, kSafeNowHardware.hw700,
+          reason: 'the SafeNow body is the brand blue, not purple');
+      expect(kSafeNowHardware.hw700, const Color(0xFF0022FF));
     });
   });
 
