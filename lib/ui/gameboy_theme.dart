@@ -196,114 +196,45 @@ extension GbThemeContext on BuildContext {
   GbHardware get gbHardware => GameboyThemeScope.of(this);
 }
 
-/// The SafeNow brandmark: the pixel symbol beside the wordmark, both in cream so
-/// the mark reads as printed onto the blue body. Built lazily per theme so the
-/// purple band stays bare.
+/// The SafeNow brandmark: the real inverted logo — ring, symbol and wordmark —
+/// printed in the band below the LCD. Built per theme so the purple band stays
+/// bare. Decoration, so hidden from the reader; the Settings row names the theme
+/// in words.
 Widget _safeNowBrandmark(BuildContext context) => const _SafeNowMark();
 
-/// The SafeNow logo, printed in the band below the LCD: a pixel-art cast of the
-/// symbol next to the word in the shell's pixel face. Decoration, so hidden from
-/// the reader — the Settings row names the theme in words.
+/// Keys the SafeNow brandmark image so widget tests can find it in the band —
+/// the logo is a pixel-art image now, not a `Text` to match on.
+const kSafeNowBrandmarkKey = ValueKey('safenow-brandmark');
+
+/// The SafeNow logo as pixel art — NOT drawn from a font or re-traced vector. It is
+/// a low-res cream cast of the brand's own inverted lockup
+/// (`assets/images/safenow_pixel.png`, 77×18, baked once from the 4000² logo) blown
+/// up with a nearest-neighbour filter, so the real letterforms and swoosh read as
+/// 8/16-bit blocks against the blue body. The shell's no-blur grammar, but carried
+/// by the brand art itself rather than our PixelifySans chrome face. Upscaled by a
+/// whole factor so every baked pixel lands as one clean square.
 class _SafeNowMark extends StatelessWidget {
   const _SafeNowMark();
 
+  /// The baked asset's own pixel size and the whole-number blow-up on screen.
+  /// 77×18 × 2 = 154×36 — a clean integer grid, tall enough for the ~40px band.
+  static const double _srcW = 77;
+  static const double _srcH = 18;
+  static const double _scale = 2;
+
   @override
   Widget build(BuildContext context) {
-    return const ExcludeSemantics(
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          SizedBox(
-            width: 26,
-            height: 26,
-            child: CustomPaint(painter: _SafeNowSymbolPainter()),
-          ),
-          SizedBox(width: 10),
-          Text(
-            'SafeNow',
-            style: TextStyle(
-              fontFamily: 'PixelifySans',
-              fontWeight: FontWeight.w700,
-              color: kSafeNowCream,
-              fontSize: 20,
-              letterSpacing: 0.5,
-              height: 1,
-            ),
-          ),
-        ],
+    return ExcludeSemantics(
+      child: Image.asset(
+        'assets/images/safenow_pixel.png',
+        key: kSafeNowBrandmarkKey,
+        width: _srcW * _scale,
+        height: _srcH * _scale,
+        // Nearest-neighbour: each baked pixel becomes a hard block, no blur.
+        filterQuality: FilterQuality.none,
+        isAntiAlias: false,
+        fit: BoxFit.fill,
       ),
     );
   }
-}
-
-/// The SafeNow badge, inverted for the blue body: a filled cream disc with the
-/// brand's own symbol knocked out in blue on top of it. On the real logo the disc
-/// is blue and the symbol white; here the body is already the blue, so the disc
-/// becomes the cream and the symbol the blue — the "pin" reads as a hole in the
-/// cream coin against the plastic around it.
-///
-/// The symbol is the brand's actual vector, transcribed from the logo SVG's white
-/// path (the `M…C…` data, absolute coords in its 143.652 artboard) rather than
-/// guessed at a pixel grid — two interlocking swooshes with the mark's own 180°
-/// turn. Drawn at any size by scaling that artboard to the painter's box.
-class _SafeNowSymbolPainter extends CustomPainter {
-  const _SafeNowSymbolPainter();
-
-  /// The logo's artboard is a square this many units on a side; the disc is the
-  /// inscribed circle, the symbol lives inside it.
-  static const double _art = 143.652;
-
-  /// The two swooshes of the SafeNow mark, built once from the SVG path in the
-  /// artboard's own coordinates. Reused every paint — it never changes.
-  static final Path _symbol = _buildSymbol();
-
-  static Path _buildSymbol() {
-    final p = Path();
-    // First swoosh.
-    p.moveTo(54.6972, 94.4436);
-    p.lineTo(66.3, 83.4995);
-    p.cubicTo(60.8628, 81.7293, 56.7764, 77.2111, 55.5675, 71.6327);
-    p.cubicTo(54.3585, 66.0543, 56.2088, 60.2549, 60.4271, 56.4009);
-    p.lineTo(79.8658, 38.0655);
-    p.cubicTo(66.46, 34.4743, 52.2979, 40.2299, 45.2208, 52.1457);
-    p.cubicTo(38.1437, 64.0615, 39.8831, 79.222, 49.4759, 89.2333);
-    p.close();
-    // Second swoosh, the 180° partner.
-    p.moveTo(98.886, 52.8082);
-    p.cubicTo(100.363, 55.4632, 101.434, 58.3232, 102.065, 61.2939);
-    p.lineTo(102.049, 61.3177);
-    p.cubicTo(104.238, 71.3536, 101.28, 81.8185, 94.1575, 89.2332);
-    p.lineTo(71.8181, 111.518);
-    p.lineTo(60.6762, 100.368);
-    p.lineTo(82.1335, 80.121);
-    p.lineTo(82.4434, 79.8355);
-    p.cubicTo(86.4399, 76.0114, 88.1857, 70.4056, 87.0654, 64.9946);
-    p.cubicTo(85.9451, 59.5837, 82.116, 55.1273, 76.9281, 53.1968);
-    p.lineTo(88.7534, 42.0465);
-    p.cubicTo(92.9507, 44.7664, 96.427, 48.4585, 98.886, 52.8082);
-    p.close();
-    return p;
-  }
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Fit the square artboard into the box, centred.
-    final scale = (size.width < size.height ? size.width : size.height) / _art;
-    final drawn = _art * scale;
-    canvas.save();
-    canvas.translate((size.width - drawn) / 2, (size.height - drawn) / 2);
-    canvas.scale(scale);
-
-    // The cream coin — the inscribed circle of the artboard.
-    const centre = Offset(_art / 2, _art / 2);
-    canvas.drawCircle(centre, _art / 2, Paint()..color = kSafeNowCream);
-    // The symbol knocked out in the body blue.
-    canvas.drawPath(_symbol, Paint()..color = const Color(0xFF0022FF));
-
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(_SafeNowSymbolPainter old) => false;
 }

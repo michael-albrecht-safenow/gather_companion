@@ -212,15 +212,18 @@ void main() {
       await tester.pumpWidget(wrap(state));
       await tester.pumpAndSettle();
 
-      // Purple ships a bare band — no wordmark printed on the plastic.
-      expect(find.text('SafeNow'), findsNothing);
+      // Purple ships a bare band — no brandmark printed on the plastic.
+      expect(find.byKey(kSafeNowBrandmarkKey), findsNothing);
 
       await state.setGameboyTheme(GameboyThemeId.safeNow);
       await tester.pumpAndSettle();
 
-      // The SafeNow mark is now printed in the band, inside the shell.
+      // The SafeNow mark (the pixel-art logo image) is now printed in the band.
       expect(
-        find.descendant(of: find.byType(GameboyShell), matching: find.text('SafeNow')),
+        find.descendant(
+          of: find.byType(GameboyShell),
+          matching: find.byKey(kSafeNowBrandmarkKey),
+        ),
         findsOneWidget,
         reason: 'the brand is baked into the SafeNow theme, below the screen',
       );

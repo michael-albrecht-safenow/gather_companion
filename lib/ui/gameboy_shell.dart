@@ -472,9 +472,14 @@ class _BrandBand extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mark = theme.brandmark;
-    return SizedBox(
-      height: 40,
-      child: mark == null ? null : Center(child: mark(context)),
+    // A bare theme keeps the plain ~40px breath, pixel-identical to before.
+    if (mark == null) return const SizedBox(height: 40);
+    // A printed brand wants room to sit off the LCD rather than hug its lip, so
+    // the branded band is taller with most of the extra breath above the mark —
+    // a clear gap to the screen, a smaller one to the controls below.
+    return Padding(
+      padding: const EdgeInsets.only(top: 20, bottom: 6),
+      child: Center(child: mark(context)),
     );
   }
 }
