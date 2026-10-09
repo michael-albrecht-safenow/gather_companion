@@ -1026,4 +1026,61 @@ void main() {
       w.release();
     });
   });
+
+  group('leading the wire', () {
+    // The map draws its own avatar from [Walk.leadTile] so a press moves the body at
+    // once instead of after the roster echoes it back a round-trip later. The lead is
+    // live only while steps are unconfirmed; at rest the drawing falls back to the
+    // roster, so the lead must retract the moment the wire catches up.
+    test('the optimistic tile leads the wire until a roster confirms it', () {
+      final w = build()..noteRoster(_at(4, 4));
+      expect(w.leadTile, isNull, reason: 'at rest, the roster draws us');
+
+      // Two steps ahead: the pad outruns the coalesced roster, which is the whole
+      // case the lead exists for. See 'still two steps ahead of the wire'.
+      w.press('Right');
+      w.step();
+      expect(w.at, (x: 6, y: 4));
+      expect(w.leadTile, (x: 6, y: 4), reason: 'the optimistic tile leads');
+
+      // The wire confirms the first of the two in-flight tiles; still one ahead.
+      w.noteRoster(_at(5, 4));
+      expect(w.leadTile, (x: 6, y: 4), reason: 'still ahead of the wire');
+
+      // The wire arrives on the tile we stepped to last: nothing left to lead, so
+      // the drawing falls back to the roster.
+      w.noteRoster(_at(6, 4));
+      expect(w.leadTile, isNull, reason: 'the roster caught up');
+      expect(w.at, (x: 6, y: 4));
+    });
+
+    test('onStepped fires once per step that reaches the socket, not on a wall', () {
+      var ticks = 0;
+      final w = walk = Walk(
+        collector: () => collector,
+        map: () => _obstructed(),
+        interval: const Duration(hours: 1),
+        onStepped: () => ticks++,
+      )..noteRoster(_at(7, 4));
+
+      w.press('Right'); // onto (8,4) — open
+      expect(collector.steps, ['Right']);
+      expect(ticks, 1);
+
+      w.press('Right'); // into the wall west of column 9 — sent nothing, no tile
+      expect(w.at, (x: 8, y: 4), reason: 'leaned on the wall, did not advance');
+      expect(ticks, 1, reason: 'a blocked step does not wake the screen');
+    });
+
+    test('facing leads the roster the instant a direction is held', () {
+      final w = build()..noteRoster(_at(4, 4));
+      expect(w.facing, isNull, reason: 'standing still faces nowhere new');
+
+      w.press('Up');
+      expect(w.facing, 'Up');
+
+      w.release();
+      expect(w.facing, isNull, reason: 'a released pad stops driving a facing');
+    });
+  });
 }
