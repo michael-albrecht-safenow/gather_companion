@@ -1026,4 +1026,85 @@ void main() {
       w.release();
     });
   });
+
+  group('leading the wire', () {
+    // The map draws its own avatar from [Walk.leadTile] so a press moves the body at
+    // once instead of after the roster echoes it back a round-trip later. The lead is
+    // live only while steps are unconfirmed; at rest the drawing falls back to the
+    // roster, so the lead must retract the moment the wire catches up.
+    test('the optimistic tile leads the wire until a roster confirms it', () {
+      final w = build()..noteRoster(_at(4, 4));
+      expect(w.leadTile, isNull, reason: 'at rest, the roster draws us');
+
+      // Two steps ahead: the pad outruns the coalesced roster, which is the whole
+      // case the lead exists for. See 'still two steps ahead of the wire'.
+      w.press('Right');
+      w.step();
+      expect(w.at, (x: 6, y: 4));
+      expect(w.leadTile, (x: 6, y: 4), reason: 'the optimistic tile leads');
+
+      // The wire confirms the first of the two in-flight tiles; still one ahead.
+      w.noteRoster(_at(5, 4));
+      expect(w.leadTile, (x: 6, y: 4), reason: 'still ahead of the wire');
+
+      // The wire arrives on the tile we stepped to last: nothing left to lead, so
+      // the drawing falls back to the roster.
+      w.noteRoster(_at(6, 4));
+      expect(w.leadTile, isNull, reason: 'the roster caught up');
+      expect(w.at, (x: 6, y: 4));
+    });
+
+    test('onStepped wakes the screen whenever a move reaches the socket, wall or not',
+        () {
+      var ticks = 0;
+      final w = walk = Walk(
+        collector: () => collector,
+        map: () => _obstructed(),
+        interval: const Duration(hours: 1),
+        onStepped: () => ticks++,
+      )..noteRoster(_at(7, 4));
+
+      w.press('Right'); // onto (8,4) — open
+      expect(collector.steps, ['Right']);
+      expect(ticks, 1);
+
+      // The next held tick walks into the wall west of column 9: no tile advances, but
+      // the move is still sent (Gather turns us to face it), so the facing is now ours
+      // to draw — and the screen must wake on it, or turning in place against a wall
+      // keeps the round-trip lag every open step just shed.
+      expect(w.step().detail, 'blocked');
+      expect(w.at, (x: 8, y: 4), reason: 'leaned on the wall, did not advance');
+      expect(collector.steps, ['Right', 'Right'], reason: 'the wall turn is still sent');
+      expect(ticks, 2, reason: 'a transmitted facing wakes the screen');
+    });
+
+    test('onStepped stays quiet on the one refusal that is never sent', () {
+      var ticks = 0;
+      final w = walk = Walk(
+        collector: () => collector,
+        map: () => _obstructed(),
+        interval: const Duration(hours: 1),
+        onStepped: () => ticks++,
+      )..noteRoster(_at(0, 4));
+
+      // Off the west edge: the one wall refusal [Walk] keeps to itself rather than
+      // handing to Gather, because the position it would write is off-grid. Nothing
+      // reaches the socket, so there is no transmitted facing to wake the screen for.
+      w.press('Left');
+      expect(w.at, (x: 0, y: 4), reason: 'the edge did not advance us');
+      expect(collector.steps, isEmpty, reason: 'the off-grid move is never sent');
+      expect(ticks, 0, reason: 'nothing transmitted, nothing to wake for');
+    });
+
+    test('facing leads the roster the instant a direction is held', () {
+      final w = build()..noteRoster(_at(4, 4));
+      expect(w.facing, isNull, reason: 'standing still faces nowhere new');
+
+      w.press('Up');
+      expect(w.facing, 'Up');
+
+      w.release();
+      expect(w.facing, isNull, reason: 'a released pad stops driving a facing');
+    });
+  });
 }

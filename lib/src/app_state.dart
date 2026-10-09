@@ -564,6 +564,11 @@ class AppState extends ChangeNotifier {
   /// Where I am, in tiles, or null before the first roster. Rounded, because its
   /// callers ask questions about tiles — which room am I in — rather than drawing.
   ({int x, int y})? get myTile {
+    // The optimistic tile while a walk is in flight, so room-and-ping questions
+    // agree with the avatar the map is actually drawing. Null at rest, when it
+    // falls through to the roster. See [Walk.leadTile] and [mePerson].
+    final lead = _walk?.leadTile;
+    if (lead != null) return lead;
     final me = _myRow();
     final x = me?.x, y = me?.y;
     if (x == null || y == null || !x.isFinite || !y.isFinite) return null;
@@ -578,18 +583,24 @@ class AppState extends ChangeNotifier {
     final me = _myRow();
     final x = me?.x, y = me?.y;
     if (me == null || x == null || y == null || !x.isFinite || !y.isFinite) return null;
+    // Drawn from the optimistic walk while steps are unconfirmed, so a press moves
+    // the body at once rather than after the round-trip that the roster takes to
+    // echo it back. Null at rest, where this falls through to the roster tile; the
+    // same deference [Walk.noteRoster] already pays, and the reason [gait] below is
+    // read off [Walk] too. See [Walk.leadTile].
+    final lead = _walk?.leadTile;
     return MapPerson(
       id: me.id,
       label: me.name ?? 'You',
-      x: x.toDouble(),
-      y: y.toDouble(),
+      x: (lead?.x ?? x).toDouble(),
+      y: (lead?.y ?? y).toDouble(),
       isFollowingMe: false,
       // Ours, not the roster's. See [amSpeaking] — the roster agrees a beat
       // later, and a beat is visible on your own avatar.
       speaking: _amSpeaking,
       dancing: me.dancing == true,
       avatarUrl: _collector?.avatarUrlFor(me.id),
-      direction: me.direction,
+      direction: _walk?.facing ?? me.direction,
       // Mine off [Walk] and not off the row. The gait changes twice inside a single
       // route and the roster is coalesced to a quarter of a second, so reading my own
       // back off the wire would show me climbing into the kart two tiles after the
@@ -2458,6 +2469,10 @@ class AppState extends ChangeNotifier {
       // again — the one proof a walk-triggered recovery took, since we stayed
       // reported-connected throughout. Clears the recovery before its grace reconnects.
       onMovesConfirmed: () => _collector?.noteMovesConfirmed(),
+      // The movement wake, fired on each optimistic step so the avatar leaves on
+      // the press rather than on the roster that confirms it a round-trip later —
+      // the same `_positions.tick()` a roster and a party hop already pump.
+      onStepped: _positions.tick,
       log: _log,
     )..boost = _boost;
 

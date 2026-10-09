@@ -181,6 +181,10 @@ class Walk {
     /// that only looks healthy because we are still reported connected. Fires once
     /// per doubt episode, not per confirmed step.
     void Function()? onMovesConfirmed,
+    /// Called after each step that reaches the socket, so the screen can repaint
+    /// the optimistic move the instant it happens rather than waiting for the
+    /// roster that confirms it. See [leadTile].
+    void Function()? onStepped,
     this.interval = walkStep,
     this.holdLimit = maxHold,
     // Test seam. Production uses the wall clock.
@@ -200,6 +204,8 @@ class Walk {
         _onMovesUnconfirmed = onMovesUnconfirmed,
         // ignore: prefer_initializing_formals
         _onMovesConfirmed = onMovesConfirmed,
+        // ignore: prefer_initializing_formals
+        _onStepped = onStepped,
         _now = now ?? DateTime.now;
 
   static void _noop(String _) {}
@@ -213,6 +219,7 @@ class Walk {
   final void Function()? _onGaitChanged;
   final void Function()? _onMovesUnconfirmed;
   final void Function()? _onMovesConfirmed;
+  final void Function()? _onStepped;
   final Duration interval;
   final Duration holdLimit;
   final DateTime Function() _now;
@@ -401,6 +408,18 @@ class Walk {
   /// The tile this believes the avatar is on, which during a walk is ahead of the
   /// roster. Null until a roster has said once.
   ({int x, int y})? get at => _x == null ? null : (x: _x!, y: _y!);
+
+  /// Where the avatar should be *drawn* while steps are still unconfirmed by a
+  /// roster — the optimistic tile that leads the wire, so a press moves the body
+  /// at once instead of after a round-trip. Null once the roster has caught up
+  /// ([_pending] empty), so at rest the drawing falls back to the roster and this
+  /// introduces no divergence [noteRoster] does not already own.
+  ({int x, int y})? get leadTile => _pending.isEmpty ? null : at;
+
+  /// The way we are facing right now, ahead of the roster, or null when no
+  /// direction is being driven. Lets the avatar turn the instant the pad is held
+  /// rather than a coalescing window later.
+  String? get facing => _direction;
 
   /// Start walking, or turn a walk that is already running.
   ///
@@ -607,6 +626,12 @@ class Walk {
       final ty = y + step.dy;
       if (tx >= 0 && ty >= 0 && tx < map.width && ty < map.height) {
         collector.move(direction: direction);
+        // The move turned nobody, but it did turn us to face the wall — the same
+        // optimistic [facing] a landed step would have, and [move] handed it to the
+        // socket just the same. So wake the screen on it too, or turning in place
+        // against a wall would be the one press that still waited out the round-trip
+        // for the roster to echo the facing back — the very lag this set out to kill.
+        _onStepped?.call();
       }
       return (ok: false, detail: 'blocked');
     }
@@ -647,6 +672,9 @@ class Walk {
     }
     // A step that landed is the evidence that re-planning worked.
     _replans = 0;
+    // Wake the screen now, on the optimistic tile, rather than on the roster that
+    // confirms it up to a round-trip later — this is what makes the pad feel direct.
+    _onStepped?.call();
 
     if (held == null) {
       _route.removeAt(0);
