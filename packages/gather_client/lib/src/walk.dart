@@ -175,6 +175,12 @@ class Walk {
     /// that the server is not applying our moves, i.e. we may have gone invisible
     /// to others. Fire-and-forget; the collector debounces its own recovery.
     void Function()? onMovesUnconfirmed,
+    /// Called when a roster confirms a step after [onMovesUnconfirmed] had fired —
+    /// the server is applying our moves again. The counterpart signal: it is what
+    /// lets a collector tell a walk-triggered recovery that actually took from one
+    /// that only looks healthy because we are still reported connected. Fires once
+    /// per doubt episode, not per confirmed step.
+    void Function()? onMovesConfirmed,
     this.interval = walkStep,
     this.holdLimit = maxHold,
     // Test seam. Production uses the wall clock.
@@ -192,6 +198,8 @@ class Walk {
         _onGaitChanged = onGaitChanged,
         // ignore: prefer_initializing_formals
         _onMovesUnconfirmed = onMovesUnconfirmed,
+        // ignore: prefer_initializing_formals
+        _onMovesConfirmed = onMovesConfirmed,
         _now = now ?? DateTime.now;
 
   static void _noop(String _) {}
@@ -204,6 +212,7 @@ class Walk {
   final void Function()? _onRouteEnded;
   final void Function()? _onGaitChanged;
   final void Function()? _onMovesUnconfirmed;
+  final void Function()? _onMovesConfirmed;
   final Duration interval;
   final Duration holdLimit;
   final DateTime Function() _now;
@@ -219,6 +228,12 @@ class Walk {
   /// Tiles stepped onto and not yet confirmed by a roster, oldest first. The last is
   /// always where we believe we are.
   final _pending = <({int x, int y})>[];
+
+  /// Whether a buffer overflow has fired [_onMovesUnconfirmed] without a roster
+  /// confirming a step since. Latched so the recovery is signalled once per episode:
+  /// set when the buffer overflows, cleared by the next confirmation (which then
+  /// fires [_onMovesConfirmed]) or by an [_adopt] that starts the buffer fresh.
+  bool _doubtRaised = false;
 
   /// The tiles left to walk through, nearest first, or empty when nothing is routed.
   ///
@@ -627,6 +642,7 @@ class Walk {
       // ignoring us, not a late roster. Hand it to the collector, which decides
       // whether to re-enter or reconnect; this only reports, and only on overflow,
       // so a normal correction never raises it.
+      _doubtRaised = true;
       _onMovesUnconfirmed?.call();
     }
     // A step that landed is the evidence that re-planning worked.
@@ -725,6 +741,13 @@ class Walk {
     final seen = _pending.lastIndexWhere((p) => p.x == x && p.y == y);
     if (seen >= 0) {
       _pending.removeRange(0, seen + 1);
+      // A step we claimed is now confirmed by the server: the moves are flowing
+      // again. If a buffer overflow had raised doubt, tell the collector so a
+      // walk-triggered recovery that took is not left to time out into a reconnect.
+      if (_doubtRaised) {
+        _doubtRaised = false;
+        _onMovesConfirmed?.call();
+      }
       return;
     }
     // Gather put us on a tile we never claimed — a dropped step, a refused move, or
@@ -742,5 +765,11 @@ class Walk {
     _x = x;
     _y = y;
     _pending.clear();
+    // A snap-back is not a confirmation of our moves, but it does start the buffer
+    // over, so any outstanding doubt no longer refers to steps that still exist.
+    // Drop the latch silently; a walk-triggered recovery then escalates on its own
+    // grace, which is the right answer when the server put us somewhere we never
+    // walked.
+    _doubtRaised = false;
   }
 }

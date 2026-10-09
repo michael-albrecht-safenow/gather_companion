@@ -698,14 +698,80 @@ void main() {
 
     test('the walk engine reporting unapplied moves re-enters at once', () async {
       // notePresenceDoubt is the walking accelerator: stronger evidence than an
-      // absent row, so it does not wait out selfAbsentLimit. Self stays visible here,
-      // so the re-enter settles without a reconnect.
-      final (:c, :conn) = await entered(selfAbsentLimit: const Duration(seconds: 10));
+      // absent row, so it does not wait out selfAbsentLimit. Self stays visible the
+      // whole time — the stall is moves being ignored, not our row vanishing — so the
+      // grace is long here to isolate the one quiet re-enter.
+      final (:c, :conn) = await entered(
+        selfAbsentLimit: const Duration(seconds: 10),
+        reenterGrace: const Duration(seconds: 10),
+      );
       expect(entersOn(conn), 1);
       c.notePresenceDoubt();
       await waitUntil(() => entersOn(conn) >= 2, reason: 'a re-enter from the walk signal');
       expect(gather.connections, hasLength(1));
       expect(c.healthy, isTrue);
+    });
+
+    test('a walk re-enter is not cleared by the visibility it never lost', () async {
+      // The bug this guards: with self still visible throughout, the next flush used
+      // to call _notePresenceOk and drop the re-enter. Each later overflow then sent a
+      // fresh enterSpace, racking up numTimesEnteredSpace. The re-enter must stay
+      // latched, so repeated doubt is a no-op until it resolves.
+      final (:c, :conn) = await entered(
+        selfAbsentLimit: const Duration(seconds: 10),
+        reenterGrace: const Duration(seconds: 10),
+      );
+      c.notePresenceDoubt();
+      await waitUntil(() => entersOn(conn) >= 2, reason: 'the one re-enter');
+
+      // Several more overflows arrive while the first re-enter is still outstanding.
+      for (var i = 0; i < 5; i++) {
+        c.notePresenceDoubt();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(entersOn(conn), 2, reason: 'doubt while re-entering sends no further enterSpace');
+      expect(gather.connections, hasLength(1));
+    });
+
+    test('a confirmed move settles a walk re-enter with no reconnect', () async {
+      // The repair signal visibility cannot give: a roster finally lands us on a tile
+      // we stepped onto, so the server is applying our moves again. That — not
+      // selfVisible — is what ends the walk re-enter, and it ends it quietly.
+      final (:c, :conn) = await entered(
+        selfAbsentLimit: const Duration(seconds: 10),
+        reenterGrace: const Duration(seconds: 10),
+      );
+      c.notePresenceDoubt();
+      await waitUntil(() => entersOn(conn) >= 2, reason: 'the re-enter');
+
+      c.noteMovesConfirmed(); // the walk engine saw a step land
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(gather.connections, hasLength(1), reason: 'a confirmed move needs no reconnect');
+      expect(c.healthy, isTrue);
+
+      // And with the latch released, a fresh doubt can re-enter again.
+      c.notePresenceDoubt();
+      await waitUntil(() => entersOn(conn) >= 3, reason: 'doubt works again once settled');
+    });
+
+    test('a walk re-enter that never gets a move confirmed reconnects on the grace',
+        () async {
+      // The loud rung for the walking case. No confirmed move arrives within the
+      // grace, so the socket is no longer believed and the banner finally shows —
+      // which the old stale-visibility clear made unreachable.
+      final (:c, :conn) = await entered(reenterGrace: const Duration(milliseconds: 150));
+      expect(entersOn(conn), 1);
+      c.notePresenceDoubt();
+
+      final loud = await firstWhere(
+        c.statuses,
+        (s) => !s.healthy && (s.detail?.contains('restoring your presence') ?? false),
+        reason: 'the banner',
+      );
+      expect(loud.healthy, isFalse);
+      await firstWhere(gather.onDumped, (_) => true, reason: 'a reconnect')
+          .timeout(const Duration(seconds: 5));
+      expect(gather.connections.length, greaterThanOrEqualTo(2));
     });
   });
 

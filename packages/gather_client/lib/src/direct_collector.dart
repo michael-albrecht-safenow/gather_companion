@@ -215,6 +215,17 @@ class DirectCollector implements Collector {
   bool _reentering = false;
   DateTime? _reenterAt;
 
+  /// Whether the outstanding re-enter was raised by the walk engine rather than by a
+  /// missing self row. It matters because the two have opposite repair signals: a
+  /// self-absent re-enter is healed the moment [GameProtocolReader.selfVisible] turns
+  /// true again, but a walk-triggered one runs *while* we are still visible — the
+  /// server reports us connected and placed and simply ignores our moves. Letting
+  /// `selfVisible` clear a walk re-enter would drop it on the very next flush, before
+  /// any move was confirmed: the loud reconnect would never fire and each later
+  /// buffer overflow would send a fresh `enterSpace`. So a walk re-enter is cleared
+  /// only by a confirmed move ([noteMovesConfirmed]) or escalated after [reenterGrace].
+  bool _reenterFromWalk = false;
+
   /// txnId -> the action it was, so an ack can be named. Cleared per connect.
   final Map<String, String> _awaiting = {};
 
@@ -567,7 +578,22 @@ class DirectCollector implements Collector {
     // Stronger evidence than an absent row — the walk engine watched move after
     // move go unapplied — so skip the [_selfAbsentLimit] wait and begin the quiet
     // re-enter at once. From there the ladder in [_checkSelfPresence] is the same.
-    if (_entered) _beginRecovery('the walk engine saw moves the server never applied');
+    if (_entered) {
+      _beginRecovery('the walk engine saw moves the server never applied', fromWalk: true);
+    }
+  }
+
+  @override
+  void noteMovesConfirmed() {
+    // A roster finally landed us on a tile we had stepped onto: the server is
+    // applying our moves again, which is the one unambiguous proof that a
+    // walk-triggered re-enter took. Nothing else can clear it — [selfVisible] was
+    // true the whole time — so without this the re-enter would hang until the grace
+    // escalated it into a needless reconnect.
+    if (_reentering && _reenterFromWalk) {
+      _log('direct: a move was confirmed — walk-triggered recovery took');
+      _notePresenceOk();
+    }
   }
 
   /// One action against our own `SpaceUser` row, on the socket we already hold.
@@ -1076,6 +1102,18 @@ class DirectCollector implements Collector {
 
     if (reader.selfVisible) {
       _wasVisible = true;
+      // A walk-triggered re-enter cannot be judged by visibility: it was raised
+      // precisely because we are visible yet the server ignores our moves. Leave it
+      // latched for a confirmed move ([noteMovesConfirmed]) to clear, and only
+      // escalate when the grace runs out — the same loud rung as a self-absent
+      // re-enter that never took. Any other state is genuinely well: clear it.
+      if (_reentering && _reenterFromWalk) {
+        final at = _reenterAt;
+        if (at != null && DateTime.now().difference(at) > reenterGrace) {
+          _forceReconnect('a re-enter did not get our moves flowing again');
+        }
+        return;
+      }
       _notePresenceOk();
       return;
     }
@@ -1111,6 +1149,7 @@ class DirectCollector implements Collector {
     _selfDoubtSince = null;
     _reentering = false;
     _reenterAt = null;
+    _reenterFromWalk = false;
   }
 
   /// The quiet first rung: re-send `enterSpace` on the socket we already hold and
@@ -1120,7 +1159,7 @@ class DirectCollector implements Collector {
   /// A no-op while a re-enter is already outstanding, while stopped, or while a
   /// reconnect is already scheduled — the ladder owns one attempt at a time, and
   /// the deaf watchdog ([_isSilent]) owns the socket once it has decided to retry.
-  void _beginRecovery(String why) {
+  void _beginRecovery(String why, {bool fromWalk = false}) {
     final ws = _ws;
     if (_reentering || _stopped || _retryTimer != null) return;
     if (ws == null || ws.readyState != WebSocket.open) return;
@@ -1129,6 +1168,7 @@ class DirectCollector implements Collector {
     _maybeEnter();
     _reentering = true;
     _reenterAt = DateTime.now();
+    _reenterFromWalk = fromWalk;
   }
 
   /// The loud second rung: the re-enter did not bring us back, so stop believing

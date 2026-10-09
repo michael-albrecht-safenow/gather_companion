@@ -878,6 +878,39 @@ void main() {
           reason: 'past _maxPending with nothing confirmed must raise the signal');
     });
 
+    test('a confirmed step after the overflow reports the moves are flowing again', () {
+      // The counterpart to the overflow: once a roster finally lands us on a tile we
+      // actually stepped onto, the server is relaying our moves again. The collector
+      // needs that edge to tell a walk-triggered recovery that took from one that only
+      // looks healthy — so it fires once, on the first confirmation after the doubt.
+      var reports = 0;
+      var confirms = 0;
+      final wide = _open(width: 60);
+      final w = walk = Walk(
+        collector: () => collector,
+        map: () => wide,
+        interval: const Duration(hours: 1),
+        onMovesUnconfirmed: () => reports++,
+        onMovesConfirmed: () => confirms++,
+      )..noteRoster(_at(4, 4));
+      w.press('Right');
+      for (var i = 0; i < 20; i++) {
+        w.step();
+      }
+      expect(reports, greaterThan(0), reason: 'the doubt must be raised first');
+      expect(confirms, 0, reason: 'nothing confirmed yet');
+
+      // A roster landing us on a tile still in the pending buffer: moves are flowing.
+      final here = w.at!;
+      w.noteRoster(_at(here.x, here.y));
+      expect(confirms, 1, reason: 'the first confirmation after doubt fires once');
+
+      // A later confirmation in the same episode does not fire again.
+      w.step();
+      w.noteRoster(_at(w.at!.x, w.at!.y));
+      expect(confirms, 1, reason: 'the signal is once per doubt episode, not per step');
+    });
+
     test('a kart remembers three times as far back as a walk does', () {
       // The bug behind "it still fails sometimes when the go-kart is on", and it was
       // a units mistake rather than a logic one. `_maxPending` is a *count* of steps

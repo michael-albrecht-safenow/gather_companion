@@ -2454,6 +2454,10 @@ class AppState extends ChangeNotifier {
       // an avatar nobody else can see. Hand it straight to the collector's
       // presence recovery; it debounces, so firing per overflow is safe.
       onMovesUnconfirmed: () => _collector?.notePresenceDoubt(),
+      // A confirmed step after that doubt means the server is applying our moves
+      // again — the one proof a walk-triggered recovery took, since we stayed
+      // reported-connected throughout. Clears the recovery before its grace reconnects.
+      onMovesConfirmed: () => _collector?.noteMovesConfirmed(),
       log: _log,
     )..boost = _boost;
 
