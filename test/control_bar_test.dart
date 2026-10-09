@@ -459,6 +459,40 @@ void main() {
     });
   });
 
+  group('the raise-hand button', () {
+    testWidgets('is absent until there is a meeting to raise it in',
+        (tester) async {
+      // Standing alone over the map — a hand is a meeting gesture, and like the
+      // door and the camera flip, the control for it is absent, not dimmed, when
+      // there is nothing to do with it.
+      await tester.pumpWidget(wrap(connected()));
+      expect(find.byTooltip('Raise hand'), findsNothing);
+      expect(find.byTooltip('Lower hand'), findsNothing);
+    });
+
+    testWidgets('appears in a meeting and toggles the hand', (tester) async {
+      final state = connected()..debugHuddle = ['Ada'];
+      await tester.pumpWidget(wrap(state));
+
+      expect(find.byTooltip('Raise hand'), findsOneWidget);
+      expect(state.myHandRaised, isFalse);
+
+      await tester.tap(find.byTooltip('Raise hand'));
+      await tester.pumpAndSettle();
+
+      // The state flipped and the label with it — the one button is both raise and
+      // lower, the way React is the one button that opens and shuts the tray.
+      expect(state.myHandRaised, isTrue);
+      expect(find.byTooltip('Lower hand'), findsOneWidget);
+      expect(find.byTooltip('Raise hand'), findsNothing);
+
+      await tester.tap(find.byTooltip('Lower hand'));
+      await tester.pumpAndSettle();
+      expect(state.myHandRaised, isFalse);
+      expect(find.byTooltip('Raise hand'), findsOneWidget);
+    });
+  });
+
   group('the status sheet', () {
     testWidgets('opens off the avatar and offers the three you can set',
         (tester) async {

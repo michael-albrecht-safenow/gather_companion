@@ -404,6 +404,21 @@ class _ControlBarState extends State<ControlBar> {
                 on: _tray,
                 onTap: _toggleTray,
               ),
+              // Raising a hand is a meeting gesture, so it sits by React and shows
+              // only while there is a meeting to raise it in — absent over the map
+              // and in a call of one, like everything else here with nothing to act
+              // on. `on` carries the raised state the same way Mute carries live:
+              // the amber badge on the tile is the loud signal, this is the switch.
+              // No `_run`: the hand is local-first and reports nothing to surface.
+              if (state.inCall)
+                _BarButton(
+                  icon: state.myHandRaised
+                      ? Icons.front_hand
+                      : Icons.front_hand_outlined,
+                  label: state.myHandRaised ? 'Lower hand' : 'Raise hand',
+                  on: state.myHandRaised,
+                  onTap: () => state.toggleHandRaised(),
+                ),
               // Its own listener. Walking is deliberately not a `notifyListeners`
               // — movement must not wake the whole tree — and this is the one
               // control in the bar whose answer changes as you walk. Without it the

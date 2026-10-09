@@ -511,6 +511,7 @@ class DirectCollector implements Collector {
   }
 
   /// Puts a hand up, or takes it down. A bare bool, not a map.
+  @override
   ({bool ok, String? detail}) setHandRaised(bool raised) =>
       _act('setHandRaised', raised);
 
