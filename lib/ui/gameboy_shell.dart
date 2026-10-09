@@ -453,13 +453,6 @@ class _GameboyShellState extends State<GameboyShell> {
   }
 }
 
-/// The strip across the top of the screen bezel: the room's name on the left as
-/// the console's wordmark, the power light on the right — the two things moulded
-/// into the top of a real one. It sits *inside* the dark purple surround, above
-/// the LCD well, so the bezel reads as wider along the top the way the mock's
-/// does. The name is taken *off* the LCD title so it is not printed twice (see
-/// `map_screen.dart`). The head count is the LCD's job, carried on the status
-/// strip inside the screen.
 /// The band below the LCD, where a theme may print its brand — the spot a real
 /// handheld stamps its wordmark. [GameboyTheme.brandmark] draws it centred; a
 /// theme with none keeps the plain ~40px breath the layout had before, so the
@@ -484,6 +477,13 @@ class _BrandBand extends StatelessWidget {
   }
 }
 
+/// The strip across the top of the screen bezel: the room's name on the left as
+/// the console's wordmark, the power light on the right — the two things moulded
+/// into the top of a real one. It sits *inside* the dark purple surround, above
+/// the LCD well, so the bezel reads as wider along the top the way the mock's
+/// does. The name is taken *off* the LCD title so it is not printed twice (see
+/// `map_screen.dart`). The head count is the LCD's job, carried on the status
+/// strip inside the screen.
 class _Header extends StatelessWidget {
   const _Header({required this.state});
 

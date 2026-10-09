@@ -12,9 +12,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
 import 'package:gather_companion/harness/fake_collector.dart';
 import 'package:gather_companion/src/app_state.dart';
+import 'package:gather_companion/src/credentials.dart';
 import 'package:gather_companion/src/link_status.dart';
 import 'package:gather_companion/src/media/call.dart';
 import 'package:gather_companion/src/media/media_engine.dart';
+import 'package:gather_companion/src/notifications.dart';
+import 'package:gather_companion/src/settings.dart';
 import 'package:gather_companion/src/ui_preferences.dart';
 import 'package:gather_companion/theme/gather_theme.dart';
 import 'package:gather_companion/ui/call_screen.dart';
@@ -40,6 +43,30 @@ class _SpyState extends AppState {
 
   @override
   void stopWalking() => released++;
+}
+
+/// A [Notifier] whose [init] is a no-op, so a full [AppState.boot] can run under
+/// test without blocking on the local-notifications platform channel.
+class _SilentNotifier extends Notifier {
+  @override
+  Future<void> init() async {}
+}
+
+/// Credential and bridge stores backed by nothing, so [AppState.boot] can run
+/// under test without touching the keychain (its platform channel never answers
+/// here). Both report "not paired", which is all the theme read-back needs.
+class _EmptyCredentialStore extends GatherCredentialStore {
+  @override
+  Future<GatherCredentials> load() async => GatherCredentials.empty;
+  @override
+  Future<String?> loadSpaceId() async => null;
+}
+
+class _EmptyBridgeStore extends BridgeSettingsStore {
+  @override
+  Future<BridgeSettings> load() async => BridgeSettings.empty;
+  @override
+  Future<String?> loadName() async => null;
 }
 
 void main() {
@@ -186,8 +213,20 @@ void main() {
 
       await state.setGameboyTheme(GameboyThemeId.safeNow);
       expect(state.gameboyTheme, GameboyThemeId.safeNow);
-      expect(await UiPreferences().loadGameboyThemeId(), 'safenow',
-          reason: 'boot() reads this value, so the pick survives a relaunch');
+
+      // The round-trip above only proves the store holds the pick. Actually boot a
+      // fresh AppState so the restore line in boot() is exercised: a dropped or
+      // mis-mapped assignment there would pass the store check yet come back purple.
+      // The notifier and stores are faked so boot() does not block on the
+      // notifications or keychain platform channels, which never answer in a test.
+      final rebooted = AppState(
+        notifier: _SilentNotifier(),
+        credentials: _EmptyCredentialStore(),
+        bridge: _EmptyBridgeStore(),
+      );
+      await rebooted.boot();
+      expect(rebooted.gameboyTheme, GameboyThemeId.safeNow,
+          reason: 'boot() restores the stored theme, not just the default');
     });
 
     testWidgets('the picker is offered only while the handheld is on', (tester) async {
