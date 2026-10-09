@@ -34,6 +34,10 @@
 /// It is opened lazily and written synchronously: this is a diagnostic, and a
 /// diagnostic that loses the last few lines to a buffer is worthless precisely
 /// when it matters — the lines just before a hang are the ones being looked for.
+/// A buffered [IOSink] would not give that: its `writeln` returns before the
+/// bytes reach the OS and an abrupt kill drops whatever is still queued, so the
+/// tail — the part being hunted — is the first thing lost. A [RandomAccessFile]
+/// with `flushSync` after every line is what makes the tail survive.
 library;
 
 import 'dart:io';
@@ -41,7 +45,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 /// The log file for this run, or `null` if the device would not give us one.
-IOSink? _sink;
+RandomAccessFile? _raf;
 bool _tried = false;
 
 /// Roll the live file to `.1` once it passes this. Two segments of this size is
@@ -76,23 +80,33 @@ void mediaLogToFile(String line) {
       final file = File('${Directory.systemTemp.path}/media.log');
       _rotateIfLarge(file);
       // Append so a relaunch keeps the prior run's evidence; the banner fences
-      // this run off from it. Opened for the whole process life, flushed by the
-      // OS — the synchronous `writeln` below is what guards the last lines.
-      _sink = file.openWrite(mode: FileMode.append)
-        ..writeln('=== launch ${DateTime.now().toIso8601String()} ===');
+      // this run off from it. Held open for the whole process life and written
+      // synchronously below so the tail survives an abrupt kill.
+      final raf = file.openSync(mode: FileMode.writeOnlyAppend);
+      _raf = raf;
+      _writeLine(raf, '=== launch ${DateTime.now().toIso8601String()} ===');
       mediaLogPath = file.path;
     } on Object {
-      _sink = null;
+      _raf = null;
     }
   }
 
-  final sink = _sink;
-  if (sink == null) return;
+  final raf = _raf;
+  if (raf == null) return;
   try {
-    sink.writeln('${DateTime.now().toIso8601String()} $line');
+    _writeLine(raf, '${DateTime.now().toIso8601String()} $line');
   } on Object {
-    _sink = null;
+    _raf = null;
   }
+}
+
+/// Writes [line] and flushes it to the OS before returning, so a kill right
+/// after cannot drop it. This is what the "written synchronously" promise rests
+/// on — [RandomAccessFile.writeStringSync] alone only fills Dart's buffer.
+void _writeLine(RandomAccessFile raf, String line) {
+  raf
+    ..writeStringSync('$line\n')
+    ..flushSync();
 }
 
 /// Rolls [file] to `<file>.1` when it has outgrown [_maxLogBytes], so the live
