@@ -20,8 +20,10 @@ command=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null |
 # Self-gate: only act on `gh pr create`. The `-[^ ]+( value)?` groups tolerate
 # global/sub options between the tokens, e.g. `gh -R owner/repo pr create`,
 # `gh pr create --fill`. A bare non-flag token between `pr` and `create` (e.g.
-# `gh pr list && echo create`) does NOT match.
-gate='(^|[[:space:];&|])gh([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+pr([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+create([[:space:];&|]|$)'
+# `gh pr list && echo create`) does NOT match. The boundary classes include `(`
+# and `)` so a create inside a command substitution or subshell —
+# `pr_url=$(gh pr create --fill)` — is still recognized.
+gate='(^|[[:space:];&|(])gh([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+pr([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+create([[:space:];&|)]|$)'
 if ! printf '%s' "$command" | grep -qE "$gate"; then
   exit 0
 fi
