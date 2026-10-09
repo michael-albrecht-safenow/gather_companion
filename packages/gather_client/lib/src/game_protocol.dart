@@ -51,6 +51,7 @@ library;
 import 'dart:convert';
 
 import 'avatar.dart';
+import 'msgpack.dart';
 import 'space_map.dart';
 
 /// Only these models matter; a full state dump is mostly calendars and catalogs.
@@ -153,6 +154,11 @@ const _trackedFields = {
   // also changes under you when a desk manager reassigns one, and the whole point
   // of tracking a field rather than remembering it is that the answer follows.
   'deskId',
+  // Whether their hand is up in a meeting. The wire carries a *timestamp*,
+  // `handRaisedAt`, not a bool — set when the hand goes up and `undefined` when it
+  // comes down (see [RosterRow.handRaised]). Tracked so a lowering patch, which
+  // arrives as a `replace` to `undefined`, is not dropped and a hand left stuck up.
+  'handRaisedAt',
 };
 
 /// One interaction off `DeltaState.events[]`.
@@ -275,6 +281,7 @@ class RosterRow {
     this.profilePictureId,
     this.deskId,
     this.status,
+    this.handRaised = false,
   });
 
   final String id;
@@ -368,6 +375,17 @@ class RosterRow {
 
   /// The line under their name, if it has not expired.
   final PersonStatus? status;
+
+  /// Whether their hand is up in a meeting.
+  ///
+  /// The wire carries no bool: a raised hand is a `handRaisedAt` *timestamp*, and
+  /// a lowered one is that field as msgpack `undefined` — the ext-4 sentinel this
+  /// protocol maps to [msgpackUndefined], **not** null and **not** absent. So "up"
+  /// is "the field arrived and holds something other than undefined", which is what
+  /// [DeltaState] distils this bool down to; a client reading `handRaisedAt != null`
+  /// would see every lowered hand as still up. Defaults false — nobody starts with
+  /// a hand up, and a row that has never carried the field reads as down.
+  final bool handRaised;
 
   /// Connected, and not away. See [availability].
   bool get isPresent => connected == true && availability != 'Offline';
@@ -499,6 +517,7 @@ class _Row {
   String? availability;
   String? profilePictureId;
   String? deskId;
+  bool handRaised = false;
   bool gone = false;
 }
 
@@ -988,6 +1007,15 @@ class GameProtocolReader {
     if (data.containsKey('dancing')) {
       set(row.dancing, _asBool(data['dancing']), (v) => row.dancing = v);
     }
+    // A timestamp, not a bool: present and holding something means the hand is up,
+    // `undefined` (the ext-4 sentinel, not null) means it just came down. Reading
+    // it as `!= null` would leave every lowered hand stuck up. See
+    // [RosterRow.handRaised].
+    if (data.containsKey('handRaisedAt')) {
+      final value = data['handRaisedAt'];
+      final up = value != null && !identical(value, msgpackUndefined);
+      set(row.handRaised, up, (v) => row.handRaised = v);
+    }
     if (data.containsKey('isBot')) {
       set(row.isBot, _asBool(data['isBot']), (v) => row.isBot = v);
     }
@@ -1208,6 +1236,7 @@ class GameProtocolReader {
         profilePictureId: row.profilePictureId,
         deskId: row.deskId,
         status: _statusFor(row.id, now),
+        handRaised: row.handRaised,
       ));
     }
     return Roster(selfId: selfId, rows: rows, spaceName: spaceName);

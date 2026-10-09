@@ -263,4 +263,44 @@ void main() {
       expect(reader.roster().rows.single.dancing, isNull);
     });
   });
+
+  group('a raised hand', () {
+    test('goes up when a handRaisedAt timestamp arrives', () {
+      final reader = _reader()..ingest(_dump());
+      reader.ingest({
+        'type': 'DeltaState',
+        'patches': [
+          // A timestamp, not a bool — the wire's way of saying the hand is up.
+          {'op': 'replace', 'model': 'SpaceUser', 'id': _me, 'path': '/handRaisedAt', 'data': 1700000000000},
+        ],
+      });
+
+      expect(reader.roster().rows.single.handRaised, isTrue);
+    });
+
+    test('comes down when the field goes to undefined', () {
+      final reader = _reader()..ingest(_dump());
+      reader.ingest({
+        'type': 'DeltaState',
+        'patches': [
+          {'op': 'replace', 'model': 'SpaceUser', 'id': _me, 'path': '/handRaisedAt', 'data': 1700000000000},
+        ],
+      });
+      reader.ingest({
+        'type': 'DeltaState',
+        'patches': [
+          // Lowering is the timestamp blanked to the ext-4 undefined sentinel, not
+          // null and not an absent key — the trap that would leave the hand stuck up.
+          {'op': 'replace', 'model': 'SpaceUser', 'id': _me, 'path': '/handRaisedAt', 'data': msgpackUndefined},
+        ],
+      });
+
+      expect(reader.roster().rows.single.handRaised, isFalse);
+    });
+
+    test('is false rather than null before it has ever arrived', () {
+      final reader = _reader()..ingest(_dump());
+      expect(reader.roster().rows.single.handRaised, isFalse);
+    });
+  });
 }

@@ -49,6 +49,7 @@ class FakeCollector implements Collector {
   ({int x, int y}) _me = kSelfStartTile;
   String _myDirection = 'Down';
   bool _mySpeaking = false;
+  bool _myHandRaised = false;
   final Map<String, _Standing> _people = {};
 
   /// What the write side was asked to do, kept so a harness can show it and a
@@ -198,6 +199,7 @@ class FakeCollector implements Collector {
           direction: _myDirection,
           speaking: _mySpeaking,
           clusterId: inCall ? kHuddleCluster : null,
+          handRaised: _myHandRaised,
         ),
         for (final s in _people.values)
           officeRow(
@@ -242,6 +244,13 @@ class FakeCollector implements Collector {
   @override
   ({bool ok, String? detail}) setSpeaking(bool speaking) {
     _mySpeaking = speaking;
+    publish();
+    return (ok: true, detail: null);
+  }
+
+  @override
+  ({bool ok, String? detail}) setHandRaised(bool raised) {
+    _myHandRaised = raised;
     publish();
     return (ok: true, detail: null);
   }

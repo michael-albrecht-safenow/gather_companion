@@ -141,6 +141,11 @@ abstract interface class Collector {
   /// Says whether we are talking. This is the speaking ring.
   ({bool ok, String? detail}) setSpeaking(bool speaking);
 
+  /// Puts our hand up in a meeting, or takes it down. The raised state is sticky:
+  /// it stays until this is called again, and every other client sees it as
+  /// `handRaisedAt` on our roster row.
+  ({bool ok, String? detail}) setHandRaised(bool raised);
+
   /// Steps out of the huddle without walking away from it.
   ({bool ok, String? detail}) leaveCluster();
 

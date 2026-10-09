@@ -71,6 +71,7 @@ class CallTile {
     this.availability,
     this.speaking = false,
     this.reactions = const [],
+    this.handRaised = false,
   });
 
   /// `SpaceUser.id` when we could place them, otherwise the media `srcId`. Only
@@ -92,6 +93,11 @@ class CallTile {
   /// A list rather than one emoji because a reaction is an act and not a status:
   /// three taps are three of them, overlapping. See `../src/reactions.dart`.
   final List<ReactionFlight> reactions;
+
+  /// Whether this person's hand is up. A sticky status, unlike [reactions]: it
+  /// stays until lowered. Ours comes from `AppState.myHandRaised` (local-first);
+  /// everybody else's from their `RosterRow.handRaised`.
+  final bool handRaised;
 
   /// Whether this tile has a frame to show, as opposed to a face to draw.
   ///
@@ -550,6 +556,9 @@ List<CallTile> _tiles(AppState state) {
       // `AppState.amSpeaking`.
       speaking: state.amSpeaking,
       reactions: state.reactions.forPerson(state.meId),
+      // Ours, local-first, for the same reason as [speaking] above: the button is
+      // under your thumb and should not wait for the roster to echo your own hand.
+      handRaised: state.myHandRaised,
     ),
   ];
 
@@ -574,6 +583,7 @@ List<CallTile> _tiles(AppState state) {
       availability: row?.availability,
       speaking: row?.speaking ?? false,
       reactions: state.reactions.forPerson(row?.id),
+      handRaised: row?.handRaised ?? false,
     ));
   }
 
@@ -598,6 +608,7 @@ List<CallTile> _tiles(AppState state) {
       availability: row.availability,
       speaking: row.speaking ?? false,
       reactions: state.reactions.forPerson(row.id),
+      handRaised: row.handRaised,
     ));
   }
   return tiles;
@@ -1271,6 +1282,21 @@ class _TileFrame extends StatelessWidget {
                   child: ClipRect(child: _Reactions(flights: tile.reactions)),
                 ),
               ),
+            // Top-left, away from the name and status plates along the bottom, so a
+            // raised hand reads at a glance even on a thumbnail-sized tile in the
+            // overview — and the same badge rides the spotlight, since both views
+            // draw this one frame.
+            if (tile.handRaised)
+              Positioned(
+                top: 8,
+                left: 8,
+                // Named, not a bare glyph: the badge is a meeting status, and a
+                // screen reader that only heard the name would miss whose hand is up.
+                child: Semantics(
+                  label: '${tile.label} raised their hand',
+                  child: const _HandBadge(),
+                ),
+              ),
             Positioned(
               left: 8,
               right: 8,
@@ -1424,6 +1450,31 @@ class _FlightState extends State<_Flight> with SingleTickerProviderStateMixin {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// A raised hand, in the corner of a tile.
+///
+/// Amber rather than a theme token on purpose, and the one raw hue on this screen
+/// beside [_Plate]'s black scrim: a raised hand is amber across every meeting tool
+/// a colleague has used, and `t.brand` — the app's blue — would read as one more
+/// piece of chrome rather than as "this person wants in". The white glyph on a
+/// solid fill carries at the size an overview thumbnail gives it, where a tinted
+/// outline would disappear.
+class _HandBadge extends StatelessWidget {
+  const _HandBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(5),
+      decoration: const BoxDecoration(
+        color: Color(0xFFF5A623),
+        shape: BoxShape.circle,
+        boxShadow: [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
+      ),
+      child: const Icon(Icons.front_hand, size: 15, color: Colors.white),
     );
   }
 }

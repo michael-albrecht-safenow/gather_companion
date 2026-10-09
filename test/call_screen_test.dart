@@ -579,6 +579,80 @@ void main() {
     });
   });
 
+  group('a raised hand', () {
+    const me = RosterRow(id: 'me', name: 'Jonas', clusterId: 'c1', connected: true);
+    const lucaUp = RosterRow(
+      id: 'luca',
+      name: 'Luca',
+      clusterId: 'c1',
+      userAccountId: 'account-luca',
+      connected: true,
+      handRaised: true,
+    );
+
+    test("a colleague's hand rides onto their tile, off the roster", () {
+      final state = stateWith(
+        const CallState(participants: [CallParticipant(srcId: 'account-luca', hasAudio: true)]),
+        rows: [me, lucaUp],
+      );
+      addTearDown(state.dispose);
+
+      expect(tilesFor(state).firstWhere((t) => !t.isSelf).handRaised, isTrue);
+      expect(tilesFor(state).firstWhere((t) => t.isSelf).handRaised, isFalse,
+          reason: 'one hand up is not everybody');
+    });
+
+    test('our own hand shows on our own tile, read local-first', () {
+      final state = stateWith(const CallState(), rows: [me]);
+      addTearDown(state.dispose);
+
+      expect(tilesFor(state).single.handRaised, isFalse);
+
+      // From `AppState.myHandRaised`, not the roster — the same reason our own
+      // speaking ring is read locally: the button is under the thumb.
+      state.setHandRaised(true);
+      expect(tilesFor(state).single.handRaised, isTrue);
+    });
+
+    testWidgets('is a badge in the corner of the frame both views share',
+        (tester) async {
+      Future<void> frame(bool raised) async {
+        await tester.pumpWidget(MaterialApp(
+          theme: buildGatherTheme(),
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 200,
+                height: 150,
+                // `TileFrame` is the one widget the overview grid and the
+                // spotlight both build their faces from, so a badge proven here is
+                // a badge in both — which is what the feature asks for.
+                child: TileFrame(
+                  tile: CallTile(
+                    id: 'luca',
+                    label: 'Luca',
+                    isSelf: false,
+                    videoLive: false,
+                    muted: false,
+                    sharingScreen: false,
+                    handRaised: raised,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ));
+        await tester.pump();
+      }
+
+      await frame(false);
+      expect(find.byIcon(Icons.front_hand), findsNothing);
+
+      await frame(true);
+      expect(find.byIcon(Icons.front_hand), findsOneWidget);
+    });
+  });
+
   group('the spotlight — manual and automatic', () {
     // A shared cluster, so a change in who is talking actually reaches the
     // screen: [AppState] only republishes a speaking change for members of your

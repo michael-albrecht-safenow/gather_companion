@@ -156,7 +156,7 @@ const Map<String, ({int x, int y})> kCastStartTiles = {
 /// is what lights `AppState.inHuddle` and the "In a call" banner. The speaking
 /// ring on the map still reads the row's own `speaking` flag (see
 /// `AppState.peopleOnMap`).
-RosterRow selfOfficeRow(({int x, int y}) at, {String direction = 'Down', bool speaking = false, String? clusterId, String floorId = kFloorId}) => RosterRow(
+RosterRow selfOfficeRow(({int x, int y}) at, {String direction = 'Down', bool speaking = false, String? clusterId, String floorId = kFloorId, bool handRaised = false}) => RosterRow(
       id: kSelfId,
       name: 'You',
       connected: true,
@@ -167,6 +167,7 @@ RosterRow selfOfficeRow(({int x, int y}) at, {String direction = 'Down', bool sp
       y: at.y,
       direction: direction,
       speaking: speaking,
+      handRaised: handRaised,
     );
 
 /// One colleague's map-plane row, standing at [at]. `isPresent` needs
@@ -176,7 +177,7 @@ RosterRow selfOfficeRow(({int x, int y}) at, {String direction = 'Down', bool sp
 /// [clusterId] is [kHuddleCluster] only while this person is within call range of
 /// me, so `Roster.myCluster` carries exactly the people the office call driver is
 /// animating — the bridge between standing-next-to and being-in-a-call-with.
-RosterRow officeRow(CallPerson p, ({int x, int y}) at, {String direction = 'Down', bool speaking = false, String? clusterId}) => RosterRow(
+RosterRow officeRow(CallPerson p, ({int x, int y}) at, {String direction = 'Down', bool speaking = false, String? clusterId, bool handRaised = false}) => RosterRow(
       id: p.spaceId,
       name: p.name,
       userAccountId: p.accountId,
@@ -187,4 +188,5 @@ RosterRow officeRow(CallPerson p, ({int x, int y}) at, {String direction = 'Down
       y: at.y,
       direction: direction,
       speaking: speaking,
+      handRaised: handRaised,
     );
