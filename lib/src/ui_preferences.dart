@@ -19,6 +19,7 @@ class UiPreferences {
   SharedPreferences? _prefs;
 
   static const _gameboyKey = 'ui.gameboyMode';
+  static const _gameboyThemeKey = 'ui.gameboyTheme';
   static const _soundEffectsKey = 'ui.soundEffects';
 
   Future<SharedPreferences?> _store() async {
@@ -46,6 +47,25 @@ class UiPreferences {
       await (await _store())?.setBool(_gameboyKey, on);
     } on Object {
       /* nothing useful to do; the next toggle writes it again */
+    }
+  }
+
+  /// Which hardware skin the handheld wears, as a [GameboyThemeId.id] string.
+  /// Defaults to `'purple'` — the look someone who has never picked gets. A pure
+  /// look preference like [loadGameboyMode], so it lives here, not the keychain.
+  Future<String> loadGameboyThemeId() async {
+    try {
+      return (await _store())?.getString(_gameboyThemeKey) ?? 'purple';
+    } on Object {
+      return 'purple';
+    }
+  }
+
+  Future<void> saveGameboyThemeId(String id) async {
+    try {
+      await (await _store())?.setString(_gameboyThemeKey, id);
+    } on Object {
+      /* nothing useful to do; the next pick writes it again */
     }
   }
 

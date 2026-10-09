@@ -17,6 +17,7 @@ import 'push.dart';
 import 'reactions.dart';
 import 'settings.dart';
 import 'ui_preferences.dart';
+import '../ui/gameboy_theme.dart' show GameboyThemeId;
 
 /// Everything the UI reads. One object, so the whole app is a single
 /// `ListenableBuilder` away from being correct.
@@ -694,6 +695,21 @@ class AppState extends ChangeNotifier {
     await _uiPrefs.saveGameboyMode(on);
   }
 
+  /// Which hardware skin Gameboy mode wears. A pure look preference — it swaps
+  /// only the handheld's plastic palette and the brand printed on it, never the
+  /// office inside the screen nor any behaviour — so it sits beside [gameboyMode]
+  /// as one more switch the app owns, read back at [boot] and persisted the moment
+  /// it changes. Silent: a theme earns no boot chime.
+  GameboyThemeId _gameboyTheme = GameboyThemeId.purple;
+  GameboyThemeId get gameboyTheme => _gameboyTheme;
+
+  Future<void> setGameboyTheme(GameboyThemeId id) async {
+    if (_gameboyTheme == id) return;
+    _gameboyTheme = id;
+    notifyListeners();
+    await _uiPrefs.saveGameboyThemeId(id.id);
+  }
+
   /// Whether the app's sound effects play — the handheld's blips, the boot
   /// jingle, and the speaker-test chime. On by default. This never touches
   /// in-call voice; it is a UI-sound switch only, read back at [boot] and
@@ -727,6 +743,7 @@ class AppState extends ChangeNotifier {
     _credentials = await _credentialStore.load();
     _spaceId = await _credentialStore.loadSpaceId();
     _gameboyMode = await _uiPrefs.loadGameboyMode();
+    _gameboyTheme = GameboyThemeId.fromId(await _uiPrefs.loadGameboyThemeId());
     _soundEffects = await _uiPrefs.loadSoundEffects();
 
     // Launched straight into Gameboy mode with sounds on: no setter ran to warm

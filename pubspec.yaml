@@ -82,6 +82,12 @@ flutter:
     # serving it, so there is no URL to fetch; this is that PNG, byte for byte.
     # See `lib/src/art_cache.dart` (`ghostAvatarUrl`).
     - assets/avatar-ghost.png
+    # The SafeNow wordmark, baked low-res (77×18, cream on transparent) from the
+    # brand's own inverted logo and nearest-neighbour upscaled on screen, so the
+    # real letterforms read as 8/16-bit pixel art — NOT the PixelifySans chrome
+    # face. Only the SafeNow Gameboy theme prints it, in the band below the LCD.
+    # See `_SafeNowMark` in `lib/ui/gameboy_theme.dart`.
+    - assets/images/safenow_pixel.png
   fonts:
     # The pixel face for Gameboy mode's chrome only — the shell's own labels
     # (HERE, POWER, A/B, SELECT/START) and the Select menu. The office world and

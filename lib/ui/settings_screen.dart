@@ -23,6 +23,7 @@ import '../src/link_status.dart';
 import '../src/push.dart';
 import '../theme/gather_theme.dart';
 import 'call_screen.dart';
+import 'gameboy_theme.dart';
 import 'media_check_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -123,6 +124,10 @@ class SettingsScreen extends StatelessWidget {
           _Card(
             children: [
               _GameboyRow(state: state),
+              // Only while the handheld is on — the theme has nothing to skin when
+              // the office wears its normal interface, so an always-present row
+              // would be an orphan control.
+              if (state.gameboyMode) _GameboyThemeRow(state: state),
               _SoundEffectsRow(state: state),
             ],
           ),
@@ -346,6 +351,237 @@ class _GameboyRow extends StatelessWidget {
         onTap: () => state.setGameboyMode(!on),
         trailing: _PartySwitch(on: on, pending: false),
       ),
+    );
+  }
+}
+
+/// The hardware theme picker, below Gameboy mode in the Appearance card and shown
+/// only while the mode is on. A pure look choice — it skins the handheld's plastic
+/// and nothing else — so like the mode above it there is no refusal to show; a tap
+/// on a thumbnail sets the theme at once.
+///
+/// Laid out as a header line that names the one you are on, over a full-width
+/// horizontal strip of handheld thumbnails. A single colour swatch could not say
+/// what a theme *is* — the whole point is the moulded shell — so each entry is a
+/// little picture of the handheld in that plastic, and the strip scrolls because
+/// more skins are coming than a row would hold.
+class _GameboyThemeRow extends StatelessWidget {
+  const _GameboyThemeRow({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final active = themeById(state.gameboyTheme);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // The same left column as a `_Row`, minus the tap target — the strip below
+        // is the control, so this line only titles the choice and names the pick.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+          child: Row(
+            children: [
+              Icon(Icons.palette_rounded, size: 20, color: t.mutedForeground),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Theme',
+                        style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: t.foreground)),
+                    const SizedBox(height: 2),
+                    Text('The handheld in ${active.label}.',
+                        style: TextStyle(fontSize: 12.5, height: 1.35, color: t.faint)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        _ThemeThumbnails(state: state),
+        const SizedBox(height: 14),
+      ],
+    );
+  }
+}
+
+/// The horizontal strip of theme thumbnails, one per entry in [kGameboyThemes].
+/// It scrolls so the picker holds more skins than fit the card width, and bleeds
+/// the first and last thumbnails to the card edges (the `14` padding matches a
+/// `_Row`'s) so a half-cut thumbnail at the margin hints there is more to scroll.
+class _ThemeThumbnails extends StatelessWidget {
+  const _ThemeThumbnails({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = state.gameboyTheme;
+    return SizedBox(
+      height: _ThemeThumb.totalHeight,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        itemCount: kGameboyThemes.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 12),
+        itemBuilder: (context, i) {
+          final theme = kGameboyThemes[i];
+          return _ThemeThumb(
+            theme: theme,
+            selected: theme.id == selected,
+            onTap: () => state.setGameboyTheme(theme.id),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// One handheld in the strip: a little DMG drawn in the theme's own plastic ramp,
+/// its label beneath. Not a photo of the real shell — a readable caricature (body
+/// gradient, dark LCD well, a hint of D-pad and buttons) so the eye reads "the
+/// handheld, but blue" at a glance. The selected one wears the brand ring and a
+/// bold label; the rest sit quiet.
+class _ThemeThumb extends StatelessWidget {
+  const _ThemeThumb({required this.theme, required this.selected, required this.onTap});
+
+  final GameboyTheme theme;
+  final bool selected;
+  final VoidCallback onTap;
+
+  static const double _w = 72;
+  static const double _bodyH = 84;
+
+  /// The strip sizes itself to the thumbnail plus its label line.
+  static const double totalHeight = _bodyH + 6 + 18;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final hw = theme.hardware;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${theme.label} theme',
+      child: GestureDetector(
+        onTap: onTap,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: _w,
+              height: _bodyH,
+              decoration: BoxDecoration(
+                // The body's own two plastic values, lit from the top-left like the
+                // real shell's housing gradient.
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [hw.hw600, hw.hw700],
+                ),
+                // The DMG's bottom-right corner is cut deeper than the rest.
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(10),
+                  topRight: Radius.circular(10),
+                  bottomLeft: Radius.circular(10),
+                  bottomRight: Radius.circular(22),
+                ),
+                border: Border.all(
+                  color: selected ? t.brand : t.border,
+                  width: selected ? 2.5 : 1,
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 7),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // The LCD well: a near-black screen with a hairline bezel, the
+                    // same dark the real shell sinks its screen into.
+                    Container(
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0E1012),
+                        borderRadius: BorderRadius.circular(3),
+                        border: Border.all(color: hw.hw900, width: 1),
+                      ),
+                    ),
+                    const Spacer(),
+                    // A hint of the controls: a D-pad cross left, two button domes
+                    // right — drawn in the moulded-dark and catch-light values so
+                    // they read as parts of this shell, not stickers on it.
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        _MiniDpad(color: hw.hw900),
+                        Row(
+                          children: [
+                            _MiniKey(color: hw.hw500),
+                            const SizedBox(width: 3),
+                            _MiniKey(color: hw.hw500),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              theme.label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected ? t.foreground : t.mutedForeground,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The thumbnail's D-pad: a plus of two crossed bars, flat (the shell's no-blur
+/// grammar), in the moulded-dark plastic value.
+class _MiniDpad extends StatelessWidget {
+  const _MiniDpad({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 14,
+      height: 14,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Container(width: 14, height: 5, color: color),
+          Container(width: 5, height: 14, color: color),
+        ],
+      ),
+    );
+  }
+}
+
+/// A thumbnail's A/B button: a small round dome in the catch-light value.
+class _MiniKey extends StatelessWidget {
+  const _MiniKey({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 7,
+      height: 7,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
 }
