@@ -241,6 +241,13 @@ class _AppHarnessState extends State<_AppHarness> {
     if (const bool.hasEnvironment('GAMEBOY')) {
       await UiPreferences().saveGameboyMode(const bool.fromEnvironment('GAMEBOY'));
     }
+    // `--dart-define=GBTHEME=safenow` boots the handheld in a given hardware theme,
+    // for watching the plastic skin and its brand on a bare sim. Written before
+    // [AppState.boot] like the GAMEBOY flag, since boot reads it from there. Sticks
+    // on the throwaway sim, so it is honoured only when actually passed.
+    if (const bool.hasEnvironment('GBTHEME')) {
+      await UiPreferences().saveGameboyThemeId(const String.fromEnvironment('GBTHEME'));
+    }
     await widget.state.boot();
     if (mounted) widget.driver.start();
   }
