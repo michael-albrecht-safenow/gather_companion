@@ -762,6 +762,43 @@ void main() {
       });
     });
 
+    test('a healthy transport that stalls back to connecting re-arms the '
+        'watchdog', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        publishAudio(clock);
+        final send = sendTransport();
+        final before = rig.republishes;
+
+        // ICE completes, so the watchdog stands down and its timer is cancelled.
+        send.handlers['connectionstatechange']
+            ?.call({'connectionState': 'connected'});
+        clock.flushMicrotasks();
+
+        // Later a TURN refresh restarts ICE and the transport drops back to
+        // `connecting`, then silently stalls there — never reporting
+        // `disconnected` or `failed`. With nothing re-arming on `connecting`
+        // this producer would ride a dead transport forever.
+        send.handlers['connectionstatechange']
+            ?.call({'connectionState': 'connecting'});
+        clock.flushMicrotasks();
+
+        clock.elapse(const Duration(seconds: 6));
+        clock.flushMicrotasks();
+
+        expect(send.closed, isTrue,
+            reason: 'the re-stalled send transport is torn down');
+        expect(rig.session.publishing(SfuTag.audio), isFalse);
+        expect(rig.republishes, greaterThan(before),
+            reason: 'the watchdog re-armed on connecting and rebuilt');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
     test('retries with growing backoff and never gives up', () {
       fakeAsync((clock) {
         rig.session.start().ignore();

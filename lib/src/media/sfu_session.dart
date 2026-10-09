@@ -538,11 +538,17 @@ class SfuSession {
         _sendHealBackoff = const Duration(seconds: 6);
       } else if (state == 'failed' ||
           state == 'disconnected' ||
-          state == 'closed') {
-        // An explicit failure rather than the silent `connecting` stall the
-        // timer covers. A `disconnected` can still recover on its own, so this
-        // does not rebuild immediately — it arms the watchdog, whose grace
-        // window re-checks the state before tearing anything down.
+          state == 'closed' ||
+          state == 'connecting') {
+        // An explicit failure, or a `connecting` that may silently stall. The
+        // initial publish arms the watchdog, but once `connected` cancels it a
+        // later `refreshTurn -> restartIce` drops the transport back to
+        // `connecting` with nothing re-arming the timer — so a stall there goes
+        // uncovered. Re-arm on `connecting` too. A `disconnected` can still
+        // recover on its own, so this does not rebuild immediately — it arms the
+        // watchdog, whose grace window re-checks the state before tearing
+        // anything down. `_scheduleSendHeal` is idempotent, so a normal
+        // `connecting -> connected` arms then harmlessly stands down.
         _scheduleSendHeal();
       }
     });
@@ -640,6 +646,12 @@ class SfuSession {
       transport.produce(
         track: track,
         stream: stream,
+        // The capture lifecycle is owned by CaptureEngine/_ensureCapture, not by
+        // mediasoup. With the package default (`stopTracks: true`), closing a
+        // producer during a send-heal rebuild would `track.stop()` and dispose
+        // the shared capture stream; the republish then hands those dead tracks
+        // back and the room hears silence. Leave the tracks alone on close.
+        stopTracks: false,
         source: tag == SfuTag.screen
             ? 'screen'
             : (tag == SfuTag.audio ? 'mic' : 'webcam'),
