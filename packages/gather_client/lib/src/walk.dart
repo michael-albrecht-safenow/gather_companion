@@ -626,6 +626,12 @@ class Walk {
       final ty = y + step.dy;
       if (tx >= 0 && ty >= 0 && tx < map.width && ty < map.height) {
         collector.move(direction: direction);
+        // The move turned nobody, but it did turn us to face the wall — the same
+        // optimistic [facing] a landed step would have, and [move] handed it to the
+        // socket just the same. So wake the screen on it too, or turning in place
+        // against a wall would be the one press that still waited out the round-trip
+        // for the roster to echo the facing back — the very lag this set out to kill.
+        _onStepped?.call();
       }
       return (ok: false, detail: 'blocked');
     }

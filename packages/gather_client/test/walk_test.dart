@@ -1054,7 +1054,8 @@ void main() {
       expect(w.at, (x: 6, y: 4));
     });
 
-    test('onStepped fires once per step that reaches the socket, not on a wall', () {
+    test('onStepped wakes the screen whenever a move reaches the socket, wall or not',
+        () {
       var ticks = 0;
       final w = walk = Walk(
         collector: () => collector,
@@ -1067,9 +1068,32 @@ void main() {
       expect(collector.steps, ['Right']);
       expect(ticks, 1);
 
-      w.press('Right'); // into the wall west of column 9 — sent nothing, no tile
+      // The next held tick walks into the wall west of column 9: no tile advances, but
+      // the move is still sent (Gather turns us to face it), so the facing is now ours
+      // to draw — and the screen must wake on it, or turning in place against a wall
+      // keeps the round-trip lag every open step just shed.
+      expect(w.step().detail, 'blocked');
       expect(w.at, (x: 8, y: 4), reason: 'leaned on the wall, did not advance');
-      expect(ticks, 1, reason: 'a blocked step does not wake the screen');
+      expect(collector.steps, ['Right', 'Right'], reason: 'the wall turn is still sent');
+      expect(ticks, 2, reason: 'a transmitted facing wakes the screen');
+    });
+
+    test('onStepped stays quiet on the one refusal that is never sent', () {
+      var ticks = 0;
+      final w = walk = Walk(
+        collector: () => collector,
+        map: () => _obstructed(),
+        interval: const Duration(hours: 1),
+        onStepped: () => ticks++,
+      )..noteRoster(_at(0, 4));
+
+      // Off the west edge: the one wall refusal [Walk] keeps to itself rather than
+      // handing to Gather, because the position it would write is off-grid. Nothing
+      // reaches the socket, so there is no transmitted facing to wake the screen for.
+      w.press('Left');
+      expect(w.at, (x: 0, y: 4), reason: 'the edge did not advance us');
+      expect(collector.steps, isEmpty, reason: 'the off-grid move is never sent');
+      expect(ticks, 0, reason: 'nothing transmitted, nothing to wake for');
     });
 
     test('facing leads the roster the instant a direction is held', () {
