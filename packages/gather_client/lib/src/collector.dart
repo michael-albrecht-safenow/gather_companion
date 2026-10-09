@@ -147,6 +147,14 @@ abstract interface class Collector {
   /// Says whether the person is actually at the phone.
   ({bool ok, String? detail}) setActive(bool active);
 
+  /// A caller outside the socket suspects we have gone missing to other people —
+  /// the clearest case being the walk engine finding move after move that the
+  /// server never applied. The collector owns the one recovery path (re-enter,
+  /// then reconnect if that does not take); this lets the walk engine feed into
+  /// it without duplicating any of it. Idempotent and cheap: a no-op while a
+  /// recovery is already under way.
+  void notePresenceDoubt();
+
   /// Reconnects, which is all a resync is here: the server replays the full state
   /// dump on every new connection.
   Future<({bool ok, String detail})> resync();

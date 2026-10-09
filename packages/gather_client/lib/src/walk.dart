@@ -171,6 +171,10 @@ class Walk {
     void Function()? onRouteEnded,
     /// Called when the gait changes. See [gait].
     void Function()? onGaitChanged,
+    /// Called when steps keep being sent that no roster ever confirms — the signal
+    /// that the server is not applying our moves, i.e. we may have gone invisible
+    /// to others. Fire-and-forget; the collector debounces its own recovery.
+    void Function()? onMovesUnconfirmed,
     this.interval = walkStep,
     this.holdLimit = maxHold,
     // Test seam. Production uses the wall clock.
@@ -186,6 +190,8 @@ class Walk {
         _onRouteEnded = onRouteEnded,
         // ignore: prefer_initializing_formals
         _onGaitChanged = onGaitChanged,
+        // ignore: prefer_initializing_formals
+        _onMovesUnconfirmed = onMovesUnconfirmed,
         _now = now ?? DateTime.now;
 
   static void _noop(String _) {}
@@ -197,6 +203,7 @@ class Walk {
   final void Function(String) _log;
   final void Function()? _onRouteEnded;
   final void Function()? _onGaitChanged;
+  final void Function()? _onMovesUnconfirmed;
   final Duration interval;
   final Duration holdLimit;
   final DateTime Function() _now;
@@ -616,6 +623,11 @@ class Walk {
       // avatar.
       _log('walk: $_pendingLimit moves sent, none confirmed by a roster — '
           'server is not applying our moves (socket likely half-open)');
+      // The one unambiguous rung: a full buffer of unconfirmed steps is the server
+      // ignoring us, not a late roster. Hand it to the collector, which decides
+      // whether to re-enter or reconnect; this only reports, and only on overflow,
+      // so a normal correction never raises it.
+      _onMovesUnconfirmed?.call();
     }
     // A step that landed is the evidence that re-planning worked.
     _replans = 0;

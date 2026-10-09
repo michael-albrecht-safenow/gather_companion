@@ -44,6 +44,8 @@ void main() {
   DirectCollector build({
     String? spaceId = 'space-1',
     Duration? silenceLimit,
+    Duration? selfAbsentLimit,
+    Duration? reenterGrace,
     void Function(String)? log,
   }) {
     final auth = GatherAuth(
@@ -56,8 +58,27 @@ void main() {
       socketUrl: gather.url,
       log: log,
       silenceLimit: silenceLimit ?? const Duration(seconds: 45),
+      // Short by default so the presence ladder's two stages are observable inside
+      // a test's patience; raised per-test where a stage must *not* fire.
+      selfAbsentLimit: selfAbsentLimit ?? const Duration(milliseconds: 150),
+      reenterGrace: reenterGrace ?? const Duration(milliseconds: 150),
     );
   }
+
+  /// How many `enterSpace` frames this connection has received — one per entry,
+  /// so more than one means a re-enter went out.
+  int entersOn(FakeConnection conn) =>
+      conn.received.where((f) => f['action'] == 'enterSpace').length;
+
+  /// Merge a change into our own `SpaceUser` row via a delta, the way the server
+  /// does. [fields] is spread over `{id: 'me-1'}`.
+  void patchSelf(FakeConnection conn, Map<String, Object?> fields) => conn.delta([
+        {
+          'op': 'addmodel',
+          'model': 'SpaceUser',
+          'data': {'id': 'me-1', ...fields},
+        },
+      ]);
 
   test('the handshake is sent in order, then enters once the dump names us', () async {
     final c = build()..start();
@@ -575,6 +596,115 @@ void main() {
       await Future<void>.delayed(const Duration(seconds: 2));
 
       expect(gather.connections, hasLength(1), reason: 'a live socket must not be reconnected');
+      expect(c.healthy, isTrue);
+    });
+  });
+
+  group('staying visible to other people', () {
+    // The case `healthy` cannot see. Frames keep arriving and the roster is current,
+    // so the inbound light stays green — but the roster no longer holds a present,
+    // placed us, which is exactly how we go missing from everyone else's office while
+    // our own screen looks fine. The ladder is two rungs: a quiet re-enter, then a
+    // reconnect that finally shows the banner.
+
+    Future<void> waitUntil(bool Function() cond, {String reason = 'a condition'}) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (!cond()) {
+        if (DateTime.now().isAfter(deadline)) throw StateError('timed out waiting for $reason');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+
+    Future<({DirectCollector c, FakeConnection conn})> entered({
+      Duration? selfAbsentLimit,
+      Duration? reenterGrace,
+      void Function(String)? log,
+    }) async {
+      final c = build(selfAbsentLimit: selfAbsentLimit, reenterGrace: reenterGrace, log: log)
+        ..start();
+      final conn = await firstWhere(gather.onDumped, (_) => true, reason: 'a dump');
+      await firstWhere(c.rosters, (r) => r.selfId != null, reason: 'selfId');
+      // Polled, not awaited off `statuses`: health flips true in the same flush as
+      // the first roster, which has already passed on this broadcast stream by now.
+      await waitUntil(() => c.healthy, reason: 'a healthy collector');
+      await pumpEventQueue();
+      return (c: c, conn: conn);
+    }
+
+    test('losing our own row re-enters quietly, and getting it back needs no reconnect',
+        () async {
+      // reenterGrace long, so the quiet rung has every chance and the loud one does
+      // not get to fire: the whole point is that a blip self-heals with no banner.
+      final (:c, :conn) = await entered(reenterGrace: const Duration(seconds: 5));
+      expect(entersOn(conn), 1, reason: 'entered once on connect');
+
+      patchSelf(conn, {'connected': false}); // we drop off the roster others see
+      await waitUntil(() => entersOn(conn) >= 2, reason: 'a silent re-enter');
+
+      expect(gather.connections, hasLength(1), reason: 'the quiet rung does not reconnect');
+      expect(c.healthy, isTrue, reason: 'and says nothing to the user');
+
+      patchSelf(conn, {'connected': true}); // the re-enter takes
+      await pumpEventQueue();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(gather.connections, hasLength(1), reason: 'seeing ourselves again ends it');
+      expect(c.healthy, isTrue);
+    });
+
+    test('a re-enter that does not bring us back reconnects and raises the banner',
+        () async {
+      final (:c, :conn) = await entered(reenterGrace: const Duration(milliseconds: 150));
+      patchSelf(conn, {'connected': false}); // and never restored
+
+      final loud = await firstWhere(
+        c.statuses,
+        (s) => !s.healthy && (s.detail?.contains('restoring your presence') ?? false),
+        reason: 'the banner',
+      );
+      expect(loud.healthy, isFalse);
+      // The reconnect's fresh dump carries a present us again, so the second
+      // connection is the recovery landing.
+      await firstWhere(gather.onDumped, (_) => true, reason: 'a reconnect')
+          .timeout(const Duration(seconds: 5));
+      expect(gather.connections.length, greaterThanOrEqualTo(2));
+    });
+
+    test('a blink of absence under the limit never re-enters or reconnects', () async {
+      // Smoothness: a working app stays a working app through a short gap. The limit
+      // is generous and the gap is well inside it, so nothing should stir.
+      final (:c, :conn) = await entered(selfAbsentLimit: const Duration(seconds: 3));
+      patchSelf(conn, {'connected': false});
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      patchSelf(conn, {'connected': true});
+
+      await Future<void>.delayed(const Duration(seconds: 1));
+      expect(entersOn(conn), 1, reason: 'no re-enter for a blink');
+      expect(gather.connections, hasLength(1));
+      expect(c.healthy, isTrue);
+    });
+
+    test('a chosen Offline, still connected and placed, is left alone', () async {
+      // The deliberate-away case, and the reason presence is a connection test rather
+      // than an isPresent one: a person can set Offline and keep it for hours. Our row
+      // is still connected and on a tile, so recovery must not fire and drag them back
+      // online against their choice.
+      final (:c, :conn) = await entered(selfAbsentLimit: const Duration(milliseconds: 150));
+      patchSelf(conn, {'userSetAvailability__value': 'Offline'});
+      await Future<void>.delayed(const Duration(seconds: 1));
+      expect(entersOn(conn), 1, reason: 'Offline-but-connected is not a disappearance');
+      expect(gather.connections, hasLength(1));
+      expect(c.healthy, isTrue);
+    });
+
+    test('the walk engine reporting unapplied moves re-enters at once', () async {
+      // notePresenceDoubt is the walking accelerator: stronger evidence than an
+      // absent row, so it does not wait out selfAbsentLimit. Self stays visible here,
+      // so the re-enter settles without a reconnect.
+      final (:c, :conn) = await entered(selfAbsentLimit: const Duration(seconds: 10));
+      expect(entersOn(conn), 1);
+      c.notePresenceDoubt();
+      await waitUntil(() => entersOn(conn) >= 2, reason: 'a re-enter from the walk signal');
+      expect(gather.connections, hasLength(1));
       expect(c.healthy, isTrue);
     });
   });

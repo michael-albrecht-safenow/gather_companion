@@ -81,11 +81,32 @@ const _handshakeGrace = Duration(seconds: 5);
 /// for as long as the process runs while receiving nothing.
 ///
 /// Gather's server heartbeats every 3–9s, so silence is unambiguous well before
-/// this. Generous anyway: being wrong costs a reconnect and a fresh state dump, but
-/// reconnecting a *working* socket every 45s would be its own bug.
+/// this. Being wrong costs a reconnect and a fresh state dump, so it has to clear
+/// the 9s ceiling with room to spare — but it used to be 45s, which meant a phone
+/// that lost its network the dirty way (half-open, no FIN) went on claiming a live
+/// office, and claiming *presence to others*, for most of a minute. 12s is one
+/// missed server heartbeat past the 9s ceiling: long enough not to reconnect a
+/// merely-slow socket, short enough that "nobody can see me" is not a 45-second
+/// silence.
 ///
-/// Mirrors `SILENCE_LIMIT_MS` in `bridge/lib/direct.js`; the two must not drift.
-const _silenceLimit = Duration(seconds: 45);
+/// The bridge's `SILENCE_LIMIT_MS` in `bridge/lib/direct.js` stays at its own
+/// value: it is a different runtime on a real network, not a phone changing cells,
+/// and does not share this failure mode. The two are allowed to differ now.
+const _silenceLimit = Duration(seconds: 12);
+
+/// How long our own `SpaceUser` may be missing from an otherwise-healthy roster
+/// before we treat it as "other people cannot see us" and begin recovery.
+///
+/// Distinct from [_silenceLimit]: there the socket is deaf and nothing arrives;
+/// here frames flow and the roster is current, but it does not contain a present,
+/// placed *us*. A few seconds of grace absorbs the ordinary gap between a
+/// reconnect's first partial dump and the patch that re-places our own row, so a
+/// blink of absence never raises anything — see the recovery ladder in [_flush].
+const _selfAbsentLimit = Duration(seconds: 5);
+
+/// How long a silent re-enter gets to put us back on the roster before the
+/// recovery ladder stops being quiet and reconnects the socket outright.
+const _reenterGrace = Duration(seconds: 4);
 
 const _maxBackoff = Duration(seconds: 30);
 
@@ -116,6 +137,11 @@ class DirectCollector implements Collector {
     // watchdog is to let a connection actually fall silent, and a suite that waited
     // [_silenceLimit] to find out would add 45 seconds to every run.
     this.silenceLimit = _silenceLimit,
+    // Same seam, for the presence ladder: a test proves the self-row watchdog by
+    // letting a real roster arrive without us in it, and must not wait out the
+    // production 5s + 4s to see the re-enter and the reconnect.
+    this.selfAbsentLimit = _selfAbsentLimit,
+    this.reenterGrace = _reenterGrace,
         // A named parameter cannot be a private initializing formal, so these are
         // assigned the long way round — same as `BridgeClient` and `AppState`.
         // ignore: prefer_initializing_formals
@@ -132,6 +158,14 @@ class DirectCollector implements Collector {
   /// How long a silence has to last before the socket is torn down. See
   /// [_silenceLimit] for why this exists and why it is as long as it is.
   final Duration silenceLimit;
+
+  /// How long our own row may be missing before the quiet re-enter. See
+  /// [_selfAbsentLimit].
+  final Duration selfAbsentLimit;
+
+  /// How long a silent re-enter gets before the loud reconnect. See
+  /// [_reenterGrace].
+  final Duration reenterGrace;
 
   final GatherAuth _auth;
   final String _socketUrl;
@@ -165,6 +199,21 @@ class DirectCollector implements Collector {
 
   /// When a frame last arrived. The watchdog's whole state — see [_silenceLimit].
   DateTime? _lastFrameAt;
+
+  /// Whether we have been visible to others at least once on this connection. Flips
+  /// an absent self row from "a dump still arriving" into "we have disappeared", so
+  /// the ladder reacts to the loss at once instead of waiting out the cold-start
+  /// grace. Reset per connect.
+  bool _wasVisible = false;
+
+  /// Since when our own row has been missing from an otherwise-live roster, or
+  /// null while we can see ourselves. The clock behind [_selfAbsentLimit].
+  DateTime? _selfDoubtSince;
+
+  /// A silent re-enter is outstanding: we have re-sent `enterSpace` and are
+  /// waiting [_reenterGrace] to see ourselves come back before reconnecting.
+  bool _reentering = false;
+  DateTime? _reenterAt;
 
   /// txnId -> the action it was, so an ack can be named. Cleared per connect.
   final Map<String, String> _awaiting = {};
@@ -513,6 +562,14 @@ class DirectCollector implements Collector {
   ({bool ok, String? detail}) setActive(bool active) =>
       _send('reportActivity', model: 'Connection', id: null, args: {'isActive': active});
 
+  @override
+  void notePresenceDoubt() {
+    // Stronger evidence than an absent row — the walk engine watched move after
+    // move go unapplied — so skip the [_selfAbsentLimit] wait and begin the quiet
+    // re-enter at once. From there the ladder in [_checkSelfPresence] is the same.
+    if (_entered) _beginRecovery('the walk engine saw moves the server never applied');
+  }
+
   /// One action against our own `SpaceUser` row, on the socket we already hold.
   ///
   /// [args] is the third element of the `args` tuple, and it is deliberately
@@ -738,6 +795,12 @@ class DirectCollector implements Collector {
     _connects++;
     _backoff = const Duration(seconds: 1);
     _entered = false;
+    // A fresh socket owes its own presence proof; last connection's doubt or
+    // outstanding re-enter must not carry over and reconnect a healthy new one.
+    _wasVisible = false;
+    _selfDoubtSince = null;
+    _reentering = false;
+    _reenterAt = null;
     _log('direct: connected to space $resolvedSpace');
 
     try {
@@ -988,9 +1051,97 @@ class DirectCollector implements Collector {
       // Inside the grace window we leave the status alone: a server heartbeat
       // routinely arrives before the first FullStateChunk.
     }
+
+    // A live socket carrying a roster that does not contain a present us. Checked
+    // every tick, not only when the roster changed: going missing is the roster
+    // *losing* our row, which is a change like any other, but a roster that then
+    // sits still must not let the doubt expire unseen.
+    _checkSelfPresence();
+
     if (!_dirty) return;
     _dirty = false;
     if (!_rosters.isClosed) _rosters.add(reader.roster());
+  }
+
+  /// Watches an otherwise-healthy roster for the loss of *us*, and heals it.
+  ///
+  /// Two rungs, quiet then loud (see [_beginRecovery] and [_forceReconnect]).
+  /// Gated on having entered and on the dump having had [_handshakeGrace] to place
+  /// us, because before that an absent self row is a connect in progress rather
+  /// than a disappearance. The whole point is the case [healthy] cannot see: the
+  /// inbound light is green — frames arrive, the roster is current — and yet other
+  /// people's offices do not have us in them.
+  void _checkSelfPresence() {
+    if (!_entered || !hasState) return;
+
+    if (reader.selfVisible) {
+      _wasVisible = true;
+      _notePresenceOk();
+      return;
+    }
+
+    // Not a present, placed us. Once we have been visible this connection, that is
+    // a disappearance and the clock starts at once. Before we have ever been
+    // visible it is more likely a dump still assembling, so hold off until the
+    // handshake has had [_handshakeGrace] to place us — which also covers the
+    // enter that never took at all, just more slowly.
+    final now = DateTime.now();
+    if (!_wasVisible) {
+      final handshakeAt = _handshakeAt;
+      if (handshakeAt == null || now.difference(handshakeAt) < _handshakeGrace) return;
+    }
+
+    if (_reentering) {
+      final at = _reenterAt;
+      if (at != null && now.difference(at) > reenterGrace) {
+        _forceReconnect('a re-enter did not bring our own row back');
+      }
+      return;
+    }
+    final since = _selfDoubtSince ??= now;
+    if (now.difference(since) > selfAbsentLimit) {
+      _beginRecovery('our own row has been missing for '
+          '${now.difference(since).inMilliseconds}ms');
+    }
+  }
+
+  /// We can see ourselves again: drop every bit of recovery state so the next
+  /// disappearance starts its clock from scratch.
+  void _notePresenceOk() {
+    _selfDoubtSince = null;
+    _reentering = false;
+    _reenterAt = null;
+  }
+
+  /// The quiet first rung: re-send `enterSpace` on the socket we already hold and
+  /// give it [_reenterGrace] to take, without a word to the user. Most presence
+  /// blips are a dropped enter, and this fixes them before anyone notices.
+  ///
+  /// A no-op while a re-enter is already outstanding, while stopped, or while a
+  /// reconnect is already scheduled — the ladder owns one attempt at a time, and
+  /// the deaf watchdog ([_isSilent]) owns the socket once it has decided to retry.
+  void _beginRecovery(String why) {
+    final ws = _ws;
+    if (_reentering || _stopped || _retryTimer != null) return;
+    if (ws == null || ws.readyState != WebSocket.open) return;
+    _log('direct: presence doubt — $why; re-entering');
+    _entered = false;
+    _maybeEnter();
+    _reentering = true;
+    _reenterAt = DateTime.now();
+  }
+
+  /// The loud second rung: the re-enter did not bring us back, so stop believing
+  /// the socket and reconnect from scratch — which replays the whole dump and
+  /// enters again. This is where the banner finally appears; everything before it
+  /// was silent on purpose, so a working app stays a working app through a blink.
+  void _forceReconnect(String why) {
+    _log('direct: $why — reconnecting');
+    _notePresenceOk();
+    _clearTimers();
+    unawaited(_closeSocket());
+    _setHealth(false, 'reconnecting — restoring your presence');
+    _scheduleRetry();
   }
 }
 

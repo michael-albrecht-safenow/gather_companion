@@ -2450,6 +2450,10 @@ class AppState extends ChangeNotifier {
       // Same reasoning: the kart appearing and disappearing is a thing the screen
       // shows, and it happens mid-walk rather than on a roster boundary.
       onGaitChanged: notifyListeners,
+      // A buffer of moves the server never confirmed means we are walking ahead of
+      // an avatar nobody else can see. Hand it straight to the collector's
+      // presence recovery; it debounces, so firing per overflow is safe.
+      onMovesUnconfirmed: () => _collector?.notePresenceDoubt(),
       log: _log,
     )..boost = _boost;
 

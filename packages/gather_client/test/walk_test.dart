@@ -850,6 +850,34 @@ void main() {
       expect(collector.gaits, [Gait.driving]);
     });
 
+    test('a buffer of unconfirmed steps reports the server is not applying our moves',
+        () {
+      // The walking half of "invisible to others": step after step goes out and no
+      // roster ever puts us on any of those tiles, so the server is not relaying us.
+      // Overflowing the unconfirmed buffer is the one unambiguous moment, and it is
+      // handed to the collector rather than only logged.
+      var reports = 0;
+      // A held direction, not a route: a long route upgrades to the go-kart gait,
+      // whose buffer is three times deeper and would not overflow in twenty steps.
+      // A wide floor so all twenty actually land past the 16-step walk limit.
+      final wide = _open(width: 60);
+      final w = walk = Walk(
+        collector: () => collector,
+        map: () => wide,
+        interval: const Duration(hours: 1),
+        onMovesUnconfirmed: () => reports++,
+      )..noteRoster(_at(4, 4));
+      w.press('Right');
+      for (var i = 0; i < 20; i++) {
+        w.step(); // held, walking, and never confirmed by a roster
+      }
+      expect(collector.steps.length, greaterThan(16),
+          reason: 'the buffer must actually overflow for the signal to fire');
+
+      expect(reports, greaterThan(0),
+          reason: 'past _maxPending with nothing confirmed must raise the signal');
+    });
+
     test('a kart remembers three times as far back as a walk does', () {
       // The bug behind "it still fails sometimes when the go-kart is on", and it was
       // a units mistake rather than a logic one. `_maxPending` is a *count* of steps
