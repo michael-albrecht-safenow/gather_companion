@@ -85,6 +85,19 @@ SpaceRoom _everywhere({required String type, String? name}) => SpaceRoom(
       walled: false,
     );
 
+/// Records where a walk is aimed and reports it as sent, standing in for the collector
+/// the real [AppState.goTo] needs — so a test can read back the destination the card
+/// handed it instead of only seeing the offline refusal.
+class _RecordingGoTo extends AppState {
+  final destinations = <(int, int)>[];
+
+  @override
+  Future<String?> goTo(int x, int y) async {
+    destinations.add((x, y));
+    return null;
+  }
+}
+
 void main() {
   // The same pair of listenables the app opens this screen with. `state` alone is
   // not enough: walking is not a presence event, so a roster where everybody moved
@@ -665,9 +678,32 @@ void main() {
       expect(find.text('Wave'), findsOneWidget);
     });
 
-    testWidgets('Go here walks to them and takes the card down', (tester) async {
-      // No collector behind this state, so the walk is refused — but the refusal is
-      // proof the button reached goTo, and the card comes down either way.
+    testWidgets("Go here sends that person's tile and takes the card down", (tester) async {
+      // A recording state so the walk succeeds and its destination can be read back:
+      // the refusal path alone would pass even if this forwarded the wrong person's
+      // position, because goTo bails before it ever looks at a coordinate.
+      final state = _RecordingGoTo()
+        ..debugApplyLink(const LinkStatus(LinkState.live))
+        ..debugCanWalk = true
+        ..debugMap = _map()
+        ..debugApplyRoster(Roster(selfId: 'me', rows: [
+          _row('me', 5, 5),
+          _row('ada', 5, 5, name: 'Ada'),
+        ]));
+      await tester.pumpWidget(wrap(state));
+      await tester.pumpAndSettle();
+      await tapFloor(tester);
+
+      await tester.tap(find.text('Go here'));
+      await tester.pump();
+
+      expect(state.destinations, [(5, 5)], reason: "Ada's tile is where the walk is sent");
+      expect(find.text('Ada'), findsNothing, reason: 'the card is dropped the moment it is acted on');
+    });
+
+    testWidgets('a refused Go here still takes the card down and says why', (tester) async {
+      // No collector behind this state, so the walk is refused — the card comes down
+      // either way, and the refusal is shown rather than swallowed.
       await tester.pumpWidget(wrap(withPersonUnderCentre()));
       await tester.pumpAndSettle();
       await tapFloor(tester);
@@ -677,6 +713,28 @@ void main() {
 
       expect(find.text('Ada'), findsNothing, reason: 'the card is dropped the moment it is acted on');
       expect(find.text('Not connected to Gather.'), findsOneWidget);
+    });
+
+    testWidgets('both actions fit a narrow phone at a large text scale', (tester) async {
+      // 375 points wide at 2x text: the avatar, both pills and the close button are all
+      // fixed-width, so one Row would run past the edge and clip. The Wrap drops the
+      // actions onto a second line rather than overflowing — proven by the absence of a
+      // RenderFlex exception with both pills still on screen.
+      tester.view.physicalSize = const Size(375, 780);
+      tester.view.devicePixelRatio = 1.0;
+      tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+      await tester.pumpWidget(wrap(withPersonUnderCentre()));
+      await tester.pumpAndSettle();
+      await tester.tapAt(const Offset(187, 390));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull, reason: 'no RenderFlex overflow at 2x text');
+      expect(find.text('Go here'), findsOneWidget);
+      expect(find.text('Wave'), findsOneWidget);
     });
   });
 

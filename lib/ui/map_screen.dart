@@ -1207,8 +1207,8 @@ class _PlanState extends State<_Plan> with TickerProviderStateMixin {
   }
 }
 
-/// A tapped person's card: their face and name, a wave, and a way to put it down.
-/// Sits where the Go-here pill sits, and is never shown alongside it.
+/// A tapped person's card: their face and name, a walk over to them, a wave, and a way
+/// to put it down. Sits where the Go-here pill sits, and is never shown alongside it.
 class _PersonCard extends StatelessWidget {
   const _PersonCard({
     required this.state,
@@ -1234,45 +1234,60 @@ class _PersonCard extends StatelessWidget {
       shadowColor: Colors.black.withValues(alpha: 0.28),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            PersonAvatar(
-              id: person.id,
-              label: person.label,
-              photoUrl: state.photoUrlFor(person.id),
-              size: 36,
-              availability: person.availability,
-              dotRing: t.card,
-            ),
-            const SizedBox(width: 10),
-            Flexible(
-              // Flexible, not a fixed max width: the avatar, Wave control, close
-              // button, gaps and padding can already fill a narrow phone, so a long
-              // name has to shrink and ellipsize into what is left rather than claim
-              // its full intrinsic width and overflow the row.
-              child: Text(
-                person.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: t.foreground, fontSize: 15, fontWeight: FontWeight.w600),
-              ),
-            ),
-            const SizedBox(width: 12),
-            // Walk over, in the same pill shape as Wave: a person is somewhere you can
-            // go as well as someone you can hail. [_goToPerson] lands beside them.
-            _CardAction(icon: Icons.turn_right_rounded, label: 'Go here', onTap: onGoHere),
-            const SizedBox(width: 8),
-            _CardAction(icon: Icons.waving_hand_rounded, label: 'Wave', onTap: onWave),
-            IconButton(
-              icon: Icon(Icons.close_rounded, size: 18, color: t.mutedForeground),
-              // Names the otherwise icon-only control for a screen reader, as the
-              // rail's own clear control is named.
-              tooltip: 'Dismiss',
-              onPressed: onClear,
-              visualDensity: VisualDensity.compact,
-            ),
-          ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // One Wrap over four atomic items — identity, both pills, close. The avatar,
+            // pills and close button are all fixed-width, so at a large text scale on a
+            // narrow phone they outrun a single Row and clip into a RenderFlex overflow;
+            // even the two pills together do not fit one line there. Wrapping each item
+            // independently lets them flow onto further lines as the scale demands, and
+            // leaves the one-line layout untouched at ordinary sizes.
+            return Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 10,
+              runSpacing: 6,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    PersonAvatar(
+                      id: person.id,
+                      label: person.label,
+                      photoUrl: state.photoUrlFor(person.id),
+                      size: 36,
+                      availability: person.availability,
+                      dotRing: t.card,
+                    ),
+                    const SizedBox(width: 10),
+                    ConstrainedBox(
+                      // Bounded by the card's own width (minus the avatar and its gap) so
+                      // a long name ellipsizes within this chunk rather than forcing it
+                      // wider than the card.
+                      constraints: BoxConstraints(maxWidth: constraints.maxWidth - 46),
+                      child: Text(
+                        person.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: t.foreground, fontSize: 15, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+                // Walk over, in the same pill shape as Wave: a person is somewhere you
+                // can go as well as someone you can hail. [_goToPerson] lands beside them.
+                _CardAction(icon: Icons.turn_right_rounded, label: 'Go here', onTap: onGoHere),
+                _CardAction(icon: Icons.waving_hand_rounded, label: 'Wave', onTap: onWave),
+                IconButton(
+                  icon: Icon(Icons.close_rounded, size: 18, color: t.mutedForeground),
+                  // Names the otherwise icon-only control for a screen reader, as the
+                  // rail's own clear control is named.
+                  tooltip: 'Dismiss',
+                  onPressed: onClear,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
