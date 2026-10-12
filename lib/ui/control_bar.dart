@@ -256,6 +256,14 @@ class _ControlBarState extends State<ControlBar> {
     await _run(() => widget.state.sendEmoteLocalFirst(emote));
   }
 
+  /// Flips the hand and leaves the tray open, so lowering it again is one tap and
+  /// not a reopen — the same courtesy the emotes get. No `_run`: the hand is
+  /// local-first and reports nothing to put in front of anyone.
+  void _toggleHand() {
+    HapticFeedback.selectionClick();
+    widget.state.toggleHandRaised();
+  }
+
   /// The one door out, in the four states it has.
   ///
   /// Gather's own toolbar button, transcribed — the shape of it is not ours:
@@ -323,7 +331,16 @@ class _ControlBarState extends State<ControlBar> {
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOutCubic,
           alignment: Alignment.bottomCenter,
-          child: _tray ? _Tray(onPick: _send) : const SizedBox(width: double.infinity),
+          child: _tray
+              ? _Tray(
+                  onPick: _send,
+                  // Only while there is a meeting to raise a hand in — the tray is
+                  // eight reactions and nothing else over the map, as it always was.
+                  showHand: state.inCall,
+                  handRaised: state.myHandRaised,
+                  onToggleHand: _toggleHand,
+                )
+              : const SizedBox(width: double.infinity),
         ),
         SizedBox(
           height: _barHeight,
@@ -398,27 +415,23 @@ class _ControlBarState extends State<ControlBar> {
                       state.setSpeakerOn(call.audioOutput != AudioOutput.speaker)),
                 ),
               const _Rule(),
+              // React and raise-hand are one button now. Raise-hand used to sit
+              // beside React as a tenth control, and on a phone the bar ran out of
+              // width for it: the gaps collapsed and the door was crushed against
+              // the right edge. Both are the same gesture to the same room — "look
+              // at me for a second" — so the hand moved into the tray React already
+              // opens. What is lost by hiding it there is the at-a-glance raised
+              // state, so the amber the tile wears rides back up onto this button:
+              // a dot while the tray is closed, the switch itself once it is open.
               _BarButton(
                 icon: Icons.add_reaction_outlined,
-                label: 'React',
+                label: state.inCall && state.myHandRaised
+                    ? 'React, hand raised'
+                    : 'React',
                 on: _tray,
+                badge: state.inCall && state.myHandRaised,
                 onTap: _toggleTray,
               ),
-              // Raising a hand is a meeting gesture, so it sits by React and shows
-              // only while there is a meeting to raise it in — absent over the map
-              // and in a call of one, like everything else here with nothing to act
-              // on. `on` carries the raised state the same way Mute carries live:
-              // the amber badge on the tile is the loud signal, this is the switch.
-              // No `_run`: the hand is local-first and reports nothing to surface.
-              if (state.inCall)
-                _BarButton(
-                  icon: state.myHandRaised
-                      ? Icons.front_hand
-                      : Icons.front_hand_outlined,
-                  label: state.myHandRaised ? 'Lower hand' : 'Raise hand',
-                  on: state.myHandRaised,
-                  onTap: () => state.toggleHandRaised(),
-                ),
               // Its own listener. Walking is deliberately not a `notifyListeners`
               // — movement must not wake the whole tree — and this is the one
               // control in the bar whose answer changes as you walk. Without it the
@@ -503,6 +516,7 @@ class _BarButton extends StatelessWidget {
     required this.onTap,
     this.on = false,
     this.tint,
+    this.badge = false,
   });
 
   final IconData icon;
@@ -519,6 +533,11 @@ class _BarButton extends StatelessWidget {
   /// Overrides the colour entirely, for the controls that are painted by what they
   /// are reporting rather than by whether they are pressed.
   final Color? tint;
+
+  /// An amber corner dot, for a state the button is carrying on behalf of a
+  /// control folded into it — the raised hand living inside React. The same amber
+  /// the tile wears ([kHandRaised]), so closed-tray and on-screen say one thing.
+  final bool badge;
 
   @override
   Widget build(BuildContext context) {
@@ -546,21 +565,44 @@ class _BarButton extends StatelessWidget {
             // highlight, no tap.
             onTap: onTap,
             borderRadius: radius,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutCubic,
-              width: 46,
-              height: 44,
-              decoration: BoxDecoration(
-                color: on ? t.secondary : Colors.transparent,
-                borderRadius: radius,
-              ),
-              child: TweenAnimationBuilder<Color?>(
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOutCubic,
-                tween: ColorTween(end: colour),
-                builder: (context, colour, _) => Icon(icon, size: 22, color: colour),
-              ),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  width: 46,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: on ? t.secondary : Colors.transparent,
+                    borderRadius: radius,
+                  ),
+                  child: TweenAnimationBuilder<Color?>(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutCubic,
+                    tween: ColorTween(end: colour),
+                    builder: (context, colour, _) => Icon(icon, size: 22, color: colour),
+                  ),
+                ),
+                // The folded-in hand's state, ringed in the dock's fill so it reads
+                // as sitting on the plate rather than cut into it — the same move
+                // the self-button's availability dot makes.
+                if (badge)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Container(
+                      key: const Key('react-hand-badge'),
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                        color: kHandRaised,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: t.card, width: 1.5),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
@@ -606,9 +648,21 @@ class _Rule extends StatelessWidget {
 /// double.infinity)` reports an intrinsic width of zero, which is exactly the
 /// "fill it, don't set it" this needed all along.
 class _Tray extends StatelessWidget {
-  const _Tray({required this.onPick});
+  const _Tray({
+    required this.onPick,
+    this.showHand = false,
+    this.handRaised = false,
+    this.onToggleHand,
+  });
 
   final ValueChanged<String> onPick;
+
+  /// Whether the raise/lower-hand switch rides at the end of the tray — only in a
+  /// meeting, where there is a hand worth raising. Over the map the tray is the
+  /// eight reactions and nothing else, as it always was.
+  final bool showHand;
+  final bool handRaised;
+  final VoidCallback? onToggleHand;
 
   @override
   Widget build(BuildContext context) {
@@ -642,6 +696,38 @@ class _Tray extends StatelessWidget {
                   ),
                 ),
               ),
+            // The hand is a toggle, not a fire-once, so it does not divide the
+            // width with the eight — it keeps its own plate at the end, behind the
+            // same hairline that groups the bar below, amber while it is up.
+            if (showHand) ...[
+              const _Rule(),
+              Semantics(
+                button: true,
+                toggled: handRaised,
+                label: handRaised ? 'Lower hand' : 'Raise hand',
+                child: Tooltip(
+                  message: handRaised ? 'Lower hand' : 'Raise hand',
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: onToggleHand,
+                      borderRadius: BorderRadius.circular(t.radius + 4),
+                      child: SizedBox(
+                        width: 44,
+                        height: 40,
+                        child: Center(
+                          child: Icon(
+                            handRaised ? Icons.front_hand : Icons.front_hand_outlined,
+                            size: 22,
+                            color: handRaised ? kHandRaised : t.mutedForeground,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

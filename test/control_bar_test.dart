@@ -459,37 +459,72 @@ void main() {
     });
   });
 
-  group('the raise-hand button', () {
-    testWidgets('is absent until there is a meeting to raise it in',
+  group('the raise-hand toggle', () {
+    testWidgets('is absent from the React tray until there is a meeting',
         (tester) async {
       // Standing alone over the map — a hand is a meeting gesture, and like the
       // door and the camera flip, the control for it is absent, not dimmed, when
-      // there is nothing to do with it.
+      // there is nothing to do with it. Open the tray and it is eight reactions
+      // and nothing else.
       await tester.pumpWidget(wrap(connected()));
+      await tester.tap(find.byTooltip('React'));
+      await tester.pumpAndSettle();
       expect(find.byTooltip('Raise hand'), findsNothing);
       expect(find.byTooltip('Lower hand'), findsNothing);
     });
 
-    testWidgets('appears in a meeting and toggles the hand', (tester) async {
+    testWidgets('lives in the React tray in a meeting and toggles the hand',
+        (tester) async {
       final state = connected()..debugHuddle = ['Ada'];
       await tester.pumpWidget(wrap(state));
 
+      // Folded into React now, not a button of its own in the main row — the bar
+      // ran out of width for a tenth control on a phone.
+      expect(find.byTooltip('Raise hand'), findsNothing);
+      await tester.tap(find.byTooltip('React'));
+      await tester.pumpAndSettle();
+
       expect(find.byTooltip('Raise hand'), findsOneWidget);
       expect(state.myHandRaised, isFalse);
+      // Closed-state: no amber badge on React yet.
+      expect(find.byKey(const Key('react-hand-badge')), findsNothing);
 
       await tester.tap(find.byTooltip('Raise hand'));
       await tester.pumpAndSettle();
 
-      // The state flipped and the label with it — the one button is both raise and
-      // lower, the way React is the one button that opens and shuts the tray.
+      // The state flipped and the label with it — the one control is both raise and
+      // lower, and the tray stays open so lowering is one tap, not a reopen.
       expect(state.myHandRaised, isTrue);
       expect(find.byTooltip('Lower hand'), findsOneWidget);
       expect(find.byTooltip('Raise hand'), findsNothing);
+      // The raised state rides up onto React as an amber dot, so it survives the
+      // tray closing.
+      expect(find.byKey(const Key('react-hand-badge')), findsOneWidget);
 
       await tester.tap(find.byTooltip('Lower hand'));
       await tester.pumpAndSettle();
       expect(state.myHandRaised, isFalse);
       expect(find.byTooltip('Raise hand'), findsOneWidget);
+      expect(find.byKey(const Key('react-hand-badge')), findsNothing);
+    });
+
+    testWidgets('amber badge on React persists after the tray is closed',
+        (tester) async {
+      final state = connected()..debugHuddle = ['Ada'];
+      await tester.pumpWidget(wrap(state));
+
+      await tester.tap(find.byTooltip('React'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Raise hand'));
+      await tester.pumpAndSettle();
+
+      // Close the tray again from the React button.
+      await tester.tap(find.byTooltip('React, hand raised'));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Raise hand'), findsNothing);
+      expect(find.byTooltip('Lower hand'), findsNothing);
+      expect(find.byKey(const Key('react-hand-badge')), findsOneWidget);
     });
   });
 

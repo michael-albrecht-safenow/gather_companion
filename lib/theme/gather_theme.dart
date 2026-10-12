@@ -211,6 +211,13 @@ const double kRailInset = kRailHeight + kRailGap + 8;
 /// showing on either side on the narrowest phones the app targets.
 const double kRailMinWidth = 320;
 
+/// The one raw hue in the app, not a theme token: a raised hand is amber across
+/// every meeting tool a colleague has used, and the app's blue would read as one
+/// more piece of chrome rather than "this person wants in". Shared by the tile
+/// badge on the faces ([_HandBadge]) and the hand controls in the bar, so the
+/// same colour means the same thing everywhere a hand can be raised.
+const Color kHandRaised = Color(0xFFF5A623);
+
 const kMonoFallback = <String>['SF Mono', 'ui-monospace', 'Menlo', 'Monaco', 'Courier New'];
 
 /// Gather sets its own interface in Inter; asking for it by name picks it up on

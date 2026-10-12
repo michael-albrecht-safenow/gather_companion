@@ -1470,7 +1470,7 @@ class _HandBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(5),
       decoration: const BoxDecoration(
-        color: Color(0xFFF5A623),
+        color: kHandRaised,
         shape: BoxShape.circle,
         boxShadow: [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
       ),

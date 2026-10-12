@@ -1135,7 +1135,7 @@ class AppState extends ChangeNotifier {
     _collector?.setHandRaised(raised);
   }
 
-  /// Flips the hand — the control bar's one raise/lower button.
+  /// Flips the hand — the raise/lower toggle that lives in the React tray.
   Future<void> toggleHandRaised() => setHandRaised(!_myHandRaised);
 
   /// Drops our own hand once we are no longer in a meeting.
