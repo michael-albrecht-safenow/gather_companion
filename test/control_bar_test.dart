@@ -528,6 +528,75 @@ void main() {
     });
   });
 
+  group('the worst-case row still fits a phone', () {
+    // The reason raise-hand moved into React in the first place. On the call
+    // screen, with the camera on and somebody else in the room, the control row
+    // carries its most — self, mic, camera, camera-switch, speaker, React and the
+    // door. These are fixed-width plates that cannot shrink, so a tenth one pushed
+    // the row's own intrinsic width past the phone it had to sit on: the island
+    // then overflowed rather than the nav row setting its width, the `spaceEvenly`
+    // gaps collapsed to zero and the red door was crushed flush against the edge —
+    // the "squashed" report. This pins the fullest row against a phone narrower
+    // than the iPhone 12 it was first seen on, so a tenth button cannot come back
+    // unnoticed.
+    AppState worstCase() => AppState()
+      ..debugApplyLink(const LinkStatus(LinkState.live))
+      ..debugApplyRoster(Roster(
+        selfId: 'me',
+        rows: [
+          _row('me', name: 'Jonas', deskId: 'desk-1', x: 11, y: 10),
+          _row('ada', name: 'Ada', x: 11, y: 11),
+        ],
+      ))
+      ..debugHuddle = ['Ada']
+      ..debugCall = const CallState(
+        media: LocalMediaState(
+            capturing: true, videoEnabled: true, videoTrackId: 'v1'),
+      );
+
+    testWidgets('the fullest control set does not overflow a 360-point phone',
+        (tester) async {
+      final state = worstCase();
+      // Capped the way the shell caps the dock — an `IntrinsicWidth` over the
+      // [kRailMinWidth] floor — but bounded here by a small phone, so a row that
+      // outgrows it overflows the test rather than silently crushing on a device.
+      const phoneWidth = 360.0;
+      await tester.pumpWidget(MaterialApp(
+        theme: buildGatherTheme(),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: phoneWidth),
+              child: IntrinsicWidth(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minWidth: kRailMinWidth),
+                  child: ControlBar(state: state, onCallScreen: true),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      // The fullest row it has: every control that can be present, is — the
+      // camera-switch only the call screen shows and the door only a conversation
+      // gives are both here, so this is the worst case and not a lesser one.
+      expect(find.byTooltip('Switch camera'), findsOneWidget);
+      expect(find.byTooltip('Leave the conversation'), findsOneWidget);
+
+      // No `RenderFlex` overflow: the plates fit side by side on the phone without
+      // being asked to shrink into one another. A tenth button trips this.
+      expect(tester.takeException(), isNull);
+
+      // And the whole row is inside the phone with room to spare — the margin the
+      // tenth button ate.
+      expect(tester.getSize(find.byType(ControlBar)).width,
+          lessThanOrEqualTo(phoneWidth));
+    });
+  });
+
   group('the status sheet', () {
     testWidgets('opens off the avatar and offers the three you can set',
         (tester) async {
