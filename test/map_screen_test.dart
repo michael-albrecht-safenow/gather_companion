@@ -639,6 +639,47 @@ void main() {
     });
   });
 
+  group('walking to a person', () {
+    // A body and me on the same tile, so the centre tap that lands on my own tile
+    // falls on them instead — peopleOnMap leaves me out, so the only person under the
+    // tap is the other one. It saves pinning a pixel to a body (see [_everywhere]) and
+    // is the one deterministic way to raise the person card in a test.
+    AppState withPersonUnderCentre() => AppState()
+      ..debugApplyLink(const LinkStatus(LinkState.live))
+      ..debugCanWalk = true
+      ..debugMap = _map()
+      ..debugApplyRoster(Roster(selfId: 'me', rows: [
+        _row('me', 5, 5),
+        _row('ada', 5, 5, name: 'Ada'),
+      ]));
+
+    testWidgets('the card offers a walk as well as a wave', (tester) async {
+      // The whole of this change: you can go to somebody, not only hail them.
+      await tester.pumpWidget(wrap(withPersonUnderCentre()));
+      await tester.pumpAndSettle();
+
+      await tapFloor(tester);
+
+      expect(find.text('Ada'), findsOneWidget, reason: 'the body under the tap is picked');
+      expect(find.text('Go here'), findsOneWidget);
+      expect(find.text('Wave'), findsOneWidget);
+    });
+
+    testWidgets('Go here walks to them and takes the card down', (tester) async {
+      // No collector behind this state, so the walk is refused — but the refusal is
+      // proof the button reached goTo, and the card comes down either way.
+      await tester.pumpWidget(wrap(withPersonUnderCentre()));
+      await tester.pumpAndSettle();
+      await tapFloor(tester);
+
+      await tester.tap(find.text('Go here'));
+      await tester.pump();
+
+      expect(find.text('Ada'), findsNothing, reason: 'the card is dropped the moment it is acted on');
+      expect(find.text('Not connected to Gather.'), findsOneWidget);
+    });
+  });
+
   group('framing', () {
     // A phone, and the office as it is laid out on one: 124×82 tiles covering the
     // height exactly and overflowing sideways.

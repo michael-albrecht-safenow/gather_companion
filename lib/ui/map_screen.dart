@@ -718,6 +718,19 @@ class _PlanState extends State<_Plan> with TickerProviderStateMixin {
     }
   }
 
+  /// Walks to the tapped person and takes the card down. [AppState.goTo] relocates to
+  /// the nearest free tile, so we land *beside* them, not on the tile they occupy. A
+  /// refusal (offline, mid-reconnect, nowhere to stand) comes back as a line to show —
+  /// the same "say why nothing happened" the floor's own refused tap gets.
+  Future<void> _goToPerson(MapPerson person) async {
+    setState(() => _selectedPerson = null);
+    final error = await widget.state.goTo(person.x.round(), person.y.round());
+    if (!mounted || error == null) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(_railClearSnack(error));
+  }
+
   /// Roughly a fingertip, in logical pixels. Half of the 44pt Apple asks for, because
   /// this is a radius and that is a diameter.
   static const _thumb = 22.0;
@@ -1182,6 +1195,7 @@ class _PlanState extends State<_Plan> with TickerProviderStateMixin {
                 child: _PersonCard(
                   state: state,
                   person: _selectedPerson!,
+                  onGoHere: () => _goToPerson(_selectedPerson!),
                   onWave: () => _waveAtPerson(_selectedPerson!),
                   onClear: () => setState(() => _selectedPerson = null),
                 ),
@@ -1199,12 +1213,14 @@ class _PersonCard extends StatelessWidget {
   const _PersonCard({
     required this.state,
     required this.person,
+    required this.onGoHere,
     required this.onWave,
     required this.onClear,
   });
 
   final AppState state;
   final MapPerson person;
+  final VoidCallback onGoHere;
   final VoidCallback onWave;
   final VoidCallback onClear;
 
@@ -1243,25 +1259,11 @@ class _PersonCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            Material(
-              color: t.brand.withValues(alpha: 0.18),
-              borderRadius: BorderRadius.circular(17),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(17),
-                onTap: onWave,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.waving_hand_rounded, size: 16, color: t.brand),
-                      const SizedBox(width: 6),
-                      Text('Wave', style: TextStyle(color: t.brand, fontSize: 14, fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+            // Walk over, in the same pill shape as Wave: a person is somewhere you can
+            // go as well as someone you can hail. [_goToPerson] lands beside them.
+            _CardAction(icon: Icons.turn_right_rounded, label: 'Go here', onTap: onGoHere),
+            const SizedBox(width: 8),
+            _CardAction(icon: Icons.waving_hand_rounded, label: 'Wave', onTap: onWave),
             IconButton(
               icon: Icon(Icons.close_rounded, size: 18, color: t.mutedForeground),
               // Names the otherwise icon-only control for a screen reader, as the
@@ -1271,6 +1273,40 @@ class _PersonCard extends StatelessWidget {
               visualDensity: VisualDensity.compact,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One brand-tinted pill on the person card — an icon and a word. Wave and Go here are
+/// the same control twice, so they share a shape rather than each spelling it out.
+class _CardAction extends StatelessWidget {
+  const _CardAction({required this.icon, required this.label, required this.onTap});
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Material(
+      color: t.brand.withValues(alpha: 0.18),
+      borderRadius: BorderRadius.circular(17),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(17),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 16, color: t.brand),
+              const SizedBox(width: 6),
+              Text(label, style: TextStyle(color: t.brand, fontSize: 14, fontWeight: FontWeight.w600)),
+            ],
+          ),
         ),
       ),
     );
