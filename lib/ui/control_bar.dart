@@ -492,12 +492,34 @@ class _ControlBarState extends State<ControlBar> {
           )
         : SizedBox(
             height: _barHeight,
-            child: Row(
-              // Spread across the dock's width rather than bunched at the left, so
-              // the row reads as the island's contents and not as a strip taped to
-              // one end of it.
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: controls,
+            // The full meeting control set — self, mic, camera, camera-switch,
+            // speaker, record, React and the door — is fixed-width plates that
+            // outgrow a narrow phone (360 points): the island would clamp to the
+            // screen and the plates spill past its right edge, the "squashed"
+            // report. [FittedBox] keeps the island growing to the row's natural
+            // width where there is room (so wide phones are unchanged and the
+            // `spaceEvenly` spread below still reads) and scales the whole row down
+            // to fit where there is not, rather than overflowing. The inner
+            // [ConstrainedBox] floor keeps the sparse map dock spreading its few
+            // buttons across the island instead of bunching them in the middle.
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: kRailMinWidth),
+                child: SizedBox(
+                  height: _barHeight,
+                  child: Row(
+                    // Spread across the dock's width rather than bunched at the
+                    // left, so the row reads as the island's contents and not as a
+                    // strip taped to one end of it. `min` because [FittedBox] hands
+                    // the row an unbounded width to measure at; the floor above is
+                    // what the spread divides when the buttons do not fill it.
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: controls,
+                  ),
+                ),
+              ),
             ),
           );
 
