@@ -862,11 +862,11 @@ void main() {
       await tester.pumpAndSettle();
 
       // Walk the cursor down to the last row (Settings). Pressing the bottom of the
-      // cross is a Down; from the status row it is five of them past Camera, Emotes,
-      // Dial and Activity onto Settings.
+      // cross is a Down; from the status row it is six of them past Camera, Record,
+      // Emotes, Dial and Activity onto Settings.
       final pad = tester.getRect(find.byKey(const Key('gb-dpad')));
       final down = Offset(pad.center.dx, pad.top + pad.height * 0.88);
-      for (var i = 0; i < 5; i++) {
+      for (var i = 0; i < 6; i++) {
         final g = await tester.startGesture(down);
         await tester.pump();
         await g.up();

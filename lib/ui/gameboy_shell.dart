@@ -49,7 +49,7 @@ import 'package:gather_client/gather_client.dart' show settableAvailabilities;
 
 import '../src/app_state.dart';
 import '../src/media/gameboy_sfx.dart';
-import '../theme/gather_theme.dart' show availabilityColor, availabilityLabel, GatherThemeContext;
+import '../theme/gather_theme.dart' show availabilityColor, availabilityLabel, GatherThemeContext, kRecording;
 import 'call_screen.dart' show callBannerTextFor, openCallScreen;
 import 'gameboy_theme.dart';
 
@@ -120,11 +120,12 @@ const _emotes = ['👋', '❤️', '🎉', '👍️', '🤣', '👏', '💯', '�
 /// clamp without the menu and the router disagreeing about how many rows there are.
 const int _menuRowStatus = 0;
 const int _menuRowCamera = 1;
-const int _menuRowEmotes = 2;
-const int _menuRowDial = 3;
-const int _menuRowActivity = 4;
-const int _menuRowSettings = 5;
-const int _menuRowCount = 6;
+const int _menuRowRecording = 2;
+const int _menuRowEmotes = 3;
+const int _menuRowDial = 4;
+const int _menuRowActivity = 5;
+const int _menuRowSettings = 6;
+const int _menuRowCount = 7;
 
 /// Wraps [child] (the office) in the handheld. [onOpenDial]/[onOpenActivity]/
 /// [onOpenSettings] are how the Select menu leaves for another tab — the shell
@@ -300,6 +301,24 @@ class _GameboyShellState extends State<GameboyShell> {
     _run(() => widget.state.setCameraOn(!widget.state.call.cameraOn));
   }
 
+  /// Starts or stops the meeting recording from the Select menu. The record is
+  /// server-side, so nothing flips here — the LCD dot follows the wire. A toast
+  /// carries the outcome, success or a refusal, the way [_doWave] does; "no
+  /// meeting to record" comes back the same way when there is nothing to record.
+  Future<void> _doRecording() async {
+    _closeMenu();
+    final wasOn = widget.state.recording;
+    final error = await widget.state.toggleRecording();
+    if (!mounted) return;
+    if (error != null) {
+      _sfx(GbSound.denied);
+      _say(error, bad: true);
+      return;
+    }
+    _sfx(GbSound.confirm);
+    _say(wasOn ? '⏹ Recording stopped' : '⏺ Recording started');
+  }
+
   void _doReact(String emote) {
     _closeMenu();
     _run(() => widget.state.sendEmoteLocalFirst(emote));
@@ -356,6 +375,8 @@ class _GameboyShellState extends State<GameboyShell> {
         _doStatus(settableAvailabilities[_status]);
       case _menuRowCamera:
         _doCamera();
+      case _menuRowRecording:
+        _doRecording();
       case _menuRowEmotes:
         _doReact(_emotes[_emote]);
       case _menuRowDial:
@@ -417,6 +438,7 @@ class _GameboyShellState extends State<GameboyShell> {
                         focusedEmote: _emote,
                         onStatus: _doStatus,
                         onCamera: _doCamera,
+                        onRecording: _doRecording,
                         onReact: _doReact,
                         onDial: _doDial,
                         onActivity: _doActivity,
@@ -608,6 +630,17 @@ class _LcdStatusBar extends StatelessWidget {
                 colour: call.cameraOn ? _online : _scGlyphOff,
                 label: call.cameraOn ? 'Camera on' : 'Camera off',
               ),
+              // The record light on the LCD: a red dot, shown only while a recording
+              // is running, so the handheld keeps the "on the record" signal the
+              // call screen's banner carries.
+              if (state.recording) ...[
+                const SizedBox(width: 11),
+                _StatusGlyph(
+                  icon: Icons.fiber_manual_record,
+                  colour: kRecording,
+                  label: 'Recording',
+                ),
+              ],
               const Spacer(),
               // The follower count, carried onto the LCD so Gameboy mode keeps the
               // app's core signal — somebody is watching you move. Shown only when
@@ -2089,6 +2122,7 @@ class _GameboyMenu extends StatelessWidget {
     required this.focusedEmote,
     required this.onStatus,
     required this.onCamera,
+    required this.onRecording,
     required this.onReact,
     required this.onDial,
     required this.onActivity,
@@ -2106,6 +2140,7 @@ class _GameboyMenu extends StatelessWidget {
   final int focusedEmote;
   final ValueChanged<String> onStatus;
   final VoidCallback onCamera;
+  final VoidCallback onRecording;
   final ValueChanged<String> onReact;
   final VoidCallback onDial;
   final VoidCallback onActivity;
@@ -2156,6 +2191,22 @@ class _GameboyMenu extends StatelessWidget {
                     focused: focusedRow == _menuRowCamera,
                     title: cameraOn ? 'Turn the camera off' : 'Turn the camera on',
                     onTap: onCamera,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                KeyedSubtree(
+                  key: rowKeys[_menuRowRecording],
+                  child: _MenuRow(
+                    icon: state.recording
+                        ? Icons.stop_circle_rounded
+                        : Icons.fiber_manual_record_rounded,
+                    lit: state.recording,
+                    focused: focusedRow == _menuRowRecording,
+                    // Short like the camera row — a long title overflows the menu
+                    // row's fixed Row. When there is no meeting the press still
+                    // answers, with a "No meeting to record" toast.
+                    title: state.recording ? 'Stop recording' : 'Record the meeting',
+                    onTap: onRecording,
                   ),
                 ),
                 const SizedBox(height: 8),

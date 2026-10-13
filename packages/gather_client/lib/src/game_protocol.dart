@@ -80,6 +80,11 @@ const _models = {
   // as well as the notifications do. See `SpaceMapBuilder._admitted`.
   'AreaAccessRequest',
   'Meeting',
+  // Whether the meeting is being recorded, so the call UI can show the red dot.
+  // Recording is server-side (LiveKit egress); this row is only how a client
+  // *learns* a recording is running. The wire shape here is a best guess pending
+  // a live capture — see [_noteRecording].
+  'MeetingRecording',
   // What people look like. Neither model answers on its own: `hashOutfit` joins an
   // outfit's wearable ids and appends the newest `lastSyncAuthoredAt` among them,
   // so the sprite URL needs both. See `avatar.dart`.
@@ -582,6 +587,20 @@ class GameProtocolReader {
   /// The space's display name, from the single `Space` row in the dump.
   String? spaceName;
 
+  /// Whether a recording is running in the meeting we are in. Driven by
+  /// `MeetingRecording` rows (and an `isActivelyRecording` field on `Meeting` as
+  /// a fallback) — see [_noteRecording]. UNVERIFIED on the wire: the mapping
+  /// capture had no recording in flight, so the exact field/row shape is a best
+  /// guess to be corrected from a live recording session.
+  bool isRecording = false;
+
+  /// The SpaceUser id that started the current recording, if the wire names one.
+  String? recordingStartedBy;
+
+  /// The meeting we are currently a participant of, or null. The target for the
+  /// start/stop recording actions, which address the `Meeting` model.
+  String? get currentMeetingId => _meetings.currentMeetingId;
+
   /// UserAccount id belonging to me, the slower route to [selfId].
   String? _myUserAccountId;
 
@@ -748,6 +767,17 @@ class GameProtocolReader {
       return false;
     }
 
+    if (model == 'MeetingRecording' || model == 'Meeting') {
+      // Recording state. `Meeting` is also a map model (a locked room admits its
+      // participants), so it still has to reach the map builder — but it is read
+      // here first, ahead of the `_mapModels` early-return that would otherwise
+      // swallow it. `MeetingRecording` is ours alone. Republish the roster when
+      // the recording flag flips so the call UI's red dot follows it.
+      final changed = _noteRecording(model, patch);
+      if (model == 'Meeting') mapBuilder.apply(model, patch);
+      return changed;
+    }
+
     if (_mapModels.contains(model)) {
       // Never "the roster changed": a map edit is not somebody moving, and
       // republishing an 80-row roster because a plant was dragged is exactly the
@@ -780,6 +810,92 @@ class GameProtocolReader {
       default:
         return false;
     }
+  }
+
+  /// Live `MeetingRecording` ids, so a recording ending (its row deleted, or an
+  /// `endedAt` written) can be told from a second one starting. Recording is a
+  /// space-wide fact for our purposes: any live row means the red dot is on.
+  final Map<String, String?> _recordings = {};
+
+  /// Reads recording state off a `Meeting` or `MeetingRecording` patch. Returns
+  /// true when [isRecording] or [recordingStartedBy] changed.
+  ///
+  /// UNVERIFIED on the wire. The protocol capture in
+  /// `docs/protocol/client-action-surface.md` lists the *actions*
+  /// (`startRecordingIncludingAVRecordingAndOrTranscription`, the `MeetingRecording`
+  /// model) but no recording was running during the state capture, so the row
+  /// shape and field names below are a best guess. Two signals are honoured so a
+  /// live session can confirm either: a `MeetingRecording` row existing, and an
+  /// `isActivelyRecording` flag on the `Meeting` row.
+  bool _noteRecording(String model, Map<String, Object?> patch) {
+    final wasOn = isRecording;
+    final wasBy = recordingStartedBy;
+
+    if (model == 'MeetingRecording') {
+      final op = patch['op'];
+      if (op == 'addmodel') {
+        final data = patch['data'];
+        if (data is! Map<String, Object?>) return false;
+        final id = data['id'];
+        if (id is! String) return false;
+        final by = data['startedById'] ?? data['spaceUserId'] ?? data['creatorId'];
+        final endedAt = data['endedAt'];
+        final live = endedAt == null || identical(endedAt, msgpackUndefined);
+        if (live) {
+          _recordings[id] = by is String ? by : null;
+        } else {
+          _recordings.remove(id);
+        }
+      } else if (op == 'deletemodel') {
+        final id = patch['id'];
+        if (id is String) _recordings.remove(id);
+      } else if (op == 'replace') {
+        final id = patch['id'];
+        final field = (patch['path'] as String? ?? '')
+            .split('/')
+            .where((s) => s.isNotEmpty)
+            .firstOrNull;
+        if (id is String && (field == 'endedAt' || field == 'egressEndedAt')) {
+          final data = patch['data'];
+          final ended = data != null && !identical(data, msgpackUndefined);
+          if (ended) _recordings.remove(id);
+        }
+      }
+      isRecording = _recordings.isNotEmpty;
+      recordingStartedBy = _recordings.values.firstWhere(
+        (v) => v != null,
+        orElse: () => null,
+      );
+      return isRecording != wasOn || recordingStartedBy != wasBy;
+    }
+
+    // `Meeting` fallback: an `isActivelyRecording` flag on the meeting row itself,
+    // carried either whole (addmodel) or as a `replace`. Only move the flag off
+    // this signal; who started it stays with the `MeetingRecording` route.
+    var hasFlag = false;
+    Object? flag;
+    if (patch['op'] == 'addmodel' && patch['data'] is Map<String, Object?>) {
+      final data = patch['data'] as Map<String, Object?>;
+      if (data.containsKey('isActivelyRecording')) {
+        hasFlag = true;
+        flag = data['isActivelyRecording'];
+      }
+    } else if (patch['op'] == 'replace') {
+      final field = (patch['path'] as String? ?? '')
+          .split('/')
+          .where((s) => s.isNotEmpty)
+          .firstOrNull;
+      if (field == 'isActivelyRecording') {
+        hasFlag = true;
+        flag = patch['data'];
+      }
+    }
+    if (hasFlag && _recordings.isEmpty) {
+      isRecording = flag == true;
+      if (!isRecording) recordingStartedBy = null;
+      return isRecording != wasOn || recordingStartedBy != wasBy;
+    }
+    return false;
   }
 
   /// SpaceUser id -> the wearable ids they have on.
@@ -1274,6 +1390,15 @@ class _MeetingWatch {
   /// same space is not mistaken for one aimed at us.
   final Set<String> _myMeetings = {};
 
+  /// Our own `MeetingParticipant` rows: row id -> meeting id. Kept so that leaving
+  /// a meeting (the row being deleted) can drop it again, which [_myMeetings]
+  /// cannot express. The most recent entry is the meeting we would record.
+  final Map<String, String> _selfRows = {};
+
+  /// The meeting we are currently in, or null. Insertion order on a Dart map is
+  /// stable, so the last self row is the meeting most recently joined.
+  String? get currentMeetingId => _selfRows.isEmpty ? null : _selfRows.values.last;
+
   /// Participant rows seen in the dump, so the same row arriving again as a delta
   /// (an `updatedAt` touch, a response recorded) is not read as a fresh invite.
   final Set<String> _known = {};
@@ -1293,9 +1418,16 @@ class _MeetingWatch {
     required List<BusEvent> out,
   }) {
     final data = patch['data'];
+    // Leaving a meeting arrives as our participant row being deleted — the one
+    // update we do care about, so the recording target falls away when we walk out.
+    if (patch['op'] == 'deletemodel' && model == 'MeetingParticipant') {
+      final id = patch['id'];
+      if (id is String) _selfRows.remove(id);
+      return;
+    }
     if (patch['op'] != 'addmodel' || data is! Map<String, Object?>) {
-      // Updates and deletions carry nothing we report. A response being recorded on
-      // an invite is the *answer*, not a new question.
+      // Other updates carry nothing we report. A response being recorded on an
+      // invite is the *answer*, not a new question.
       return;
     }
     final id = data['id'];
@@ -1308,7 +1440,10 @@ class _MeetingWatch {
       // dump is exactly how we know which meetings we were already in.
       if (selfId != null && data['spaceUserId'] == selfId) {
         final meetingId = data['meetingId'];
-        if (meetingId is String) _myMeetings.add(meetingId);
+        if (meetingId is String) {
+          _myMeetings.add(meetingId);
+          _selfRows[id] = meetingId;
+        }
       }
     }
 
@@ -1331,7 +1466,11 @@ class _MeetingWatch {
       final data = row['data'] as Map<String, Object?>;
       if (data['spaceUserId'] == selfId) {
         final meetingId = data['meetingId'];
-        if (meetingId is String) _myMeetings.add(meetingId);
+        final rowId = data['id'];
+        if (meetingId is String) {
+          _myMeetings.add(meetingId);
+          if (rowId is String) _selfRows[rowId] = meetingId;
+        }
       }
       final event = _judge(row['model'] as String, data, selfId);
       if (event != null) out.add(event);

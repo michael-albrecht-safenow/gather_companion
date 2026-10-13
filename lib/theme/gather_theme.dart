@@ -218,6 +218,11 @@ const double kRailMinWidth = 320;
 /// same colour means the same thing everywhere a hand can be raised.
 const Color kHandRaised = Color(0xFFF5A623);
 
+/// The recording dot — a plain danger red, the universal "on the record" colour.
+/// Shared by the call-screen REC banner and the Gameboy LCD glyph, so the same
+/// red means the same thing wherever recording shows.
+const Color kRecording = Color(0xFFEF5B67);
+
 const kMonoFallback = <String>['SF Mono', 'ui-monospace', 'Menlo', 'Monaco', 'Courier New'];
 
 /// Gather sets its own interface in Inter; asking for it by name picks it up on

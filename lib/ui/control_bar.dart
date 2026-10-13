@@ -438,6 +438,21 @@ class _ControlBarState extends State<ControlBar> {
           onTap: () => _run(() =>
               state.setSpeakerOn(call.audioOutput != AudioOutput.speaker)),
         ),
+      // Start or stop the meeting recording. Present only where there is a meeting
+      // to record — a casual huddle with no meeting behind it cannot be, so the
+      // button is absent rather than dimmed, like the camera flip above. Red while
+      // it is running, the resting grey while it is not; the record itself is
+      // server-side, so a refusal (not allowed) comes back through [_run] as a
+      // snackbar rather than flipping anything here.
+      if (state.canRecord)
+        _BarButton(
+          icon: state.recording
+              ? Icons.stop_circle_rounded
+              : Icons.fiber_manual_record_rounded,
+          label: state.recording ? 'Stop recording' : 'Record the meeting',
+          tint: state.recording ? t.danger : t.mutedForeground,
+          onTap: () => _run(() => state.setRecording(!state.recording)),
+        ),
       _Rule(forColumn: vertical),
       // React and raise-hand are one button now. Raise-hand used to sit
       // beside React as a tenth control, and on a phone the bar ran out of

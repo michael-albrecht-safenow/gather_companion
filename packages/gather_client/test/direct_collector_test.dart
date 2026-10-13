@@ -411,6 +411,29 @@ void main() {
       expect(c.wave('').ok, isFalse);
     });
 
+    test('recording starts with record:true on the Meeting, and stops with no args',
+        () async {
+      final (c, conn) = await connected();
+
+      // Addressed to the `Meeting` model and its id, not our own avatar: recording
+      // is a property of the meeting. We ask to record and let the server raise its
+      // own starting event; transcription is left off. See the action surface in
+      // docs/protocol/client-action-surface.md.
+      expect(c.startRecording('m-1').ok, isTrue);
+      expect(
+          (await lastFrame(conn, 'startRecordingIncludingAVRecordingAndOrTranscription'))['args'],
+          ['Meeting', 'm-1', {'record': true, 'shouldRaiseStartingEvent': true}]);
+
+      expect(c.stopRecording('m-1').ok, isTrue);
+      expect(
+          (await lastFrame(conn, 'stopRecordingIncludingAVRecordingAndTranscription'))['args'],
+          ['Meeting', 'm-1']);
+
+      // No meeting, nothing sent.
+      expect(c.startRecording('').ok, isFalse);
+      expect(c.stopRecording('').ok, isFalse);
+    });
+
     test('every one of them refuses before it knows which avatar is ours', () {
       final c = build();
       expect(c.setAvailability('Busy').ok, isFalse);

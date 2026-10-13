@@ -294,6 +294,51 @@ class FakeCollector implements Collector {
   @override
   ({bool ok, String? detail}) leaveCluster() => (ok: true, detail: null);
 
+  /// The meeting the sim is "in", so the recording button has a target. Settable
+  /// so a scenario can put us in or out of a meeting.
+  String? fakeMeetingId = 'sim-meeting';
+  @override
+  String? get currentMeetingId => fakeMeetingId;
+
+  /// Recording state the sim reflects, plus the calls it received — so a widget
+  /// test can assert the red dot follows [isRecording] and that the button sends.
+  bool _recording = false;
+  final List<bool> recordingCalls = [];
+
+  /// When set, start/stop report a failure — the seam for "not allowed to record".
+  bool failRecording = false;
+
+  /// Puts the sim into a recording state without logging a start call — the seam
+  /// for a test or scenario that needs the light already on.
+  set fakeRecording(bool on) => _recording = on;
+
+  /// Who the sim says started the recording, if anyone.
+  String? fakeRecordingStartedBy;
+
+  @override
+  bool get isRecording => _recording;
+
+  @override
+  String? get recordingStartedBy => _recording ? fakeRecordingStartedBy : null;
+
+  @override
+  ({bool ok, String? detail}) startRecording(String meetingId) {
+    recordingCalls.add(true);
+    if (failRecording) return (ok: false, detail: 'not allowed to record');
+    _recording = true;
+    publish();
+    return (ok: true, detail: null);
+  }
+
+  @override
+  ({bool ok, String? detail}) stopRecording(String meetingId) {
+    recordingCalls.add(false);
+    if (failRecording) return (ok: false, detail: 'not allowed to record');
+    _recording = false;
+    publish();
+    return (ok: true, detail: null);
+  }
+
   /// Active flags we were told, in order — the other half of the #41 re-assert.
   final List<bool> activesSet = [];
   @override
