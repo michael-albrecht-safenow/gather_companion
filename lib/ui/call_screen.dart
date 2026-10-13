@@ -480,6 +480,21 @@ class _CallScreenState extends State<CallScreen> {
                   ),
                 ),
               ),
+              // The record light sits above the faces, top-centre and clear of the
+              // header, so "this is being recorded" is the one thing you cannot miss
+              // the moment it comes on. Driven straight off [AppState.recording].
+              if (widget.state.recording)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: SafeArea(
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: _RecordingBanner(by: widget.state.recordingStartedBy),
+                    ),
+                  ),
+                ),
               // The controls follow you onto the faces — muting is the thing a
               // person looking at a call most wants — and the navigation does not:
               // this is a place you go back from, not a fourth tab. Along the bottom
@@ -1549,6 +1564,55 @@ class _HandBadge extends StatelessWidget {
         boxShadow: [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
       ),
       child: const Icon(Icons.front_hand, size: 15, color: Colors.white),
+    );
+  }
+}
+
+/// The record light: a red pill with a dot and "REC", top-centre of the call. Red
+/// rather than a theme token for the same reason the hand is amber — "on the
+/// record" is a convention older than this app, and the blue chrome would read as
+/// one more control. Names who started it when the wire tells us.
+class _RecordingBanner extends StatelessWidget {
+  const _RecordingBanner({this.by});
+
+  final String? by;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = by == null ? 'REC' : 'REC · $by';
+    return Semantics(
+      liveRegion: true,
+      label: by == null
+          ? 'This meeting is being recorded'
+          : 'This meeting is being recorded, started by $by',
+      child: Container(
+        margin: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: const BoxDecoration(
+          color: kRecording,
+          borderRadius: BorderRadius.all(Radius.circular(999)),
+          boxShadow: [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const DecoratedBox(
+              decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+              child: SizedBox(width: 9, height: 9),
+            ),
+            const SizedBox(width: 7),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

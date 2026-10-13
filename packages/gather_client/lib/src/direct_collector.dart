@@ -575,6 +575,51 @@ class DirectCollector implements Collector {
   ({bool ok, String? detail}) setSpeaking(bool speaking) =>
       _act(speaking ? 'startSpeaking' : 'stopSpeaking');
 
+  @override
+  String? get currentMeetingId => reader.currentMeetingId;
+
+  @override
+  bool get isRecording => reader.isRecording;
+
+  @override
+  String? get recordingStartedBy => reader.recordingStartedBy;
+
+  /// Starts a server-side recording of [meetingId].
+  ///
+  /// Unlike every action above, this is addressed to the `Meeting` model, not our
+  /// own `SpaceUser`: recording is a property of the meeting. The action and its
+  /// shape are read from the client surface catalogued in
+  /// `docs/protocol/client-action-surface.md` —
+  /// `startRecordingIncludingAVRecordingAndOrTranscription` on `Meeting`, args
+  /// `{record, shouldRaiseStartingEvent, transcribe?}`. We ask for recording only,
+  /// no transcription, and let the server raise its own starting event so other
+  /// clients are told. **UNVERIFIED on the wire**: catalogued but not yet observed
+  /// live, exactly as `wave` was before its `WaveEvent` was seen — to be confirmed
+  /// and corrected from a real recording session.
+  @override
+  ({bool ok, String? detail}) startRecording(String meetingId) {
+    if (meetingId.isEmpty) return (ok: false, detail: 'no meeting to record');
+    return _send(
+      'startRecordingIncludingAVRecordingAndOrTranscription',
+      model: 'Meeting',
+      id: meetingId,
+      args: {'record': true, 'shouldRaiseStartingEvent': true},
+    );
+  }
+
+  /// Stops the server-side recording of [meetingId].
+  /// `stopRecordingIncludingAVRecordingAndTranscription` on `Meeting`, no args.
+  /// **UNVERIFIED on the wire** — see [startRecording].
+  @override
+  ({bool ok, String? detail}) stopRecording(String meetingId) {
+    if (meetingId.isEmpty) return (ok: false, detail: 'no meeting to record');
+    return _send(
+      'stopRecordingIncludingAVRecordingAndTranscription',
+      model: 'Meeting',
+      id: meetingId,
+    );
+  }
+
   /// Steps out of the huddle without walking away from it.
   ///
   /// Gather forms conversations by proximity and remembers them in `clusterId`, so

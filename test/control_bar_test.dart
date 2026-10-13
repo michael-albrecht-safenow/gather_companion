@@ -17,6 +17,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
+import 'package:gather_companion/harness/fake_collector.dart';
 import 'package:gather_companion/src/app_state.dart';
 import 'package:gather_companion/src/link_status.dart';
 import 'package:gather_companion/src/media/call.dart';
@@ -530,17 +531,21 @@ void main() {
 
   group('the worst-case row still fits a phone', () {
     // The reason raise-hand moved into React in the first place. On the call
-    // screen, with the camera on and somebody else in the room, the control row
-    // carries its most — self, mic, camera, camera-switch, speaker, React and the
-    // door. These are fixed-width plates that cannot shrink, so a tenth one pushed
-    // the row's own intrinsic width past the phone it had to sit on: the island
-    // then overflowed rather than the nav row setting its width, the `spaceEvenly`
-    // gaps collapsed to zero and the red door was crushed flush against the edge —
-    // the "squashed" report. This pins the fullest row against a phone narrower
-    // than the iPhone 12 it was first seen on, so a tenth button cannot come back
-    // unnoticed.
+    // screen, with the camera on, a meeting to record and somebody else in the
+    // room, the control row carries its most — self, mic, camera, camera-switch,
+    // speaker, record, React and the door. These are fixed-width plates that cannot
+    // shrink, so one too many pushed the row's own intrinsic width past the phone it
+    // had to sit on: the island then overflowed rather than the nav row setting its
+    // width, the `spaceEvenly` gaps collapsed to zero and the red door was crushed
+    // flush against the edge — the "squashed" report. The record button is part of
+    // the worst case — it shows whenever there is a meeting to record — so a
+    // meeting-capable collector is attached here; without it the fullest row was a
+    // button short and the overflow it brings went unseen. This pins the fullest row
+    // against a phone narrower than the iPhone 12 it was first seen on, so one more
+    // button cannot come back unnoticed.
     AppState worstCase() => AppState()
       ..debugApplyLink(const LinkStatus(LinkState.live))
+      ..debugAttachCollector(FakeCollector()..fakeMeetingId = 'meet-1')
       ..debugApplyRoster(Roster(
         selfId: 'me',
         rows: [
@@ -585,6 +590,9 @@ void main() {
       // gives are both here, so this is the worst case and not a lesser one.
       expect(find.byTooltip('Switch camera'), findsOneWidget);
       expect(find.byTooltip('Leave the conversation'), findsOneWidget);
+      // The record button is part of this worst case — a meeting to record is what
+      // makes it the fullest row and not a lesser one.
+      expect(find.byTooltip('Record the meeting'), findsOneWidget);
 
       // No `RenderFlex` overflow: the plates fit side by side on the phone without
       // being asked to shrink into one another. A tenth button trips this.

@@ -146,6 +146,25 @@ abstract interface class Collector {
   /// `handRaisedAt` on our roster row.
   ({bool ok, String? detail}) setHandRaised(bool raised);
 
+  /// The meeting we are currently in, or null. The target for [startRecording] /
+  /// [stopRecording], which address the `Meeting` model rather than our own avatar.
+  String? get currentMeetingId;
+
+  /// Whether a recording is running in our meeting. Server-side state the UI
+  /// reflects as the red dot — learned from the wire, not something we hold.
+  bool get isRecording;
+
+  /// The SpaceUser id that started the current recording, if the wire names one.
+  String? get recordingStartedBy;
+
+  /// Asks the server to start recording [meetingId]. Recording itself is
+  /// server-side (LiveKit egress); this only sends the request. Fire-and-forget —
+  /// the running state comes back as [isRecording].
+  ({bool ok, String? detail}) startRecording(String meetingId);
+
+  /// Asks the server to stop recording [meetingId].
+  ({bool ok, String? detail}) stopRecording(String meetingId);
+
   /// Steps out of the huddle without walking away from it.
   ({bool ok, String? detail}) leaveCluster();
 

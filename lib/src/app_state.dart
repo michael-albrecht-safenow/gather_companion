@@ -1240,6 +1240,48 @@ class AppState extends ChangeNotifier {
   /// Flips the hand — the raise/lower toggle that lives in the React tray.
   Future<void> toggleHandRaised() => setHandRaised(!_myHandRaised);
 
+  /// Whether the meeting we are in is being recorded. Server-side state (the
+  /// recording is a LiveKit egress, not anything this phone captures) reflected
+  /// straight off the collector, so the call UI's red dot follows the wire.
+  bool get recording => _collector?.isRecording ?? false;
+
+  /// The name of whoever started the current recording, resolved against the
+  /// roster, or null when the wire does not name one or we cannot place them.
+  String? get recordingStartedBy {
+    final id = _collector?.recordingStartedBy;
+    if (id == null) return null;
+    final roster = _roster;
+    if (roster == null) return null;
+    for (final row in roster.rows) {
+      if (row.id == id) return row.name;
+    }
+    return null;
+  }
+
+  /// Whether a recording can be started from here: we are in a call and the
+  /// collector knows which `Meeting` to address. A casual huddle with no meeting
+  /// behind it cannot be recorded, so the button is absent rather than failing.
+  bool get canRecord =>
+      inCall && (_collector?.currentMeetingId?.isNotEmpty ?? false);
+
+  /// Asks the server to start or stop recording the current meeting. Returns an
+  /// error string to surface (no meeting, or the server's refusal) or null on
+  /// success. The running state comes back over the wire as [recording], so this
+  /// does not flip anything locally.
+  Future<String?> setRecording(bool on) async {
+    final collector = _collector;
+    final meetingId = collector?.currentMeetingId;
+    if (collector == null || meetingId == null || meetingId.isEmpty) {
+      return 'No meeting to record.';
+    }
+    final result =
+        on ? collector.startRecording(meetingId) : collector.stopRecording(meetingId);
+    return result.ok ? null : (result.detail ?? 'Could not change recording.');
+  }
+
+  /// Flips recording — start if stopped, stop if running.
+  Future<String?> toggleRecording() => setRecording(!recording);
+
   /// Drops our own hand once we are no longer in a meeting.
   ///
   /// The hand is a meetings-only gesture and the button that raises it is gone

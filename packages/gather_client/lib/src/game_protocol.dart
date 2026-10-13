@@ -80,6 +80,11 @@ const _models = {
   // as well as the notifications do. See `SpaceMapBuilder._admitted`.
   'AreaAccessRequest',
   'Meeting',
+  // Whether the meeting is being recorded, so the call UI can show the red dot.
+  // Recording is server-side (LiveKit egress); this row is only how a client
+  // *learns* a recording is running. The wire shape here is a best guess pending
+  // a live capture — see [_noteRecording].
+  'MeetingRecording',
   // What people look like. Neither model answers on its own: `hashOutfit` joins an
   // outfit's wearable ids and appends the newest `lastSyncAuthoredAt` among them,
   // so the sprite URL needs both. See `avatar.dart`.
@@ -582,6 +587,23 @@ class GameProtocolReader {
   /// The space's display name, from the single `Space` row in the dump.
   String? spaceName;
 
+  /// Whether a recording is running *in the meeting we are in* — never a different
+  /// meeting's recording elsewhere in the space. Driven by the documented
+  /// `Meeting.activeRecordingId` field, with `MeetingRecording` rows (scoped to our
+  /// meeting) and a speculative `isActivelyRecording` flag honoured as compatibility
+  /// paths — see [_noteRecording] and [_recomputeRecording]. The row/flag shapes are
+  /// UNVERIFIED on the wire (the mapping capture had no recording in flight);
+  /// `activeRecordingId` is the one signal the observed `Meeting` schema confirms
+  /// (`docs/gather-api.md`).
+  bool isRecording = false;
+
+  /// The SpaceUser id that started the current recording, if the wire names one.
+  String? recordingStartedBy;
+
+  /// The meeting we are currently a participant of, or null. The target for the
+  /// start/stop recording actions, which address the `Meeting` model.
+  String? get currentMeetingId => _meetings.currentMeetingId;
+
   /// UserAccount id belonging to me, the slower route to [selfId].
   String? _myUserAccountId;
 
@@ -730,7 +752,12 @@ class GameProtocolReader {
     // Identity can arrive after the rows that depend on it — the `Connection` row
     // is one patch among ~1500 — so anything we could not judge at the time is
     // reconsidered once we know who we are.
-    if (selfId != null) _meetings.resolvePending(selfId!, _pending);
+    if (selfId != null && _meetings.resolvePending(selfId!, _pending)) {
+      // Identity arriving late can establish the meeting we are in for the first
+      // time, which moves `canRecord` and the recording dot.
+      _recomputeRecording();
+      changed = true;
+    }
     return changed;
   }
 
@@ -748,6 +775,17 @@ class GameProtocolReader {
       return false;
     }
 
+    if (model == 'MeetingRecording' || model == 'Meeting') {
+      // Recording state. `Meeting` is also a map model (a locked room admits its
+      // participants), so it still has to reach the map builder — but it is read
+      // here first, ahead of the `_mapModels` early-return that would otherwise
+      // swallow it. `MeetingRecording` is ours alone. Republish the roster when
+      // the recording flag flips so the call UI's red dot follows it.
+      final changed = _noteRecording(model, patch);
+      if (model == 'Meeting') mapBuilder.apply(model, patch);
+      return changed;
+    }
+
     if (_mapModels.contains(model)) {
       // Never "the roster changed": a map edit is not somebody moving, and
       // republishing an 80-row roster because a plant was dragged is exactly the
@@ -763,11 +801,21 @@ class GameProtocolReader {
       // model to [_mapModels], because that branch returns before this one and the
       // invite notifications would stop arriving.
       mapBuilder.apply(model, patch);
-      _meetings.apply(model, patch, isNews: isNews, selfId: selfId, out: _pending);
-      // Never "the roster changed": meetings are not people standing in a room, and
-      // republishing a 79-row snapshot because a calendar row moved is exactly the
-      // traffic the coalescing window exists to prevent.
-      return false;
+      final meetingChanged = _meetings.apply(
+        model,
+        patch,
+        isNews: isNews,
+        selfId: selfId,
+        out: _pending,
+      );
+      // Joining or leaving a meeting moves `canRecord` and can flip the recording
+      // dot (the meeting we just joined may already be recording), so a changed
+      // current meeting must republish. Otherwise meetings are not people standing
+      // in a room — republishing a 79-row snapshot because a calendar row moved is
+      // exactly the traffic the coalescing window exists to prevent.
+      if (!meetingChanged) return false;
+      _recomputeRecording();
+      return true;
     }
 
     switch (patch['op']) {
@@ -780,6 +828,165 @@ class GameProtocolReader {
       default:
         return false;
     }
+  }
+
+  /// Live `MeetingRecording` ids -> the meeting each one is recording, so a
+  /// recording can be matched to *our* meeting rather than lighting the dot for any
+  /// recording anywhere in the space. A space can hold concurrent meetings and this
+  /// app records only the one it is in.
+  final Map<String, String?> _recordingMeeting = {};
+
+  /// Live `MeetingRecording` ids -> who started each, when the wire names one.
+  final Map<String, String?> _recordingBy = {};
+
+  /// Meeting id -> its `activeRecordingId`, the documented signal that a meeting is
+  /// recording (`docs/gather-api.md` lists `activeRecordingId` on `Meeting`). Absent
+  /// means not recording. This is the one field the observed schema confirms.
+  final Map<String, String> _meetingActiveRec = {};
+
+  /// Meeting ids carrying a truthy speculative `isActivelyRecording` flag — a
+  /// compatibility path kept alongside [_meetingActiveRec] until a live session says
+  /// which the server actually sends.
+  final Set<String> _meetingFlagOn = {};
+
+  /// Reads recording state off a `Meeting` or `MeetingRecording` patch and folds it
+  /// into the per-meeting bookkeeping, then recomputes the current-meeting view via
+  /// [_recomputeRecording]. Returns true when [isRecording]/[recordingStartedBy]
+  /// changed.
+  ///
+  /// UNVERIFIED on the wire. The protocol capture in
+  /// `docs/protocol/client-action-surface.md` lists the *actions*
+  /// (`startRecordingIncludingAVRecordingAndOrTranscription`, the `MeetingRecording`
+  /// model) but no recording was running during the state capture, so the row shape
+  /// and field names below are a best guess. The documented `Meeting.activeRecordingId`
+  /// is the primary signal; a `MeetingRecording` row and an `isActivelyRecording`
+  /// flag are honoured as extra compatibility paths so a live session can confirm
+  /// whichever the server sends.
+  bool _noteRecording(String model, Map<String, Object?> patch) {
+    if (model == 'MeetingRecording') {
+      final op = patch['op'];
+      if (op == 'addmodel') {
+        final data = patch['data'];
+        if (data is! Map<String, Object?>) return false;
+        final id = data['id'];
+        if (id is! String) return false;
+        final by = data['startedById'] ?? data['spaceUserId'] ?? data['creatorId'];
+        final meetingId = data['meetingId'];
+        final endedAt = data['endedAt'];
+        final live = endedAt == null || identical(endedAt, msgpackUndefined);
+        if (live) {
+          _recordingMeeting[id] = meetingId is String ? meetingId : null;
+          _recordingBy[id] = by is String ? by : null;
+        } else {
+          _recordingMeeting.remove(id);
+          _recordingBy.remove(id);
+        }
+      } else if (op == 'deletemodel') {
+        final id = patch['id'];
+        if (id is String) {
+          _recordingMeeting.remove(id);
+          _recordingBy.remove(id);
+        }
+      } else if (op == 'replace') {
+        final id = patch['id'];
+        final field = (patch['path'] as String? ?? '')
+            .split('/')
+            .where((s) => s.isNotEmpty)
+            .firstOrNull;
+        if (id is String && (field == 'endedAt' || field == 'egressEndedAt')) {
+          final data = patch['data'];
+          final ended = data != null && !identical(data, msgpackUndefined);
+          if (ended) {
+            _recordingMeeting.remove(id);
+            _recordingBy.remove(id);
+          }
+        }
+      }
+      return _recomputeRecording();
+    }
+
+    // `Meeting`: the documented `activeRecordingId` (non-null ⇒ recording), plus a
+    // speculative `isActivelyRecording` flag, carried either whole (addmodel) or as
+    // a `replace`.
+    String? meetingId;
+    final activeRec = <String, String?>{}; // meetingId -> recording id, {} = untouched
+    final flag = <String, bool>{}; // meetingId -> flag value, {} = untouched
+
+    if (patch['op'] == 'addmodel' && patch['data'] is Map<String, Object?>) {
+      final data = patch['data'] as Map<String, Object?>;
+      final id = data['id'];
+      if (id is! String) return false;
+      meetingId = id;
+      if (data.containsKey('activeRecordingId')) {
+        final v = data['activeRecordingId'];
+        activeRec[id] = v is String ? v : null;
+      }
+      if (data.containsKey('isActivelyRecording')) {
+        flag[id] = data['isActivelyRecording'] == true;
+      }
+    } else if (patch['op'] == 'replace') {
+      final id = patch['id'];
+      if (id is! String) return false;
+      meetingId = id;
+      final field = (patch['path'] as String? ?? '')
+          .split('/')
+          .where((s) => s.isNotEmpty)
+          .firstOrNull;
+      if (field == 'activeRecordingId') {
+        final v = patch['data'];
+        final cleared = v == null || identical(v, msgpackUndefined);
+        activeRec[id] = cleared ? null : (v is String ? v : null);
+      } else if (field == 'isActivelyRecording') {
+        flag[id] = patch['data'] == true;
+      }
+    }
+
+    if (activeRec.containsKey(meetingId)) {
+      final rec = activeRec[meetingId];
+      if (rec == null) {
+        _meetingActiveRec.remove(meetingId);
+      } else {
+        _meetingActiveRec[meetingId!] = rec;
+      }
+    }
+    if (flag.containsKey(meetingId)) {
+      if (flag[meetingId] == true) {
+        _meetingFlagOn.add(meetingId!);
+      } else {
+        _meetingFlagOn.remove(meetingId);
+      }
+    }
+    return _recomputeRecording();
+  }
+
+  /// Collapses the per-meeting recording bookkeeping down to the one meeting we are
+  /// in — [currentMeetingId] — and nothing else. Returns true when the visible
+  /// [isRecording]/[recordingStartedBy] changed, so the caller can republish.
+  bool _recomputeRecording() {
+    final wasOn = isRecording;
+    final wasBy = recordingStartedBy;
+
+    final mid = currentMeetingId;
+    var on = false;
+    String? by;
+    if (mid != null) {
+      final activeRec = _meetingActiveRec[mid];
+      if (activeRec != null) {
+        on = true;
+        by = _recordingBy[activeRec];
+      }
+      if (_meetingFlagOn.contains(mid)) on = true;
+      for (final entry in _recordingMeeting.entries) {
+        if (entry.value == mid) {
+          on = true;
+          by ??= _recordingBy[entry.key];
+        }
+      }
+    }
+
+    isRecording = on;
+    recordingStartedBy = on ? by : null;
+    return isRecording != wasOn || recordingStartedBy != wasBy;
   }
 
   /// SpaceUser id -> the wearable ids they have on.
@@ -1274,6 +1481,18 @@ class _MeetingWatch {
   /// same space is not mistaken for one aimed at us.
   final Set<String> _myMeetings = {};
 
+  /// Our own *active* `MeetingParticipant` rows: row id -> meeting id. Only rows
+  /// that represent attendance we are currently in live here — a self row is also
+  /// written for a bare invitation and for a meeting we have since left, and those
+  /// must not be read as the meeting to record. See [_isActiveAttendance]. Kept by
+  /// row id so leaving (the row deleted, or a departure stamp written) can drop it
+  /// again, which [_myMeetings] cannot express.
+  final Map<String, String> _selfRows = {};
+
+  /// The meeting we are currently in, or null. Insertion order on a Dart map is
+  /// stable, so the last active self row is the meeting most recently joined.
+  String? get currentMeetingId => _selfRows.isEmpty ? null : _selfRows.values.last;
+
   /// Participant rows seen in the dump, so the same row arriving again as a delta
   /// (an `updatedAt` touch, a response recorded) is not read as a fresh invite.
   final Set<String> _known = {};
@@ -1285,21 +1504,47 @@ class _MeetingWatch {
   /// as the dump would be judged against a null `selfId` and silently dropped.
   final List<Map<String, Object?>> _undecided = [];
 
-  void apply(
+  /// Returns true when the current meeting changed, so the caller can republish the
+  /// roster (and re-derive the recording dot and `canRecord`).
+  bool apply(
     String model,
     Map<String, Object?> patch, {
     required bool isNews,
     required String? selfId,
     required List<BusEvent> out,
   }) {
+    final before = currentMeetingId;
     final data = patch['data'];
+    // Leaving a meeting arrives as our participant row being deleted — the one
+    // update we do care about, so the recording target falls away when we walk out.
+    if (patch['op'] == 'deletemodel' && model == 'MeetingParticipant') {
+      final id = patch['id'];
+      if (id is String) _selfRows.remove(id);
+      return currentMeetingId != before;
+    }
+    // A soft leave lands as a departure stamp written onto our row rather than the
+    // row being deleted. Drop the meeting on that too, so `currentMeetingId` does
+    // not keep pointing at a meeting we have stepped out of.
+    if (patch['op'] == 'replace' && model == 'MeetingParticipant') {
+      final id = patch['id'];
+      final field = (patch['path'] as String? ?? '')
+          .split('/')
+          .where((s) => s.isNotEmpty)
+          .firstOrNull;
+      if (id is String &&
+          (field == 'intentionallyLeftAt' || field == 'lastDepartedAt') &&
+          _present(patch['data'])) {
+        _selfRows.remove(id);
+      }
+      return currentMeetingId != before;
+    }
     if (patch['op'] != 'addmodel' || data is! Map<String, Object?>) {
-      // Updates and deletions carry nothing we report. A response being recorded on
-      // an invite is the *answer*, not a new question.
-      return;
+      // Other updates carry nothing we report. A response being recorded on an
+      // invite is the *answer*, not a new question.
+      return false;
     }
     final id = data['id'];
-    if (id is! String) return;
+    if (id is! String) return false;
 
     final firstSighting = _known.add(id);
 
@@ -1308,35 +1553,78 @@ class _MeetingWatch {
       // dump is exactly how we know which meetings we were already in.
       if (selfId != null && data['spaceUserId'] == selfId) {
         final meetingId = data['meetingId'];
-        if (meetingId is String) _myMeetings.add(meetingId);
+        if (meetingId is String) {
+          _myMeetings.add(meetingId);
+          // Only attendance we are actually in sets the record target. A pending
+          // invite or a meeting we have left keeps `_myMeetings` (for knock routing)
+          // but must not become `currentMeetingId`.
+          if (_isActiveAttendance(data)) {
+            _selfRows[id] = meetingId;
+          } else {
+            _selfRows.remove(id);
+          }
+        }
       }
     }
 
-    if (!isNews || !firstSighting) return;
+    if (!isNews || !firstSighting) return currentMeetingId != before;
 
     if (selfId == null) {
       _undecided.add({'model': model, 'data': data});
-      return;
+      return currentMeetingId != before;
     }
     final event = _judge(model, data, selfId);
     if (event != null) out.add(event);
+    return currentMeetingId != before;
   }
 
-  /// Re-reads what arrived before we knew who we were.
-  void resolvePending(String selfId, List<BusEvent> out) {
-    if (_undecided.isEmpty) return;
+  /// Re-reads what arrived before we knew who we were. Returns true when the current
+  /// meeting changed as a result.
+  bool resolvePending(String selfId, List<BusEvent> out) {
+    if (_undecided.isEmpty) return false;
+    final before = currentMeetingId;
     final pending = List<Map<String, Object?>>.of(_undecided);
     _undecided.clear();
     for (final row in pending) {
       final data = row['data'] as Map<String, Object?>;
       if (data['spaceUserId'] == selfId) {
         final meetingId = data['meetingId'];
-        if (meetingId is String) _myMeetings.add(meetingId);
+        final rowId = data['id'];
+        if (meetingId is String) {
+          _myMeetings.add(meetingId);
+          if (rowId is String && _isActiveAttendance(data)) {
+            _selfRows[rowId] = meetingId;
+          }
+        }
       }
       final event = _judge(row['model'] as String, data, selfId);
       if (event != null) out.add(event);
     }
+    return currentMeetingId != before;
   }
+
+  /// Whether a self `MeetingParticipant` row is attendance we are currently in,
+  /// rather than a bare invitation or a meeting we have already left. The lifecycle
+  /// fields (`inviteStatus`, `responseStatus`, `lastDepartedAt`, `intentionallyLeftAt`)
+  /// are part of the observed model; a full dump can hold several historical self
+  /// rows, so insertion order alone cannot be trusted to name the live meeting.
+  static bool _isActiveAttendance(Map<String, Object?> data) {
+    if (_present(data['intentionallyLeftAt'])) return false;
+    if (_present(data['lastDepartedAt'])) return false;
+    final invite = data['inviteStatus'];
+    if (invite is String && invite.startsWith('Invited')) {
+      final resp = data['responseStatus'];
+      final accepted = resp is String &&
+          (resp == 'Accepted' || resp == 'Joined' || resp.contains('Accept'));
+      if (!accepted) return false;
+    }
+    return true;
+  }
+
+  /// Present on the wire — not null and not msgpack `undefined`, which is how this
+  /// protocol spells an absent optional field.
+  static bool _present(Object? value) =>
+      value != null && !identical(value, msgpackUndefined);
 
   BusEvent? _judge(String model, Map<String, Object?> data, String selfId) {
     if (model == 'MeetingParticipant') {
