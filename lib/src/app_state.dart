@@ -2829,6 +2829,13 @@ class AppState extends ChangeNotifier {
     _link = const LinkStatus(LinkState.retrying, 'Network changed — reconnecting.');
     notifyListeners();
     unawaited(collector.resync());
+    // resync() reconnects only the game socket. The SFU socket sleeps through the
+    // transport change on a connection it still believes is alive, so its token
+    // goes stale and every republish is refused `bad auth` until a full restart
+    // (#57). Rebuild the media session too — `_start()` mints a fresh token.
+    // rebuild() no-ops when there is no session, and this shares the 5s resync
+    // cooldown above, so a flapping radio cannot spam it.
+    unawaited(_call?.rebuild() ?? Future<void>.value());
   }
 
   Future<void> _detach() async {

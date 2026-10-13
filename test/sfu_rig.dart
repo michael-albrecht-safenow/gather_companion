@@ -47,6 +47,11 @@ class Rig {
   /// Sockets by url, replaced when one is dropped and opened again.
   final Map<String, FakeSignalling> sockets = {};
 
+  /// Node-socket methods this rig should refuse with a specific server message,
+  /// applied to every media node as it opens. How a test makes a fresh session
+  /// carry a stale token: seed `{'produce': '...TokenVerificationFailed...'}`.
+  final Map<String, String> nodeRefusals = {};
+
   int republishes = 0;
   bool _closed = false;
 
@@ -114,6 +119,7 @@ class Rig {
               {'urls': 'turn:cf.turn.gather.town', 'username': 'u', 'credential': 'c'},
             ],
           });
+    socket.failingWith.addAll(nodeRefusals);
     return socket;
   }
 

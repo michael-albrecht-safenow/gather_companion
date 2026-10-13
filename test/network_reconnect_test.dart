@@ -12,6 +12,8 @@ import 'package:gather_client/gather_client.dart';
 import 'package:gather_companion/harness/fake_collector.dart';
 import 'package:gather_companion/src/app_state.dart';
 
+import 'fake_call.dart';
+
 void main() {
   /// An [AppState] with a fake collector attached and a clock a test can turn, so
   /// the resync cooldown is deterministic rather than wall-time.
@@ -21,6 +23,25 @@ void main() {
     final state = AppState(now: () => clock)..debugAttachCollector(collector);
     addTearDown(state.dispose);
     return (state: state, collector: collector, tick: (d) => clock = clock.add(d));
+  }
+
+  /// The same, with a call attached — for asserting the media session is rebuilt
+  /// (its token re-minted) on a transport change, not just the game socket resynced.
+  ({AppState state, FakeCollector collector, FakeCall call, void Function(Duration) tick})
+      wiredInCall() {
+    var clock = DateTime(2026);
+    final collector = FakeCollector();
+    final call = FakeCall();
+    final state = AppState(now: () => clock)
+      ..debugAttachCollector(collector)
+      ..debugAttachCall(call);
+    addTearDown(state.dispose);
+    return (
+      state: state,
+      collector: collector,
+      call: call,
+      tick: (d) => clock = clock.add(d),
+    );
   }
 
   test('a transport change forces a resync and raises the reconnecting badge', () {
@@ -34,6 +55,38 @@ void main() {
     state.debugNoteConnectivity([ConnectivityResult.mobile]);
     expect(collector.resyncs, base + 1, reason: 'the handoff should reconnect');
     expect(state.link.isReconnecting, isTrue, reason: 'the badge should show at once');
+  });
+
+  test('a transport change rebuilds the media session, to re-mint the SFU token',
+      () {
+    // The SFU socket sleeps through the handoff on a connection it still believes
+    // is alive, so its token goes stale and republishes are refused bad-auth until
+    // a restart (#57). The handoff must rebuild the media plane, not only resync
+    // the game socket.
+    final (:state, :collector, :call, :tick) = wiredInCall();
+
+    state.debugNoteConnectivity([ConnectivityResult.wifi]);
+    tick(const Duration(seconds: 6));
+    final base = call.rebuilds;
+
+    state.debugNoteConnectivity([ConnectivityResult.mobile]);
+    expect(call.rebuilds, base + 1,
+        reason: 'the handoff must rebuild the media session for a fresh token');
+  });
+
+  test('an unchanged transport and going offline never rebuild the session', () {
+    final (:state, :collector, :call, :tick) = wiredInCall();
+
+    state.debugNoteConnectivity([ConnectivityResult.mobile]);
+    tick(const Duration(seconds: 6));
+    final base = call.rebuilds;
+
+    state.debugNoteConnectivity([ConnectivityResult.mobile]); // unchanged
+    expect(call.rebuilds, base, reason: 'no change, no rebuild');
+
+    state.debugNoteConnectivity(const []); // flight mode
+    expect(call.rebuilds, base,
+        reason: 'offline is a dead end — nothing to rebuild onto yet');
   });
 
   test('the same transport does not reconnect, and offline flags at once', () {

@@ -390,6 +390,86 @@ void main() {
     });
   });
 
+  group('a stale SFU token after a transport change (#57)', () {
+    /// A call whose sessions come from a fresh [Rig] each build, with the first
+    /// [refuseCount] of them refusing `produce` the way the server does when the
+    /// token went stale across a network gap. Mirrors the #41 harness above.
+    ({LiveCall call, List<Rig> rigs}) staleTokenCall({required int refuseCount}) {
+      final rigs = <Rig>[];
+      final localEngine = FakeCaptureEngine();
+      final localCall = LiveCall(
+        auth: GatherAuth(
+          credentials: const GatherCredentials(refreshToken: 'unused'),
+        ),
+        spaceId: spaceId,
+        srcId: me,
+        engine: localEngine,
+        buildSfu: () {
+          final rig = Rig();
+          rigs.add(rig);
+          if (rigs.length <= refuseCount) {
+            rig.nodeRefusals['produce'] =
+                'produce refused: {message: bad auth, '
+                'data: {reason: TokenVerificationFailed}}';
+          }
+          return rig.session;
+        },
+        voice: VoiceActivity(hold: Duration.zero),
+      );
+      addTearDown(() async {
+        await localCall.dispose();
+        for (final rig in rigs) {
+          await rig.close();
+        }
+      });
+      return (call: localCall, rigs: rigs);
+    }
+
+    test('rebuilds to mint a fresh token and republishes the track', () async {
+      // The first session carries the stale token and refuses every produce; the
+      // rebuilt one does not. Turning the mic on must survive that without a tap
+      // being needed to retry.
+      final (:call, :rigs) = staleTokenCall(refuseCount: 1);
+
+      final detail = await call.setMicOn(true);
+      await settle();
+
+      // The stale session was thrown away and a second stood up in its place —
+      // exactly the restart the person used to have to do by hand.
+      expect(rigs, hasLength(2), reason: 'one rebuild, no more');
+      expect(rigs[0].node().disposed, isTrue,
+          reason: 'the session with the dead token was disposed');
+      final produced = rigs[1]
+          .node()
+          .sent
+          .where((f) => f.method == 'produce')
+          .map((f) => f.args['tag'])
+          .toList();
+      expect(produced, contains('audio'),
+          reason: 'the track was republished onto the fresh session');
+      expect(detail, isNull, reason: 'the unmute succeeded, so it says nothing');
+      expect(call.state.publishingAudio, isTrue);
+    });
+
+    test('a token still bad after the rebuild fails once, it does not loop',
+        () async {
+      // Every session refuses, so the heal cannot win. It must give up after a
+      // single rebuild and surface the ordinary failure, not rebuild forever.
+      final (:call, :rigs) = staleTokenCall(refuseCount: 99);
+
+      final detail = await call.setMicOn(true);
+      await settle();
+
+      expect(rigs, hasLength(2),
+          reason: 'exactly one rebuild attempt, then it stands down');
+      expect(detail, isNotNull);
+      expect(call.state.detail, contains('has not picked up'));
+      expect(call.state.publishingAudio, isFalse);
+      // The hardware is live and only the wire failed, so the button stays on.
+      expect(call.state.micOn, isTrue);
+    });
+  });
+
   test('hanging up releases the hardware and the session', () async {
     await call.setMicOn(true);
 

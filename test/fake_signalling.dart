@@ -37,6 +37,12 @@ class FakeSignalling implements SfuSignalling {
   /// Methods to fail rather than answer.
   final Set<String> failing = {};
 
+  /// Methods to fail with a *specific* server message, rather than the generic
+  /// `refused`. The stale-token heal keys on the reason the server sends
+  /// (`TokenVerificationFailed`), so a test for it has to be able to put that
+  /// exact string on the wire.
+  final Map<String, String> failingWith = {};
+
   bool started = false;
   bool disposed = false;
   bool _connected = false;
@@ -138,6 +144,8 @@ class FakeSignalling implements SfuSignalling {
     asked.add(frame);
     sent.add(frame);
     if (failing.contains(method)) throw SfuException('$method refused');
+    final message = failingWith[method];
+    if (message != null) throw SfuException(message);
     return _answers[method]?.call(args) ?? const {};
   }
 
