@@ -88,6 +88,12 @@
 		     lets a delivered notification hand the app a moment to run before the
 		     user taps it; the alert itself is shown either way. -->
 		<string>remote-notification</string>
+		<!-- A call must keep running with the screen locked. This is what lets the
+		     microphone and the remote audio survive backgrounding; CallKit reports
+		     the call to the OS, but it is this mode that keeps the audio alive. Not
+		     `voip`: there is no PushKit here — a Gather call is app-initiated off a
+		     socket already held, never woken by a push. -->
+		<string>audio</string>
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
