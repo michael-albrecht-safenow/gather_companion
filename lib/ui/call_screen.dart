@@ -365,15 +365,21 @@ class _CallScreenState extends State<CallScreen> {
     _syncWatching();
   }
 
-  /// A tap on a face: enlarge it in manual, pin it in auto. Never yourself in
-  /// auto — the room does not need to watch you watch it.
+  /// A tap on a face: enlarge it, and leave auto for manual if that is where the
+  /// tap came from. Never yourself in auto — the room does not need to watch you
+  /// watch it, and tapping yourself there is a no-op rather than a mode switch.
   void _onTapTile(CallTile tile) {
     if (_mode == SpotlightMode.auto && tile.isSelf) return;
     setState(() {
-      if (_mode == SpotlightMode.manual) {
-        _manualId = tile.id;
-      } else {
-        _autoPinned = tile.id;
+      _manualId = tile.id;
+      if (_mode == SpotlightMode.auto) {
+        // Tapping a face is a request to watch that person: leave the automatic
+        // follow and pin them, so the toggle reflects the manual view the tap
+        // produced. The next speaker no longer overrides it.
+        _mode = SpotlightMode.manual;
+        _autoPinned = null;
+        _dwellTimer?.cancel();
+        _dwellTimer = null;
       }
     });
     _syncWatching();

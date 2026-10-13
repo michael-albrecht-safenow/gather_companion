@@ -789,7 +789,8 @@ void main() {
       await tester.pump(const Duration(seconds: 2)); // flush the cluster debounce
     });
 
-    testWidgets('a tap in auto pins, and the next speaker overrides it without leaving auto', (tester) async {
+    testWidgets('a tap in auto switches to manual and pins the face, and a later speaker no longer overrides it', (tester) async {
+      final semantics = tester.ensureSemantics();
       final state = stateWith(
         threeFaces(),
         rows: [me, person('0', speaking: true), person('1'), person('2')],
@@ -800,17 +801,36 @@ void main() {
       await tester.pump();
       expect(find.text('Person 0'), findsNWidgets(2), reason: 'auto enlarged the talker');
 
-      // Pin Person 1 from the strip. The view moves to them at once.
+      // Tap Person 1 from the strip. A tap is a request to watch that person, so
+      // it leaves auto for manual and pins them — the view moves at once.
       await tester.tap(find.byKey(const ValueKey('strip-space-1')));
       await tester.pump();
       expect(find.text('Person 1'), findsNWidgets(2));
+      // And the toggle reflects the manual view the tap produced: the Manual
+      // segment is the selected one, the Auto segment no longer.
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Semantics && w.properties.label == 'Manual' && w.properties.selected == true,
+        ),
+        findsOneWidget,
+        reason: 'the toggle now shows Manual selected',
+      );
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Semantics && w.properties.label == 'Auto' && w.properties.selected == true,
+        ),
+        findsNothing,
+        reason: 'and Auto is no longer selected',
+      );
 
-      // Still auto: when the floor passes to Person 2, the pin gives way.
+      // The floor passes to Person 2 — but a manual pin does not give way to the
+      // room the way an auto pin would.
       state.debugApplyRoster(Roster(selfId: 'me', rows: [me, person('0'), person('1'), person('2', speaking: true)]));
       await tester.pump();
-      expect(find.text('Person 2'), findsNWidgets(2), reason: 'auto overrode the pin');
-      expect(find.text('Auto'), findsOneWidget, reason: 'and never left auto mode');
+      expect(find.text('Person 1'), findsNWidgets(2), reason: 'the manual pin held the big view');
+      expect(find.text('Person 2'), findsOneWidget, reason: 'the speaker stayed in the strip, it did not take the big view');
       await tester.pump(const Duration(seconds: 2)); // flush the cluster debounce
+      semantics.dispose();
     });
 
     testWidgets('auto never enlarges yourself for talking', (tester) async {
