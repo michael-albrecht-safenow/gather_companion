@@ -462,6 +462,15 @@ void main() {
 
       expect(rigs, hasLength(2),
           reason: 'exactly one rebuild attempt, then it stands down');
+      // One produce on the fresh session, not two: the rebuild's own republish is
+      // the single retry, so the heal must not issue a second produce the fresh
+      // session would also refuse.
+      final retried = rigs[1]
+          .node()
+          .sent
+          .where((f) => f.method == 'produce' && f.args['tag'] == 'audio');
+      expect(retried, hasLength(1),
+          reason: 'the heal retries the produce exactly once, no duplicate');
       expect(detail, isNotNull);
       expect(call.state.detail, contains('has not picked up'));
       expect(call.state.publishingAudio, isFalse);

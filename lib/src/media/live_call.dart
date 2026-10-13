@@ -309,9 +309,11 @@ class LiveCall implements Call {
         _log('call: SFU refused bad-auth — rebuilding to mint a fresh token (#57)');
         try {
           // `_rebuild`, not the public `rebuild`: we are already inside the
-          // serialise job, so taking the lock again would deadlock.
-          await _rebuild();
-          return await _publish(tag);
+          // serialise job, so taking the lock again would deadlock. It republishes
+          // this tag onto the fresh session itself, so we return *that* result —
+          // a second `_publish(tag)` here would be a duplicate produce the fresh
+          // session also refuses on a still-bad token.
+          return await _rebuild(report: tag);
         } finally {
           _authHealing = false;
         }
@@ -569,19 +571,32 @@ class LiveCall implements Call {
   /// *inside* a `_serialise` job already: calling the public [rebuild] from there
   /// would queue behind the job it is part of and deadlock. This takes no lock,
   /// so it may only be called from a path that already holds one.
-  Future<void> _rebuild() async {
+  ///
+  /// [report] names the track whose republish result the caller wants back — the
+  /// bad-auth heal passes the tag it was trying to publish, because the republish
+  /// below *is* its single retry: a second `_publish(tag)` on the fresh session
+  /// would send a duplicate produce (refused twice on a still-bad token). Returns
+  /// that tag's detail (`null` on success), or `null` when nobody is asking.
+  Future<String?> _rebuild({SfuTag? report}) async {
     // Nothing to rebuild: no session, nobody to hear, nothing to send. The next
     // cluster or tap builds one from scratch, which is the right amount of work.
     if (_sfu == null && _listeningTo.isEmpty && !_wantMic && !_wantCamera) {
-      return;
+      return null;
     }
     _log('call: rebuilding the media session after an external teardown');
     // `_start` disposes the stale session, opens fresh transports, and replays
     // the allow list, the conversation and the subscriptions — but not our
     // producers, since only this class holds the tracks to put back.
     await _start();
-    if (_wantMic) await _publish(SfuTag.audio);
-    if (_wantCamera) await _publish(SfuTag.video);
+    String? audioDetail;
+    String? videoDetail;
+    if (_wantMic) audioDetail = await _publish(SfuTag.audio);
+    if (_wantCamera) videoDetail = await _publish(SfuTag.video);
+    return switch (report) {
+      SfuTag.audio => audioDetail,
+      SfuTag.video || SfuTag.screen => videoDetail,
+      null => null,
+    };
   }
 
   @override
