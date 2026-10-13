@@ -157,7 +157,8 @@ finds them:
   big view to the scenario.
 - **A face** — grid tiles key `ValueKey(<tile.id>)`; in the big view the strip
   tiles key `ValueKey('strip-<tile.id>')` and the enlarged face
-  `ValueKey('big-<tile.id>')`. Tapping a face enlarges (manual) or pins it (auto).
+  `ValueKey('big-<tile.id>')`. Tapping a face enlarges it (manual); tapping in
+  auto switches to manual and watches that face.
 - **`Everyone`** — the return button (`_OverviewButton`, label `"Everyone"`) back
   to the grid.
 

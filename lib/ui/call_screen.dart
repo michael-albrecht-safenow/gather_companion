@@ -46,7 +46,7 @@ import 'person_avatar.dart';
 ///
 /// In [manual] the person looking picks: tap a face to enlarge it, the return
 /// button to go back. In [auto] the view follows whoever is talking, and a tap
-/// only pins a face until the next speaker takes the floor. The toggle in the
+/// on a face leaves auto for manual to watch that person. The toggle in the
 /// header flips between the two, over and over.
 enum SpotlightMode { manual, auto }
 
@@ -161,9 +161,11 @@ class _CallScreenState extends State<CallScreen> {
 
   /// How the spotlight is chosen, and the state each side of the toggle keeps.
   ///
-  /// [_manualId] is the face the person tapped in manual mode. [_autoPinned] is a
-  /// tap in auto mode — a temporary pin that the next promoted speaker overrides
-  /// without the mode changing. Only one is live at a time, decided by [_mode].
+  /// [_manualId] is the face the person tapped in manual mode. [_autoPinned] is
+  /// the big view carried across when the toggle flips to auto — a temporary pin
+  /// that the next promoted speaker overrides without the mode changing. (A tap
+  /// in auto no longer pins; it switches to manual.) Only one is live at a time,
+  /// decided by [_mode].
   SpotlightMode _mode = SpotlightMode.manual;
   String? _manualId;
   String? _autoPinned;
