@@ -37,6 +37,7 @@ class CallState {
     this.publishingVideo = false,
     this.publishingScreen = false,
     this.participants = const [],
+    this.connecting = const {},
     this.detail,
   });
 
@@ -49,6 +50,14 @@ class CallState {
   /// could no longer stand in. The screen that draws video reaches for
   /// `LiveCall.streamFor` instead, which is the same split `localStream` uses.
   final List<CallParticipant> participants;
+
+  /// srcIds of peers the SFU is still placing — subscribed, no media address
+  /// yet. Not participants (they carry no track), and not the same as somebody
+  /// sitting silent: these are mid-connect. The tiles for them read
+  /// "connecting…" so a walk-up colleague is not mistaken for a quiet one and
+  /// nobody restarts waiting on a peer the session is already chasing. Sourced
+  /// from `SfuSession.connectingPeers`.
+  final Set<String> connecting;
 
   /// Whether the room is actually receiving each track, as opposed to us merely
   /// having it open.
@@ -89,6 +98,7 @@ class CallState {
     bool? publishingVideo,
     bool? publishingScreen,
     List<CallParticipant>? participants,
+    Set<String>? connecting,
     String? detail,
     bool clearDetail = false,
   }) =>
@@ -98,6 +108,7 @@ class CallState {
         publishingVideo: publishingVideo ?? this.publishingVideo,
         publishingScreen: publishingScreen ?? this.publishingScreen,
         participants: participants ?? this.participants,
+        connecting: connecting ?? this.connecting,
         detail: clearDetail ? null : (detail ?? this.detail),
       );
 

@@ -127,10 +127,69 @@ void main() {
         expect(rig.node().has('consume-request'), isFalse);
 
         rig.addresses[them] = nodeA;
-        clock.elapse(const Duration(seconds: 11));
+        clock.elapse(const Duration(seconds: 2));
         clock.flushMicrotasks();
 
         expect(rig.node().has('consume-request'), isTrue);
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('retries fast on the first miss, not on a flat ten-second clock', () {
+      // The walk-up defect (issue #65): a colleague whose own client is still
+      // registering answers one `addrFound:false`, and the old flat ten-second
+      // retry was slower than a person's patience — they restarted into the same
+      // wait, which only re-armed the same ten seconds. The first re-ask now
+      // lands about a second later, inside the window their client needs, so
+      // waiting beats restarting.
+      fakeAsync((clock) {
+        rig.addresses.remove(them);
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        expect(rig.node().has('consume-request'), isFalse);
+
+        rig.addresses[them] = nodeA;
+
+        clock.elapse(const Duration(milliseconds: 500));
+        clock.flushMicrotasks();
+        expect(rig.node().has('consume-request'), isFalse,
+            reason: 'the first retry waits ~1s, it does not busy-loop');
+
+        clock.elapse(const Duration(milliseconds: 700));
+        clock.flushMicrotasks();
+        expect(rig.node().has('consume-request'), isTrue,
+            reason: 'the first retry lands about a second after the miss, '
+                'not at ten');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('an unplaced peer is reported as connecting until it lands', () {
+      // Feeds the "connecting…" tile: the UI tells a mid-connect walk-up apart
+      // from somebody sitting silent off this set, so nobody restarts waiting on
+      // a peer the retry is already chasing.
+      fakeAsync((clock) {
+        rig.addresses.remove(them);
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        expect(rig.session.connectingPeers, {them},
+            reason: 'subscribed but unplaced — connecting, not silent');
+
+        rig.addresses[them] = nodeA;
+        clock.elapse(const Duration(seconds: 2));
+        clock.flushMicrotasks();
+        expect(rig.session.connectingPeers, isEmpty,
+            reason: 'placed now, so no longer connecting');
+
         rig.close().ignore();
         clock.elapse(const Duration(seconds: 1));
       });

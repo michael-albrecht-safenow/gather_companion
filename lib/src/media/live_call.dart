@@ -627,6 +627,11 @@ class LiveCall implements Call {
             sharingScreen: r.streams.containsKey(SfuTag.screen),
           ),
       ],
+      // Peers the router has not placed yet, carried alongside the participants
+      // they are not yet among. The session re-emits `remoteChanges` whenever
+      // this set moves, so a tile flips to "connecting…" and back without ever
+      // holding a stream of its own.
+      connecting: _sfu?.connectingPeers ?? const {},
     ));
   }
 
