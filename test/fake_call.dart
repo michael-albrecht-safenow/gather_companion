@@ -106,6 +106,15 @@ class FakeCall implements Call {
   @override
   Future<void> rebuild() async => rebuilds++;
 
+  /// How many times the "Pull session over to this app" button fired (issue #67).
+  int pulls = 0;
+
+  @override
+  Future<String?> pullSessionOver() async {
+    pulls++;
+    return null;
+  }
+
   @override
   Future<void> dispose() async {
     await _states.close();

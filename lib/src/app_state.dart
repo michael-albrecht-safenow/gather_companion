@@ -1581,6 +1581,19 @@ class AppState extends ChangeNotifier {
     return failed;
   }
 
+  /// Forcibly reclaim the call onto this device — the "Pull session over to this
+  /// app" button (issue #67). Mirrors [setMicOn]: resolve the call, await the
+  /// reclaim, refresh both banner sites, return the detail sentence (null on
+  /// success). The `call.states.listen` wiring already republishes on the state
+  /// change, so the banner lowers on its own when the reclaim succeeds.
+  Future<String?> pullSessionOver() async {
+    final call = _callOrNull();
+    if (call == null) return 'Not connected to Gather.';
+    final failed = await call.pullSessionOver();
+    notifyListeners();
+    return failed;
+  }
+
   Future<void> switchCamera() async {
     await _call?.switchCamera();
     notifyListeners();

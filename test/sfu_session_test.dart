@@ -366,6 +366,25 @@ void main() {
       );
     });
 
+    test('clearDisplaced lets publishing resume — the reclaim button (#67)',
+        () async {
+      await rig.session.start();
+      await rig.session.publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio);
+      for (var i = 0; i < 3; i++) {
+        rig.node().push('double-connected', const {});
+      }
+      await settle();
+      expect(rig.session.displaced, isTrue);
+
+      // The deliberate "new session" the person asks for by tapping Pull session
+      // over: the stand-down lifts and the next publish is no longer refused.
+      rig.session.clearDisplaced();
+      expect(rig.session.displaced, isFalse);
+      await rig.session
+          .publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio);
+      expect(rig.session.publishing(SfuTag.audio), isTrue);
+    });
+
     test('the server steering our quality is debounced, and applied once',
         () async {
       await rig.session.start();
@@ -972,6 +991,78 @@ void main() {
         rig.close().ignore();
         clock.elapse(const Duration(seconds: 1));
       });
+    });
+  });
+
+  group('a silent SFU node change (issue #67)', () {
+    test('a send transport built on the old node is rebuilt on the new one',
+        () async {
+      await rig.session.start();
+      await rig.session
+          .publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio);
+      expect(rig.session.sfuAddr, nodeA);
+      final old = rig.node(nodeA);
+      expect(old.has('transport-create'), isTrue);
+
+      // The server silently starts answering with nodeB — no cordon, no socket
+      // drop — so `_sfuAddr` moves while the nodeA send transport survives.
+      rig.addresses[me] = nodeB;
+      await rig.session.debugSilentMove(nodeB);
+
+      // The next publish must not reuse the drifted transport: it tears the old
+      // one down and builds a fresh one on nodeB, where the next produce lands.
+      await rig.session
+          .publish(FakeTrack('video'), FakeStream(), tag: SfuTag.video);
+
+      final sendOnA = rig.device.transports
+          .firstWhere((t) => t.producerCallback != null);
+      expect(sendOnA.closed, isTrue,
+          reason: 'the transport bound to nodeA is torn down, not reused');
+      expect(rig.node(nodeB).has('transport-create'), isTrue,
+          reason: 'a fresh send transport is created on the node we moved to');
+      expect(rig.node(nodeB).has('produce'), isTrue,
+          reason: 'the produce lands on the current node');
+    });
+
+    test(
+        'a produce refused "no such transport" drops the send path and asks to '
+        'republish, exactly once', () async {
+      await rig.session.start();
+      // The node refuses the first produce the way it does after a silent move:
+      // the transport the server built is on a node it no longer owns.
+      rig.node(nodeA).failingWith['produce'] =
+          'produce refused: no such transport';
+      final before = rig.republishes;
+
+      await rig.session
+          .publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio)
+          .catchError((_) {});
+      // The forced rebuild is deferred to a microtask, past the produce task.
+      await Future<void>.delayed(Duration.zero);
+
+      expect(rig.session.publishing(SfuTag.audio), isFalse,
+          reason: 'the refused producer is not held');
+      expect(rig.republishes, before + 1,
+          reason: 'the owner is asked to put its tracks back, once — the stale '
+              'transport does not also fire the never-connected watchdog');
+      final firstSend = rig.device.transports
+          .firstWhere((t) => t.producerCallback != null);
+      expect(firstSend.closed, isTrue,
+          reason: 'the stale send transport is torn down');
+
+      // The move has settled: the node stops refusing, and the republish (which
+      // in production comes from LiveCall) now lands a fresh transport + produce.
+      rig.node(nodeA).failingWith.remove('produce');
+      await rig.session
+          .publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio);
+
+      expect(rig.session.publishing(SfuTag.audio), isTrue,
+          reason: 'the rebuilt send path publishes on the current node');
+      final creates = rig.node(nodeA).sent
+          .where((f) => f.method == 'transport-create')
+          .length;
+      expect(creates, greaterThanOrEqualTo(2),
+          reason: 'a second, fresh send transport was created after the drop');
     });
   });
 }

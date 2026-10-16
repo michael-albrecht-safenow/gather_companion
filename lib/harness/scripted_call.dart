@@ -100,6 +100,9 @@ class ScriptedCall implements Call {
   Future<void> rebuild() async {}
 
   @override
+  Future<String?> pullSessionOver() async => null;
+
+  @override
   Future<void> dispose() async {
     await _states.close();
     await _speaking.close();

@@ -514,6 +514,20 @@ class _CallScreenState extends State<CallScreen> {
                   ],
                 ),
               ),
+              // The reclaim banner, over the top of the faces when another device
+              // has taken the call (issue #67). A top strip rather than the map
+              // pill, since the call screen has no banner of its own — this is
+              // where the person is looking when the room goes quiet.
+              if (widget.state.call.needsHandoff)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: SafeArea(
+                    bottom: false,
+                    child: _HandoffBanner(state: widget.state),
+                  ),
+                ),
             ],
           );
         },
@@ -1658,6 +1672,10 @@ class CallBanner extends StatelessWidget {
       listenable: state,
       builder: (context, _) {
         final t = context.tokens;
+        // Another device has the call, or the send path is stuck: the pill gives
+        // way to the reclaim banner (issue #67), which opens nothing — its one
+        // button pulls the session here rather than opening the call screen.
+        if (state.call.needsHandoff) return _HandoffBanner(state: state);
         // The call screen's own list, so the banner and the screen it opens can
         // never disagree about who is in the call.
         final (:title, :subtitle) = callBannerTextFor(state);
@@ -1838,6 +1856,124 @@ class _CallMark extends StatelessWidget {
         border: Border.all(color: t.ok.withValues(alpha: 0.3)),
       ),
       child: Icon(Icons.call_rounded, size: 20, color: t.ok),
+    );
+  }
+}
+
+/// The "Connection lost to another device" banner, with the one button that
+/// reclaims the call (issue #67).
+///
+/// Drawn in place of the normal pill on the map and as a top strip inside the
+/// open call screen, whenever [CallState.needsHandoff] is set — a single-device
+/// takeover the stuck-watch caught, a latched `displaced`, or any other stall
+/// that has left the room unable to hear or see us. Tapping the button runs
+/// [AppState.pullSessionOver], which clears the stand-down and rebuilds fresh
+/// transports on the current node; the banner lowers on its own when that
+/// succeeds, because the new call state carries `needsHandoff: false`.
+///
+/// Stateful for the same reason the control bar's `_run` is: a failed reclaim
+/// puts its sentence in the one snack bar the rest of the app uses, and that
+/// needs `mounted` and a `ScaffoldMessenger` from the element.
+class _HandoffBanner extends StatefulWidget {
+  const _HandoffBanner({required this.state});
+
+  final AppState state;
+
+  @override
+  State<_HandoffBanner> createState() => _HandoffBannerState();
+}
+
+class _HandoffBannerState extends State<_HandoffBanner> {
+  /// True while a reclaim is in flight, so a second tap cannot stack a second
+  /// rebuild behind the first.
+  bool _pulling = false;
+
+  Future<void> _pull() async {
+    if (_pulling) return;
+    setState(() => _pulling = true);
+    // Same contract as control_bar's `_run`: null is silent success, a sentence
+    // goes in the shared snack bar.
+    final failed = await widget.state.pullSessionOver();
+    if (!mounted) return;
+    setState(() => _pulling = false);
+    if (failed != null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(failed)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+      child: Material(
+        color: t.card,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(t.radius + 10),
+          side: BorderSide(color: t.border),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.phonelink_erase_rounded, size: 20, color: t.warn),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Connection lost to another device',
+                      style: TextStyle(
+                        fontSize: 14,
+                        height: 1.25,
+                        fontWeight: FontWeight.w600,
+                        color: t.foreground,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Material(
+                color: t.brand,
+                borderRadius: BorderRadius.circular(t.radius),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: _pulling ? null : _pull,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 44),
+                    child: Center(
+                      child: _pulling
+                          ? SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation(
+                                    t.primaryForeground),
+                              ),
+                            )
+                          : Text(
+                              'Pull session over to this app',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: t.primaryForeground,
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

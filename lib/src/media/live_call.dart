@@ -154,6 +154,13 @@ class LiveCall implements Call {
   /// still bad after the rebuild would rebuild-and-retry forever (#57).
   bool _authHealing = false;
 
+  /// Watches for a wanted track that has not reached the room for 5s, after
+  /// which it sets [CallState.needsHandoff] and the "Pull session over" banner
+  /// appears (issue #67). A single-device takeover does not latch `displaced`
+  /// until the third flapping notice, so this timer is what catches the ordinary
+  /// one-takeover case — and any other stall — before the sticky flag ever sets.
+  Timer? _handoffTimer;
+
   /// Serialises the whole thing. Two taps in quick succession would otherwise
   /// interleave a capture restart with a publish and produce on a dead track.
   Future<void> _work = Future.value();
@@ -183,6 +190,9 @@ class LiveCall implements Call {
           // rather than after a round trip to the SFU.
           await _engine.setAudioEnabled(false);
           _sfu?.pause(SfuTag.audio);
+          // A mute is not a stuck publish: drop any pending watch so it cannot
+          // raise the banner over a microphone the person turned off themselves.
+          _clearHandoffWatch();
           _emit(_state.copyWith(publishingAudio: false, clearDetail: true));
           return null;
         }
@@ -209,6 +219,7 @@ class LiveCall implements Call {
         if (!on) {
           await _engine.setVideoEnabled(false);
           _sfu?.pause(SfuTag.video);
+          _clearHandoffWatch();
           _emit(_state.copyWith(publishingVideo: false, clearDetail: true));
           return null;
         }
@@ -229,6 +240,7 @@ class LiveCall implements Call {
           // sender onto a track that is being torn down underneath it.
           await _sfu?.unpublish(SfuTag.screen);
           await _engine.stopScreenCapture();
+          _clearHandoffWatch();
           _emit(_state.copyWith(publishingScreen: false, clearDetail: true));
           return null;
         }
@@ -267,13 +279,16 @@ class LiveCall implements Call {
       }
     } on Object catch (error) {
       _log('call: publishing the screen failed: $error');
+      if (_sfu?.displaced ?? false) _emit(_state.copyWith(needsHandoff: true));
       // The broadcast is live and only the wire failed, so the button stays on
       // and the sentence says the room cannot see it yet — same stance as a
       // camera that captured but did not reach the SFU.
+      _armHandoffWatch();
       return _fail(SfuTag.screen,
           'You are sharing, but Gather has not picked up the screen yet.');
     }
 
+    _clearHandoffWatch();
     _emit(_state.copyWith(publishingScreen: true, clearDetail: true));
     return null;
   }
@@ -379,12 +394,18 @@ class LiveCall implements Call {
     } on Object catch (error) {
       _log('call: publishing ${tag.wire} failed: $error');
       if (_sfu?.displaced ?? false) {
+        // Sticky takeover: the banner's immediate trigger. The 5s watch is only
+        // for the case `displaced` has not latched yet.
+        _emit(_state.copyWith(needsHandoff: true));
         return _fail(
           tag,
           'Your Mac keeps taking this call back. Quit Gather there, then turn '
           'your microphone on again here.',
         );
       }
+      // Not displaced, but the wire refused: arm the stuck-watch so a publish
+      // that never recovers raises the banner after the grace window.
+      _armHandoffWatch();
       // A stale SFU token — the socket slept through a transport change and the
       // server now refuses every produce `bad auth / TokenVerificationFailed`,
       // which no restart-free path recovers on its own (#57). Rebuild the
@@ -412,6 +433,9 @@ class LiveCall implements Call {
           '${tag == SfuTag.audio ? 'audio' : 'video'} yet.');
     }
 
+    // The track reached the room, so there is nothing to hand off: cancel the
+    // watch and take the banner down if it was up.
+    _clearHandoffWatch();
     _emit(_state.copyWith(
       publishingAudio: tag == SfuTag.audio ? true : null,
       publishingVideo: tag == SfuTag.video ? true : null,
@@ -594,9 +618,12 @@ class LiveCall implements Call {
     final sfu = _sfu;
 
     if (sfu?.displaced ?? false) {
+      // Sticky displaced has latched — raise the "Pull session over" banner now,
+      // rather than waiting out the 5s stuck-watch the single-takeover case needs.
       _emit(_state.copyWith(
         publishingAudio: false,
         publishingVideo: false,
+        needsHandoff: true,
         detail: 'Your Mac keeps taking this call back. Quit Gather there, then '
             'turn your microphone on again here. You can still see and hear '
             'everyone in the meantime.',
@@ -604,6 +631,9 @@ class LiveCall implements Call {
       return;
     }
 
+    // The softer, first-notice advisory: Gather is merely also open on the Mac.
+    // Not a handoff prompt — nothing is stuck yet, and the 5s watch (or a later
+    // latch) is what escalates if it does not settle.
     _emit(_state.copyWith(
       detail: 'Gather is open on your Mac too. Quit it there if the sound '
           'starts jumping between them.',
@@ -630,6 +660,35 @@ class LiveCall implements Call {
     ));
   }
 
+  /// Start the 5s stuck-watch, unless it is already running (issue #67).
+  ///
+  /// Armed from every branch that fails to put a wanted track on the wire. The
+  /// timer re-checks *current* state when it fires rather than the state that
+  /// armed it — the same discipline as `SfuSession._scheduleSendHeal`, because a
+  /// republish can succeed in the window and a snapshot would then raise the
+  /// banner over a call that is already healthy again.
+  void _armHandoffWatch() {
+    if (_handoffTimer != null) return;
+    _handoffTimer = Timer(const Duration(seconds: 5), () {
+      _handoffTimer = null;
+      final stuck = (_wantMic && !_state.publishingAudio) ||
+          (_wantCamera && !_state.publishingVideo) ||
+          (_wantScreen && !_state.publishingScreen);
+      if (stuck) _emit(_state.copyWith(needsHandoff: true));
+    });
+  }
+
+  /// Cancel the stuck-watch, and lower the banner if it was up (issue #67).
+  ///
+  /// Called from every publish success and every path that puts a wanted track
+  /// down on purpose — a mute or a camera-off is not a stuck publish, and a
+  /// pulled-over session that succeeds should take the banner with it.
+  void _clearHandoffWatch() {
+    _handoffTimer?.cancel();
+    _handoffTimer = null;
+    if (_state.needsHandoff) _emit(_state.copyWith(needsHandoff: false));
+  }
+
   String _fail(SfuTag tag, String sentence) {
     _emit(_state.copyWith(detail: sentence));
     return sentence;
@@ -640,6 +699,8 @@ class LiveCall implements Call {
     _wantMic = false;
     _wantCamera = false;
     _wantScreen = false;
+    _handoffTimer?.cancel();
+    _handoffTimer = null;
     await _detach();
     await _sfu?.dispose();
     _sfu = null;
@@ -662,6 +723,18 @@ class LiveCall implements Call {
       return null;
     });
   }
+
+  @override
+  Future<String?> pullSessionOver() => _serialise(() async {
+        // Lower the banner up front — the person has answered it — and clear the
+        // sticky `displaced` stand-down so `publish` stops refusing. Then rebuild
+        // onto the current node and put our tracks back; the fresh session is the
+        // deliberate "new session" the takeover can only be undone by.
+        _clearHandoffWatch();
+        _emit(_state.copyWith(needsHandoff: false, clearDetail: true));
+        _sfu?.clearDisplaced();
+        return _rebuild();
+      });
 
   /// The rebuild itself, already holding the queue.
   ///
@@ -713,6 +786,8 @@ class LiveCall implements Call {
     await _engine.dispose();
     _voicePoll?.cancel();
     _voicePoll = null;
+    _handoffTimer?.cancel();
+    _handoffTimer = null;
     if (!_states.isClosed) await _states.close();
     if (!_speaking.isClosed) await _speaking.close();
   }

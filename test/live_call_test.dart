@@ -6,6 +6,7 @@
 /// testing the code and testing the test.
 library;
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
 import 'package:gather_companion/src/media/live_call.dart';
@@ -594,6 +595,132 @@ void main() {
       expect(call.state.publishingAudio, isFalse);
       // The hardware is live and only the wire failed, so the button stays on.
       expect(call.state.micOn, isTrue);
+    });
+  });
+
+  group('pulling the session over (issue #67)', () {
+    test('a publish stuck for 5s raises the handoff banner, then clears when it '
+        'recovers', () {
+      fakeAsync((clock) {
+        // A fresh call over a fresh rig, so the whole stuck-then-heal arc runs
+        // inside the virtual clock.
+        final localEngine = FakeCaptureEngine();
+        final localRig = Rig();
+        final localCall = LiveCall(
+          auth: GatherAuth(
+            credentials: const GatherCredentials(refreshToken: 'unused'),
+          ),
+          spaceId: spaceId,
+          srcId: me,
+          engine: localEngine,
+          buildSfu: () => localRig.session,
+          voice: VoiceActivity(hold: Duration.zero),
+        );
+
+        // Connect first, by walking into a conversation — that opens nodeA — so
+        // the refusal can be seeded before the first produce reaches it.
+        localCall.setListeningTo({them}).ignore();
+        clock.flushMicrotasks();
+
+        // The node refuses every produce: the mic is unmuted but the room never
+        // hears it, the ordinary "not picked up yet" stuck state.
+        localRig.node(nodeA).failingWith['produce'] = 'produce refused';
+        localCall.setMicOn(true).ignore();
+        clock.flushMicrotasks();
+
+        expect(localCall.state.micOn, isTrue);
+        expect(localCall.state.publishingAudio, isFalse);
+        expect(localCall.state.needsHandoff, isFalse,
+            reason: 'the 5s grace window has not passed yet');
+
+        clock.elapse(const Duration(seconds: 5));
+        clock.flushMicrotasks();
+        expect(localCall.state.needsHandoff, isTrue,
+            reason: 'a wanted track stuck for 5s raises the banner');
+
+        // The move settles: produce is accepted, the track is republished, and
+        // the banner lowers on the success. The fake builds its producer on the
+        // event queue, so a zero-length elapse is needed past the microtasks.
+        localRig.node(nodeA).failingWith.remove('produce');
+        localCall.setMicOn(true).ignore();
+        clock.elapse(Duration.zero);
+        clock.flushMicrotasks();
+        expect(localCall.state.publishingAudio, isTrue);
+        expect(localCall.state.needsHandoff, isFalse,
+            reason: 'a successful publish takes the banner down');
+
+        localCall.dispose().ignore();
+        localRig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('three double-connected notices raise the banner immediately, no wait',
+        () async {
+      await call.setMicOn(true);
+
+      for (var i = 0; i < 3; i++) {
+        rig.node().push('double-connected', const {});
+      }
+      await settle();
+      await settle();
+
+      expect(rig.session.displaced, isTrue);
+      // No 5s wait: the sticky latch sets the flag the moment it fires.
+      expect(call.state.needsHandoff, isTrue);
+    });
+
+    test('pullSessionOver clears displaced and republishes on a fresh session',
+        () async {
+      // Two rigs: the first latches displaced, the pull builds the second.
+      final rigs = <Rig>[];
+      final localEngine = FakeCaptureEngine();
+      final localCall = LiveCall(
+        auth: GatherAuth(
+          credentials: const GatherCredentials(refreshToken: 'unused'),
+        ),
+        spaceId: spaceId,
+        srcId: me,
+        engine: localEngine,
+        buildSfu: () {
+          final r = Rig();
+          rigs.add(r);
+          return r.session;
+        },
+        voice: VoiceActivity(hold: Duration.zero),
+      );
+      addTearDown(() async {
+        await localCall.dispose();
+        for (final r in rigs) {
+          await r.close();
+        }
+      });
+
+      await localCall.setMicOn(true);
+      await localCall.setCameraOn(true);
+      for (var i = 0; i < 3; i++) {
+        rigs[0].node().push('double-connected', const {});
+      }
+      await settle();
+      await settle();
+      expect(rigs[0].session.displaced, isTrue);
+      expect(localCall.state.needsHandoff, isTrue);
+
+      final detail = await localCall.pullSessionOver();
+      await settle();
+
+      expect(detail, isNull, reason: 'the reclaim succeeded');
+      expect(rigs, hasLength(2), reason: 'a fresh session was built');
+      expect(localCall.state.needsHandoff, isFalse,
+          reason: 'the banner is lowered once the session is reclaimed');
+      final produced = rigs[1]
+          .node()
+          .sent
+          .where((f) => f.method == 'produce')
+          .map((f) => f.args['tag'])
+          .toSet();
+      expect(produced, containsAll(<String>['audio', 'video']),
+          reason: 'both wanted tracks are republished onto the fresh node');
     });
   });
 

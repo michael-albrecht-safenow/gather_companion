@@ -81,6 +81,53 @@ void main() {
     });
   });
 
+  group('the handoff banner (issue #67)', () {
+    const handoff = CallState(needsHandoff: true);
+
+    testWidgets('replaces the map pill, titled, with the reclaim button',
+        (tester) async {
+      final call = FakeCall();
+      final state = AppState()
+        ..debugCall = handoff
+        ..debugAttachCall(call);
+      await tester.pumpWidget(MaterialApp(
+        theme: buildGatherTheme(),
+        home: Scaffold(body: CallBanner(state: state)),
+      ));
+      await tester.pump();
+
+      expect(find.text('Connection lost to another device'), findsOneWidget);
+      final button = find.text('Pull session over to this app');
+      expect(button, findsOneWidget);
+      // The ordinary "In a call" pill gives way entirely.
+      expect(find.textContaining('In a call'), findsNothing);
+
+      await tester.tap(button);
+      await tester.pump();
+      expect(call.pulls, 1, reason: 'the button reclaims the session');
+    });
+
+    testWidgets('appears inside the open call screen too', (tester) async {
+      final call = FakeCall();
+      final state = AppState()
+        ..debugCall = handoff
+        ..debugAttachCall(call);
+      await tester.pumpWidget(MaterialApp(
+        theme: buildGatherTheme(),
+        home: CallScreen(state: state, buildTile: inertTile),
+      ));
+      await tester.pump();
+
+      expect(find.text('Connection lost to another device'), findsOneWidget);
+      final button = find.text('Pull session over to this app');
+      expect(button, findsOneWidget);
+
+      await tester.tap(button);
+      await tester.pump();
+      expect(call.pulls, 1);
+    });
+  });
+
   group('the banner says who you are with', () {
     test('in every size of call, named or not', () {
       String both(List<String?> people) {
