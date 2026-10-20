@@ -187,6 +187,17 @@ class SfuSession {
   /// `consume-not-allowed`, that fills this.
   final Set<String> _consumeDenied = {};
 
+  /// Peer tags the SFU refused with `no such producer`, keyed `srcId|tag.wire`
+  /// — the same key as [_consumers].
+  ///
+  /// A stale producer id: the peer republished that tag across a reconnect, so
+  /// the id the client holds from the last announce is gone and the `consume`
+  /// is refused outright. Distinct from [_consumeDenied] (a whole-peer
+  /// `consume-not-allowed`): here the peer is otherwise live — typically video
+  /// is still flowing — and only the one tag is dead. The heal is therefore a
+  /// re-announce of that peer, not a rebuild, so the working tags never glitch.
+  final Set<String> _producerGone = {};
+
   /// Peers we want but the router could not place yet. See [_addressFor].
   final Set<String> _awaitingAddr = {};
   Timer? _addrRetry;
@@ -1199,37 +1210,54 @@ class SfuSession {
     _recvHealTimer = Timer(_recvHealBackoff, () async {
       _recvHealTimer = null;
 
-      // Drop denials from peers we no longer subscribe to. unsubscribe() leaves
-      // the denial behind, so without this a stale denial from a departed peer
-      // reads as evidence that the current cluster is deaf, and could rebuild a
-      // healthy in-flight receive path for the peer that replaced it.
+      // Drop faults from peers we no longer subscribe to. unsubscribe() leaves
+      // them behind, so without this a stale denial — or a stale-producer tag —
+      // from a departed peer reads as evidence that the current cluster is sick,
+      // and could rebuild a healthy in-flight receive path for the peer that
+      // replaced it. Also drop any stale-producer tag we have since consumed.
       _consumeDenied.removeWhere((srcId) => !_subscribed.contains(srcId));
+      _producerGone.removeWhere((key) {
+        final srcId = key.split('|').first;
+        return !_subscribed.contains(srcId) || _consumers.containsKey(key);
+      });
 
-      // Re-evaluate against current state, not the state that armed us. Nothing
-      // to heal if we were stopped or no subscribed peer is stranded — a peer is
-      // stranded only when it was denied and we still hold no consumer for it, so
-      // a denial that has since been consumed, or one left by a departed peer,
-      // does not count. Reset the backoff and stand down.
+      // Re-evaluate against current state, not the state that armed us. Two
+      // faults bring us here: a stranded peer (denied, and we hold no consumer
+      // for it at all) and a stale-producer tag (the peer is otherwise live —
+      // typically video is flowing — but one tag was refused `no such
+      // producer`). Nothing to heal if we were stopped or neither holds; reset
+      // the backoff and stand down.
       final stranded = _strandedPeers();
-      if (_stopped || stranded.isEmpty) {
+      final staleTags = _staleTagPeers();
+      if (_stopped || (stranded.isEmpty && staleTags.isEmpty)) {
         _recvHealBackoff = const Duration(seconds: 5);
         return;
       }
 
-      // A fully deaf room (no consumer at all) takes the global rebuild, which
-      // also clears a recv transport that came up poisoned. A partial failure —
-      // the room has sound and only some peers are stranded — re-requests just
-      // those peers, leaving every working transport and consumer untouched.
-      if (_consumers.isEmpty) {
-        await _rebuildReceive();
-      } else {
-        await _healStranded(stranded);
+      // Stranded peers: a fully deaf room (no consumer at all) takes the global
+      // rebuild, which also clears a recv transport that came up poisoned. A
+      // partial failure — the room has sound and only some peers are stranded —
+      // re-requests just those peers, leaving every working transport and
+      // consumer untouched.
+      if (stranded.isNotEmpty) {
+        if (_consumers.isEmpty) {
+          await _rebuildReceive();
+        } else {
+          await _healStranded(stranded);
+        }
+      }
+
+      // Stale-producer tags: re-announce the peer so the SFU resolves the live
+      // producer. This closes no consumer, so the peer's working tags never
+      // glitch.
+      if (staleTags.isNotEmpty) {
+        await _reannounceStaleTags(staleTags);
       }
 
       // Grow the backoff and re-arm. The heal re-issues consumes but does not
       // guarantee one succeeds, so the watchdog keeps trying for the life of the
-      // call; a successful consume that leaves no peer stranded is the only thing
-      // that cancels it.
+      // call; a successful consume that leaves nothing stranded and no stale tag
+      // is the only thing that cancels it.
       final next = _recvHealBackoff.inSeconds * 2;
       _recvHealBackoff = Duration(seconds: next > 30 ? 30 : next);
       _scheduleRecvHeal();
@@ -1248,6 +1276,37 @@ class SfuSession {
   Set<String> _strandedPeers() => _subscribed
       .where((srcId) => _consumeDenied.contains(srcId) && !_hasConsumer(srcId))
       .toSet();
+
+  /// Peers holding a stale-producer fault on some tag they still cannot consume.
+  ///
+  /// The per-tag twin of [_strandedPeers], for issue #61: a peer whose video is
+  /// flowing but whose audio was refused `no such producer` is not stranded —
+  /// [_hasConsumer] is true for it — yet one tag is still dead. Filtering on
+  /// [_subscribed] and a missing consumer for the exact `srcId|tag` key keeps a
+  /// departed peer's, or an already-resolved, fault from counting.
+  Set<String> _staleTagPeers() => _producerGone
+      .where((key) =>
+          _subscribed.contains(key.split('|').first) &&
+          !_consumers.containsKey(key))
+      .map((key) => key.split('|').first)
+      .toSet();
+
+  /// Re-request peers whose consume was refused `no such producer`.
+  ///
+  /// Forces a fresh full-state `consume-try` so the SFU re-resolves the live
+  /// producer id for the dead tag. Unlike [_healStranded] this closes no
+  /// consumer — the peer's other tags keep flowing, and the reconcile that
+  /// follows leaves an unchanged video producer in place (see [_reconcileNow]).
+  /// The fault is left in [_producerGone] deliberately: a built consumer is what
+  /// clears it (in [_consume]); if the re-announce still cannot be consumed the
+  /// peer stays in the set and the watchdog climbs.
+  Future<void> _reannounceStaleTags(Set<String> srcIds) async {
+    _log('sfu: ${srcIds.length} peer(s) hold a stale producer id; '
+        're-announcing to re-resolve the live producer');
+    for (final srcId in srcIds) {
+      unawaited(_requestPeer(srcId));
+    }
+  }
 
   /// Re-request the receive path for a handful of stranded peers.
   ///
@@ -1324,9 +1383,10 @@ class SfuSession {
         unawaited(_requestPeer(srcId));
       }
 
-      // Next watchdog fire re-evaluates against denials that arrive after the
+      // Next watchdog fire re-evaluates against faults that arrive after the
       // rebuild, not the ones that triggered it.
       _consumeDenied.clear();
+      _producerGone.clear();
     } finally {
       _healing = false;
     }
@@ -1768,6 +1828,17 @@ class SfuSession {
       try {
         await _consume(srcId, tag);
         changed = true;
+      } on SfuException catch (error) {
+        _log('sfu: consuming ${tag.wire} from $srcId failed: $error');
+        // A stale producer id after the peer republished this tag across a
+        // reconnect (issue #61). The refusal is terminal on its own — no new
+        // `consume-try` need follow — so record the one dead tag and let the
+        // watchdog re-announce the peer. Kept narrow: a timeout or any other
+        // failure must not start an unbounded re-announce loop.
+        if (error.message.contains('no such producer')) {
+          _producerGone.add(key);
+          _scheduleRecvHeal();
+        }
       } on Object catch (error) {
         _log('sfu: consuming ${tag.wire} from $srcId failed: $error');
       }
@@ -1832,7 +1903,8 @@ class SfuSession {
       // backoff only once nothing is left stranded, so a later cascade starts
       // from the full grace window rather than mid-climb.
       _consumeDenied.remove(srcId);
-      if (_strandedPeers().isEmpty) {
+      _producerGone.remove(key);
+      if (_strandedPeers().isEmpty && _staleTagPeers().isEmpty) {
         _recvHealTimer?.cancel();
         _recvHealTimer = null;
         _recvHealBackoff = const Duration(seconds: 5);
@@ -1943,7 +2015,12 @@ class SfuSession {
   }
 
   bool _closeConsumer(String srcId, SfuTag tag) {
-    final consumer = _consumers.remove('$srcId|${tag.wire}');
+    final key = '$srcId|${tag.wire}';
+    // Whatever reconciled this tag — a close, a mute, a producer-id change —
+    // settles the stale-producer fault too, so it must not keep healing. Done
+    // unconditionally because the #61 case holds no consumer to remove.
+    _producerGone.remove(key);
+    final consumer = _consumers.remove(key);
     if (consumer == null) return false;
     consumer.close();
     return true;
@@ -2171,6 +2248,7 @@ class SfuSession {
     _recvHealTimer?.cancel();
     _recvHealTimer = null;
     _consumeDenied.clear();
+    _producerGone.clear();
     _recvHealBackoff = const Duration(seconds: 5);
     _healing = false;
     _sendHealTimer?.cancel();

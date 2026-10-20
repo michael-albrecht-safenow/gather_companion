@@ -936,6 +936,84 @@ void main() {
         clock.elapse(const Duration(seconds: 1));
       });
     });
+
+    int consumesFor(FakeSignalling node, String srcId, String tag) => node.sent
+        .where((f) =>
+            f.method == 'consume' &&
+            f.args['srcId'] == srcId &&
+            f.args['tag'] == tag)
+        .length;
+
+    test('re-announces an audio tag refused "no such producer", leaving video',
+        () {
+      // Issue #61: across a reconnect the peer republishes audio, so the id the
+      // client holds goes stale and the audio `consume` is refused `no such
+      // producer`. Video is unaffected. The old code only logged the refusal, so
+      // the peer stayed audible-dead-but-visible for the whole call. The per-tag
+      // heal must re-announce the peer to re-resolve the live producer, without
+      // tearing down the working video consumer.
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+
+        // Refuse audio with a stale-producer error while video consumes fine.
+        var refuseAudio = true;
+        rig.node().answer('consume', (args) {
+          if (args['tag'] == 'audio' && refuseAudio) {
+            throw const SfuException('consume refused: no such producer');
+          }
+          return {
+            'id': 'consumer-${args['srcId']}-${args['tag']}',
+            'producerId': rig.producerIds['${args['srcId']}|${args['tag']}'],
+            'producerPaused': false,
+            'rtpParameters': Rig.rtpParameters,
+          };
+        });
+
+        rig.announce(them, {'audio': 'p-audio', 'video': 'p-video'});
+        clock.flushMicrotasks();
+
+        // Visible but audible-dead: video consumes, audio does not.
+        expect(rig.session.remotes.single.streams.keys, [SfuTag.video],
+            reason: 'audio was refused no-such-producer, video is fine');
+        expect(consumesFor(rig.node(), them, 'audio'), 1);
+        expect(consumesFor(rig.node(), them, 'video'), 1);
+
+        // The grace window passes. Despite the live video consumer, the watchdog
+        // must re-request this peer to force a fresh announce.
+        clock.elapse(const Duration(seconds: 5));
+        clock.flushMicrotasks();
+        expect(consumeRequestsFor(rig.node(), them), greaterThan(0),
+            reason: 'the stale audio tag must be re-announced');
+
+        // The fresh announce carries a live audio producer; audio now consumes.
+        refuseAudio = false;
+        rig.announce(them, {'audio': 'p-audio-2', 'video': 'p-video'});
+        clock.flushMicrotasks();
+
+        expect(rig.session.remotes.single.streams.keys,
+            containsAll(<SfuTag>[SfuTag.audio, SfuTag.video]),
+            reason: 'audio recovered against the fresh producer id');
+
+        // Video never glitched: its producer id did not change, so it was never
+        // re-consumed.
+        expect(consumesFor(rig.node(), them, 'video'), 1,
+            reason: 'the working video consumer must be left untouched');
+
+        // Stand-down: nothing stale left, so no further re-requests fire.
+        final asked = consumeRequestsFor(rig.node(), them);
+        clock.elapse(const Duration(seconds: 40));
+        clock.flushMicrotasks();
+        expect(consumeRequestsFor(rig.node(), them), asked,
+            reason: 'a recovered audio tag stops the watchdog');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
   });
 
   group('send-side stall', () {
