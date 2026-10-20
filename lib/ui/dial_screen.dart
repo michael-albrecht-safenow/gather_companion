@@ -26,6 +26,7 @@
 /// because a stranger took a step.
 library;
 
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -72,6 +73,12 @@ class _DialScreenState extends State<DialScreen> with SingleTickerProviderStateM
     duration: const Duration(milliseconds: 650),
   );
 
+  /// Ticks the planned-meeting countdowns on the conversation cards. The directory
+  /// signal fires on roster churn, not on the clock, so without this a `free in 35min`
+  /// would sit stale until something else happened to rebuild the list. 30s is finer
+  /// than the minute it renders, and the setState is a no-op repaint while off-screen.
+  Timer? _clock;
+
   AppState get state => widget.state;
 
   @override
@@ -83,6 +90,9 @@ class _DialScreenState extends State<DialScreen> with SingleTickerProviderStateM
     // The list already rebuilds on directory churn; re-filtering on each keystroke
     // is the same cheap setState.
     _search.addListener(() => setState(() => _query = _search.text.trim()));
+    _clock = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && widget.visible) setState(() {});
+    });
     if (widget.visible) _warp.forward(from: 0);
   }
 
@@ -96,6 +106,7 @@ class _DialScreenState extends State<DialScreen> with SingleTickerProviderStateM
   @override
   void dispose() {
     state.directoryChanges.removeListener(_onDirectoryChanged);
+    _clock?.cancel();
     _search.dispose();
     _warp.dispose();
     super.dispose();
@@ -386,6 +397,10 @@ class _MeetingCard extends StatelessWidget {
         ? 'Finding directions…'
         : '${meeting.members.length + (meeting.includesMe ? 1 : 0)} people'
             '${meeting.includesMe ? ' · you' : ''}';
+    // A live planned meeting — two or more members' calendars agreeing on an end — gets
+    // its remaining time under the head count. Null while resolving, or for a plain
+    // cluster nobody has a shared invite for. See AppState.meetingTimeLabelFor.
+    final timeLabel = busy ? null : state.meetingTimeLabelFor(meeting);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(kTextGutter, 4, kTextGutter, 8),
@@ -413,6 +428,10 @@ class _MeetingCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(subtitle, style: TextStyle(color: t.mutedForeground, fontSize: 13)),
+                      if (timeLabel != null) ...[
+                        const SizedBox(height: 4),
+                        _MeetingTimeBadge(label: timeLabel),
+                      ],
                     ],
                   ),
                 ),
@@ -426,6 +445,39 @@ class _MeetingCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The remaining-time line on a live planned meeting: `free in 35min`, an end time like
+/// `15:45`, or `+5min over`. The same small amber dot [_PresenceBadge] uses marks it as
+/// a clock-driven state rather than a typed one.
+class _MeetingTimeBadge extends StatelessWidget {
+  const _MeetingTimeBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 7,
+          height: 7,
+          decoration: const BoxDecoration(color: Color(0xFFF59E0B), shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: t.mutedForeground, fontSize: 13),
+          ),
+        ),
+      ],
     );
   }
 }

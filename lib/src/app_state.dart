@@ -97,6 +97,94 @@ Duration? freeInFromEvents(List<GoogleEvent> events, DateTime now) {
   return busyUntil?.difference(now);
 }
 
+/// The planned end of the meeting a cluster is sitting in, inferred from its members'
+/// calendars, or null when nothing links them. Each entry in [memberEvents] is one
+/// co-present member's cached timed events; a shared invite shows up as the same end
+/// time carried by two or more of them.
+///
+/// Why end-time agreement and not an attendee list: the colleague calendars we can read
+/// carry an event's times but not reliably its guest list, and two people sitting in
+/// one room whose calendars both end at 15:45 are, to any useful degree, in the same
+/// meeting. One vote per member per end keeps a single member's own double-booking from
+/// outvoting the room.
+///
+/// Overtime is deliberately in scope. An event whose end has just passed still counts
+/// while it is within [grace] of now, so a meeting that runs long keeps its line (now a
+/// `+Nmin over`) instead of vanishing the instant the invite ends. A still-running
+/// invite always beats a spent one; among running invites the one the most members
+/// share wins, ties to the later end; among only-spent ones, the most recent end.
+@visibleForTesting
+DateTime? plannedMeetingEnd(
+  List<List<GoogleEvent>> memberEvents,
+  DateTime now, {
+  Duration grace = const Duration(minutes: 30),
+}) {
+  final floor = now.subtract(grace);
+  final votes = <DateTime, int>{};
+  for (final events in memberEvents) {
+    // A set so a member who has the same end on two calendar rows still votes once.
+    final ends = <DateTime>{};
+    for (final e in events) {
+      if (e.allDay) continue;
+      // Started by now and not yet past the overtime grace: the invite that is either
+      // running or only just over.
+      if (!e.startsAt.isAfter(now) && e.endsAt.isAfter(floor)) ends.add(e.endsAt);
+    }
+    for (final end in ends) {
+      votes.update(end, (n) => n + 1, ifAbsent: () => 1);
+    }
+  }
+
+  DateTime? best;
+  var bestCount = 0;
+  votes.forEach((end, count) {
+    if (count < 2) return;
+    if (best == null) {
+      best = end;
+      bestCount = count;
+      return;
+    }
+    final running = !end.isBefore(now);
+    final bestRunning = !best!.isBefore(now);
+    if (running != bestRunning) {
+      // A running invite outranks a spent one no matter the vote count.
+      if (running) {
+        best = end;
+        bestCount = count;
+      }
+    } else if (count > bestCount || (count == bestCount && end.isAfter(best!))) {
+      best = end;
+      bestCount = count;
+    }
+  });
+  return best;
+}
+
+/// The meeting-time line the Warp Dial draws on a live planned meeting, given its
+/// planned [end] and [now]. Adaptive to what is left:
+///   * running, under an hour left -> `free in 35min`, a counting-down remainder;
+///   * running, an hour or more left -> `15:45`, the bare end time, since a long
+///     countdown is noise;
+///   * past the end -> `+5min over`, the overtime counting up.
+/// A sub-minute remainder still reads `free in 1min` rather than `free in 0min`, and
+/// the overtime floor is likewise a minute so the flip from countdown to overtime never
+/// shows `+0min over`.
+@visibleForTesting
+String meetingTimeLabel(DateTime end, DateTime now) {
+  final remaining = end.difference(now);
+  if (remaining.inSeconds > 0) {
+    if (remaining >= const Duration(hours: 1)) {
+      final h = end.hour.toString().padLeft(2, '0');
+      final m = end.minute.toString().padLeft(2, '0');
+      return '$h:$m';
+    }
+    final mins = remaining.inMinutes < 1 ? 1 : remaining.inMinutes;
+    return 'free in ${mins}min';
+  }
+  final over = now.difference(end).inMinutes;
+  return '+${over < 1 ? 1 : over}min over';
+}
+
 class AppState extends ChangeNotifier {
   // A named parameter cannot be a private initializing formal, so the fields are
   // assigned the long way round.
@@ -2881,6 +2969,15 @@ class AppState extends ChangeNotifier {
   }
 
   Duration? _freeInFor(Contact c) {
+    final events = _cachedEventsFor(c);
+    return events == null ? null : freeInFromEvents(events, _now());
+  }
+
+  /// This contact's cached timed calendar events for right now, or null when we hold no
+  /// calendar for them or the cache is cold. A missing or stale cache is warmed in the
+  /// background and surfaces on the next rebuild — the same fill-in-later contract
+  /// [presenceFor] documents, shared with [meetingTimeLabelFor].
+  List<GoogleEvent>? _cachedEventsFor(Contact c) {
     if (!_googleConnected) return null;
     final calendarId = _calendarKeyFor(c.label, c.calendarEmail);
     if (calendarId == null) return null;
@@ -2893,7 +2990,26 @@ class AppState extends ChangeNotifier {
       return null;
     }
 
-    return freeInFromEvents(cached, _now());
+    return cached;
+  }
+
+  /// The live planned-meeting line for a Warp Dial conversation card — `free in 35min`,
+  /// an end time like `15:45`, or `+5min over` — or null when the cluster is not a
+  /// planned meeting we can date. A meeting qualifies only when two or more of its
+  /// present members' calendars agree on an end (see [plannedMeetingEnd]); a lone
+  /// colleague's block is never enough, matching the issue's "at least two invitees
+  /// co-present" rule. Members whose calendar is cold are warmed in the background by
+  /// [_cachedEventsFor], so the line fills in on a later rebuild rather than blocking.
+  String? meetingTimeLabelFor(Meeting meeting) {
+    if (!_googleConnected) return null;
+    final memberEvents = <List<GoogleEvent>>[];
+    for (final member in meeting.members) {
+      final events = _cachedEventsFor(member);
+      if (events != null) memberEvents.add(events);
+    }
+    if (memberEvents.length < 2) return null;
+    final end = plannedMeetingEnd(memberEvents, _now());
+    return end == null ? null : meetingTimeLabel(end, _now());
   }
 
   /// The live-map room a read-only Google event points at, when its location is a
