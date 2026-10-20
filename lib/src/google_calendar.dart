@@ -433,12 +433,17 @@ class GoogleCalendar {
   Future<List<GoogleEvent>> fetchEventsFor(
     String calendarId, {
     Duration window = const Duration(days: 7),
+    // How far back to reach. Default now, so the read is strictly upcoming. The
+    // meeting-time path asks for its overtime grace here so an invite whose end has
+    // just passed still comes back on a refresh instead of being dropped by `timeMin`
+    // (callers that only want upcoming events already filter `isPast`).
+    Duration lookback = Duration.zero,
   }) async {
     final token = await _accessTokenOrNull();
     if (token == null) throw const CalendarUnavailable();
 
     final now = _now();
-    final timeMin = now.toUtc().toIso8601String();
+    final timeMin = now.subtract(lookback).toUtc().toIso8601String();
     final timeMax = now.add(window).toUtc().toIso8601String();
     final endpoint = '$_calendarsBase/${Uri.encodeComponent(calendarId)}/events';
     final query = {

@@ -113,11 +113,17 @@ Duration? freeInFromEvents(List<GoogleEvent> events, DateTime now) {
 /// `+Nmin over`) instead of vanishing the instant the invite ends. A still-running
 /// invite always beats a spent one; among running invites the one the most members
 /// share wins, ties to the later end; among only-spent ones, the most recent end.
+/// How long past its end an invite still counts as the live meeting, shown as the
+/// `+Nmin over` overtime line. Shared by [plannedMeetingEnd] (which keeps a just-ended
+/// invite in the running) and the colleague calendar read (which reaches this far back
+/// so a refresh after the end still returns the invite instead of dropping it).
+const _meetingOvertimeGrace = Duration(minutes: 30);
+
 @visibleForTesting
 DateTime? plannedMeetingEnd(
   List<List<GoogleEvent>> memberEvents,
   DateTime now, {
-  Duration grace = const Duration(minutes: 30),
+  Duration grace = _meetingOvertimeGrace,
 }) {
   final floor = now.subtract(grace);
   final votes = <DateTime, int>{};
@@ -152,7 +158,16 @@ DateTime? plannedMeetingEnd(
         best = end;
         bestCount = count;
       }
-    } else if (count > bestCount || (count == bestCount && end.isAfter(best!))) {
+    } else if (running) {
+      // Both still running: the most-shared invite wins, ties to the later end.
+      if (count > bestCount || (count == bestCount && end.isAfter(best!))) {
+        best = end;
+        bestCount = count;
+      }
+    } else if (end.isAfter(best!)) {
+      // Both already spent: the most recent end wins, regardless of vote count, so a
+      // long-ended invite a few more members happen to share can't out-rank the one
+      // that only just finished (what the overtime line is actually about).
       best = end;
       bestCount = count;
     }
@@ -2932,7 +2947,8 @@ class AppState extends ChangeNotifier {
     final gen = _googleSession;
     final future = () async {
       try {
-        final events = await google.fetchEventsFor(calendarId);
+        final events =
+            await google.fetchEventsFor(calendarId, lookback: _meetingOvertimeGrace);
         if (gen != _googleSession) return null;
         _peopleEvents[calendarId] = events;
         _peopleEventsAt[calendarId] = _now();
@@ -3003,6 +3019,10 @@ class AppState extends ChangeNotifier {
   String? meetingTimeLabelFor(Meeting meeting) {
     if (!_googleConnected) return null;
     final memberEvents = <List<GoogleEvent>>[];
+    // [Meeting.members] is everyone *but* me, so a meeting of me and one colleague
+    // would otherwise offer a single calendar and never clear the two-vote bar. My own
+    // connected calendar is the second vote whenever the conversation includes me.
+    if (meeting.includesMe) memberEvents.add(_googleEvents);
     for (final member in meeting.members) {
       final events = _cachedEventsFor(member);
       if (events != null) memberEvents.add(events);

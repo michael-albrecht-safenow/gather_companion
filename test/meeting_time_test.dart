@@ -91,6 +91,35 @@ void main() {
       ], longAfter);
       expect(end, isNull);
     });
+
+    test('among spent invites the most recent end wins over the vote count', () {
+      // At 15:20 both 15:00 and 15:15 are over but inside the grace. 15:00 has three
+      // votes, 15:15 only two — yet the overtime line is about the invite that only
+      // just finished, so the later end takes it (`+5min over`, not `+20min over`).
+      final overtimeNow = at(15, 20);
+      final end = plannedMeetingEnd([
+        [_event(at(14, 0), at(15, 0))],
+        [_event(at(14, 0), at(15, 0))],
+        [_event(at(14, 0), at(15, 0))],
+        [_event(at(14, 30), at(15, 15))],
+        [_event(at(14, 30), at(15, 15))],
+      ], overtimeNow);
+      expect(end, at(15, 15));
+    });
+
+    test('a running invite still beats a more-shared spent one', () {
+      // Guard the running-vs-spent order against the spent tie-break change: the
+      // two-vote running invite outranks the three-vote spent one.
+      final nowish = at(15, 5);
+      final end = plannedMeetingEnd([
+        [_event(at(14, 0), at(15, 0))],
+        [_event(at(14, 0), at(15, 0))],
+        [_event(at(14, 0), at(15, 0))],
+        [_event(at(14, 30), at(15, 30))],
+        [_event(at(14, 30), at(15, 30))],
+      ], nowish);
+      expect(end, at(15, 30));
+    });
   });
 
   group('meetingTimeLabel', () {
