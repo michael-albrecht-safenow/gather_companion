@@ -243,5 +243,47 @@ void main() {
 
       expect(state.handQueuePositions, isEmpty);
     });
+
+    test('lowering our own hand locally drops us from the line at once', () {
+      final (:state, :rebuilds) = wired();
+      state.debugHuddle = ['luca'];
+      // We went up first, Luca behind us: us 1, Luca 2.
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        row('me', cluster: 'c1', handRaised: true, handRaisedAt: 100),
+        row('luca', cluster: 'c1', handRaised: true, handRaisedAt: 200),
+      ]));
+      expect(state.handQueuePositions, {'me': 1, 'luca': 2});
+
+      // We lower locally — the self tile drops its badge now, so the line must stop
+      // counting us now. The roster still carries our hand until the echo, but Luca
+      // reads 1, not a stale 2. See [AppState.handQueuePositions].
+      state.setHandRaised(false);
+      expect(state.myHandRaised, isFalse);
+      expect(state.handQueuePositions, {'luca': 1});
+    });
+
+    test('a re-raise that only reorders the line still wakes the screen', () {
+      final (:state, :rebuilds) = wired();
+      state.debugHuddle = ['luca', 'mara'];
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        row('me', cluster: 'c1'),
+        row('luca', cluster: 'c1', handRaised: true, handRaisedAt: 100),
+        row('mara', cluster: 'c1', handRaised: true, handRaisedAt: 200),
+      ]));
+      expect(state.handQueuePositions, {'luca': 1, 'mara': 2});
+      final before = rebuilds.length;
+
+      // Same two hands up — the set is unchanged — but Luca lowered and re-raised,
+      // so his timestamp is now the later one and the line flips. The screen reads
+      // the order, so this roster has to wake it even though the set stood still.
+      state.debugApplyRoster(Roster(selfId: 'me', rows: [
+        row('me', cluster: 'c1'),
+        row('luca', cluster: 'c1', handRaised: true, handRaisedAt: 300),
+        row('mara', cluster: 'c1', handRaised: true, handRaisedAt: 200),
+      ]));
+
+      expect(state.handQueuePositions, {'mara': 1, 'luca': 2});
+      expect(rebuilds.length, greaterThan(before));
+    });
   });
 }

@@ -1467,12 +1467,24 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    if (setEquals(hands, _handsUp) && !ownChanged) return;
+    // The set tells us *who* has a hand up; the positions map tells us the *order*,
+    // which can shift with no change to the set — a hand lowered and re-raised in the
+    // one roster keeps the same ids but a later timestamp, and our own optimistic
+    // raise is renumbered when its timestamp echo lands. The call screen reads the
+    // positions, so an order change has to wake it even when the set stands still.
+    final positions = handQueuePositions;
+    if (setEquals(hands, _handsUp) &&
+        !ownChanged &&
+        mapEquals(positions, _handPositions)) {
+      return;
+    }
     _handsUp = hands;
+    _handPositions = positions;
     notifyListeners();
   }
 
   Set<String> _handsUp = const {};
+  Map<String, int> _handPositions = const {};
 
   /// The line of raised hands in our conversation, numbered by who went up first.
   ///
@@ -1488,14 +1500,18 @@ class AppState extends ChangeNotifier {
     final roster = _roster;
     final mine = _myRow()?.clusterId;
     if (roster == null || mine == null) return const {};
+    final selfId = roster.selfId;
     final entries = <({String id, num? at})>[
       for (final row in roster.rows)
         if (row.clusterId == mine && row.handRaised)
-          (id: row.id, at: row.handRaisedAt),
+          // Our own row is local-first, the same as the self tile: once we lower
+          // locally the tile drops its badge at once, so the line must stop
+          // counting us at once too, or everyone behind us reads one place too
+          // high until the roster echo catches up. See [_myHandRaised].
+          if (row.id != selfId || _myHandRaised) (id: row.id, at: row.handRaisedAt),
     ];
     // Our own optimistic raise, before the roster has echoed handRaised back onto
     // our row. Added with no timestamp so it sits at the back until the echo lands.
-    final selfId = roster.selfId;
     if (selfId != null && _myHandRaised && !entries.any((e) => e.id == selfId)) {
       entries.add((id: selfId, at: null));
     }

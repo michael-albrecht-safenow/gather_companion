@@ -1675,11 +1675,13 @@ class _HandBadge extends StatelessWidget {
           const SizedBox(width: 3),
           // The place is already spoken by the badge's own Semantics label ("number
           // N in line"), so the glyph is excluded rather than read a second time.
+          // Black, not white: at 13pt the number is small text, and white on this
+          // amber is ~2:1 — under the 4.5:1 WCAG AA floor — where black clears 10:1.
           ExcludeSemantics(
             child: Text(
               '$position',
               style: const TextStyle(
-                color: Colors.white,
+                color: Colors.black,
                 fontSize: 13,
                 fontWeight: FontWeight.w700,
                 height: 1,
