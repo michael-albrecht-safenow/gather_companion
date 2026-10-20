@@ -983,10 +983,15 @@ void main() {
         expect(consumesFor(rig.node(), them, 'video'), 1);
 
         // The grace window passes. Despite the live video consumer, the watchdog
-        // must re-request this peer to force a fresh announce.
+        // must re-request this peer to force a fresh announce. The initial
+        // subscribe already sent one consume-request, so count that baseline and
+        // assert the watchdog drives a *further* request — else the test would
+        // pass without the fix.
+        final requestedBefore = consumeRequestsFor(rig.node(), them);
         clock.elapse(const Duration(seconds: 5));
         clock.flushMicrotasks();
-        expect(consumeRequestsFor(rig.node(), them), greaterThan(0),
+        expect(consumeRequestsFor(rig.node(), them),
+            greaterThan(requestedBefore),
             reason: 'the stale audio tag must be re-announced');
 
         // The fresh announce carries a live audio producer; audio now consumes.
