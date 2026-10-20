@@ -1474,6 +1474,46 @@ class AppState extends ChangeNotifier {
 
   Set<String> _handsUp = const {};
 
+  /// The line of raised hands in our conversation, numbered by who went up first.
+  ///
+  /// Maps each raised hand's row id to its 1-based place in the queue, so the call
+  /// screen can put a number on every raised-hand tile — the companion's answer to
+  /// the desktop's line-of-hands count, so a person can tell when it is their turn
+  /// (issue #64). Scoped to our cluster, the same bound [_noteHands] draws, and it
+  /// includes our own hand. Ordered by [RosterRow.handRaisedAt] ascending; a hand
+  /// with no timestamp — our optimistic raise before the roster echoes it onto our
+  /// own row, or a field that arrived in an unexpected shape — sorts to the back,
+  /// tie-broken by id so the order is stable. Empty when we are not in a huddle.
+  Map<String, int> get handQueuePositions {
+    final roster = _roster;
+    final mine = _myRow()?.clusterId;
+    if (roster == null || mine == null) return const {};
+    final entries = <({String id, num? at})>[
+      for (final row in roster.rows)
+        if (row.clusterId == mine && row.handRaised)
+          (id: row.id, at: row.handRaisedAt),
+    ];
+    // Our own optimistic raise, before the roster has echoed handRaised back onto
+    // our row. Added with no timestamp so it sits at the back until the echo lands.
+    final selfId = roster.selfId;
+    if (selfId != null && _myHandRaised && !entries.any((e) => e.id == selfId)) {
+      entries.add((id: selfId, at: null));
+    }
+    if (entries.isEmpty) return const {};
+    // Earliest hand first. A missing timestamp sorts last; ids break any tie so the
+    // same roster always numbers the line the same way.
+    entries.sort((a, b) {
+      final at = a.at;
+      final bt = b.at;
+      if (at == null && bt == null) return a.id.compareTo(b.id);
+      if (at == null) return 1;
+      if (bt == null) return -1;
+      final byTime = at.compareTo(bt);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+    return {for (var i = 0; i < entries.length; i++) entries[i].id: i + 1};
+  }
+
   /// Our own hand as the last roster had it, to tell a desktop raise or lower from
   /// a roster that only echoes the value this phone already holds. See [_noteHands].
   bool _rosterHandRaised = false;

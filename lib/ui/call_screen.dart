@@ -80,6 +80,7 @@ class CallTile {
     this.speaking = false,
     this.reactions = const [],
     this.handRaised = false,
+    this.handPosition = 0,
     this.connecting = false,
   });
 
@@ -107,6 +108,12 @@ class CallTile {
   /// stays until lowered. Ours comes from `AppState.myHandRaised` (local-first);
   /// everybody else's from their `RosterRow.handRaised`.
   final bool handRaised;
+
+  /// This hand's 1-based place in the line of raised hands, or 0 when the hand is
+  /// down or its place is not yet known. Shown as a number on the badge so a person
+  /// can tell when it is their turn — the companion's take on the desktop's line of
+  /// hands (issue #64). Comes from `AppState.handQueuePositions`.
+  final int handPosition;
 
   /// Whether the SFU is still placing this peer — subscribed, no media yet.
   ///
@@ -602,6 +609,9 @@ List<CallTile> _tiles(AppState state) {
   final call = state.call;
   final handle = state.callHandle;
   final live = handle is LiveCall ? handle : null;
+  // The line of raised hands, numbered once for the whole frame so every tile reads
+  // the same order. Keyed by the same id each tile carries. See `handQueuePositions`.
+  final handPositions = state.handQueuePositions;
 
   final tiles = <CallTile>[
     // Ourselves first, and always — before the camera is ever opened too. The
@@ -629,6 +639,7 @@ List<CallTile> _tiles(AppState state) {
       // Ours, local-first, for the same reason as [speaking] above: the button is
       // under your thumb and should not wait for the roster to echo your own hand.
       handRaised: state.myHandRaised,
+      handPosition: handPositions[state.meId ?? 'self'] ?? 0,
     ),
   ];
 
@@ -654,6 +665,7 @@ List<CallTile> _tiles(AppState state) {
       speaking: row?.speaking ?? false,
       reactions: state.reactions.forPerson(row?.id),
       handRaised: row?.handRaised ?? false,
+      handPosition: row == null ? 0 : handPositions[row.id] ?? 0,
     ));
   }
 
@@ -679,6 +691,7 @@ List<CallTile> _tiles(AppState state) {
       speaking: row.speaking ?? false,
       reactions: state.reactions.forPerson(row.id),
       handRaised: row.handRaised,
+      handPosition: handPositions[row.id] ?? 0,
       // The one bucket an unplaced peer can land in: subscribed, no media, so
       // never a participant. Bridged to the media plane's srcId through
       // `userAccountId`, the same join every other srcId lookup makes. This is
@@ -1426,9 +1439,12 @@ class _TileFrame extends StatelessWidget {
                 left: 8,
                 // Named, not a bare glyph: the badge is a meeting status, and a
                 // screen reader that only heard the name would miss whose hand is up.
+                // The place in line rides the label too, so it is spoken, not just drawn.
                 child: Semantics(
-                  label: '${tile.label} raised their hand',
-                  child: const _HandBadge(),
+                  label: tile.handPosition > 0
+                      ? '${tile.label} raised their hand, number ${tile.handPosition} in line'
+                      : '${tile.label} raised their hand',
+                  child: _HandBadge(position: tile.handPosition),
                 ),
               ),
             Positioned(
@@ -1622,18 +1638,56 @@ class _FlightState extends State<_Flight> with SingleTickerProviderStateMixin {
 /// solid fill carries at the size an overview thumbnail gives it, where a tinted
 /// outline would disappear.
 class _HandBadge extends StatelessWidget {
-  const _HandBadge();
+  const _HandBadge({this.position = 0});
+
+  /// This hand's 1-based place in the line, or 0 when it is not yet known — the
+  /// optimistic window before the roster has numbered our own raise. Zero draws the
+  /// bare hand; a real place draws the number beside it. See [CallTile.handPosition].
+  final int position;
 
   @override
   Widget build(BuildContext context) {
+    const hand = Icon(Icons.front_hand, size: 15, color: Colors.white);
+    // A circle while the place is unknown, a pill once there is a number to carry —
+    // the hand plus its place in line, the companion's line-of-hands count.
+    if (position <= 0) {
+      return Container(
+        padding: const EdgeInsets.all(5),
+        decoration: const BoxDecoration(
+          color: kHandRaised,
+          shape: BoxShape.circle,
+          boxShadow: [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
+        ),
+        child: hand,
+      );
+    }
     return Container(
-      padding: const EdgeInsets.all(5),
-      decoration: const BoxDecoration(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      decoration: BoxDecoration(
         color: kHandRaised,
-        shape: BoxShape.circle,
-        boxShadow: [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 4)],
       ),
-      child: const Icon(Icons.front_hand, size: 15, color: Colors.white),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          hand,
+          const SizedBox(width: 3),
+          // The place is already spoken by the badge's own Semantics label ("number
+          // N in line"), so the glyph is excluded rather than read a second time.
+          ExcludeSemantics(
+            child: Text(
+              '$position',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                height: 1,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

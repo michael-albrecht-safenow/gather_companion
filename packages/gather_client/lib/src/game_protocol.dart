@@ -283,6 +283,7 @@ class RosterRow {
     this.status,
     this.calendarEmail,
     this.handRaised = false,
+    this.handRaisedAt,
   });
 
   final String id;
@@ -392,6 +393,14 @@ class RosterRow {
   /// would see every lowered hand as still up. Defaults false — nobody starts with
   /// a hand up, and a row that has never carried the field reads as down.
   final bool handRaised;
+
+  /// When the hand went up, as the raw `handRaisedAt` timestamp the wire carries —
+  /// kept so the call screen can number the line of raised hands by who went up
+  /// first. Null when the hand is down, and null for a hand that is up but whose
+  /// timestamp has not been seen (or arrived in an unexpected shape): such a hand
+  /// still shows, it just sorts to the back of the line. Only relative order is
+  /// used, never the absolute value, so the exact epoch/unit does not matter.
+  final num? handRaisedAt;
 
   /// Connected, and not away. See [availability].
   bool get isPresent => connected == true && availability != 'Offline';
@@ -525,6 +534,7 @@ class _Row {
   String? deskId;
   String? calendarEmail;
   bool handRaised = false;
+  num? handRaisedAt;
   bool gone = false;
 }
 
@@ -1037,6 +1047,11 @@ class GameProtocolReader {
       final value = data['handRaisedAt'];
       final up = value != null && !identical(value, msgpackUndefined);
       set(row.handRaised, up, (v) => row.handRaised = v);
+      // Kept alongside the bool so the call screen can order the line of raised
+      // hands by who went up first. Cleared when the hand comes down; a value
+      // that is not a plain number (an unexpected wire shape) reads as null and
+      // sorts to the back rather than corrupting the order. See [RosterRow.handRaisedAt].
+      set(row.handRaisedAt, up ? _asNum(value) : null, (v) => row.handRaisedAt = v);
     }
     if (data.containsKey('isBot')) {
       set(row.isBot, _asBool(data['isBot']), (v) => row.isBot = v);
@@ -1260,6 +1275,7 @@ class GameProtocolReader {
         status: _statusFor(row.id, now),
         calendarEmail: row.calendarEmail,
         handRaised: row.handRaised,
+        handRaisedAt: row.handRaisedAt,
       ));
     }
     return Roster(selfId: selfId, rows: rows, spaceName: spaceName);

@@ -278,6 +278,28 @@ void main() {
       expect(reader.roster().rows.single.handRaised, isTrue);
     });
 
+    test('keeps the timestamp so the line can be ordered, and clears it on lower', () {
+      final reader = _reader()..ingest(_dump());
+      reader.ingest({
+        'type': 'DeltaState',
+        'patches': [
+          {'op': 'replace', 'model': 'SpaceUser', 'id': _me, 'path': '/handRaisedAt', 'data': 1700000000000},
+        ],
+      });
+      // Kept, not just distilled to a bool: the call screen orders the line of hands
+      // by who went up first, which needs the actual time.
+      expect(reader.roster().rows.single.handRaisedAt, 1700000000000);
+
+      reader.ingest({
+        'type': 'DeltaState',
+        'patches': [
+          {'op': 'replace', 'model': 'SpaceUser', 'id': _me, 'path': '/handRaisedAt', 'data': msgpackUndefined},
+        ],
+      });
+      // A lowered hand carries no place in line.
+      expect(reader.roster().rows.single.handRaisedAt, isNull);
+    });
+
     test('comes down when the field goes to undefined', () {
       final reader = _reader()..ingest(_dump());
       reader.ingest({

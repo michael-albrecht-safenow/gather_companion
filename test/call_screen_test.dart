@@ -837,6 +837,55 @@ void main() {
       await frame(true);
       expect(find.byIcon(Icons.front_hand), findsOneWidget);
     });
+
+    testWidgets('carries its place in line as a number on the badge',
+        (tester) async {
+      Future<void> frame(int position) async {
+        await tester.pumpWidget(MaterialApp(
+          theme: buildGatherTheme(),
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 200,
+                height: 150,
+                child: TileFrame(
+                  tile: CallTile(
+                    id: 'luca',
+                    label: 'Luca',
+                    isSelf: false,
+                    videoLive: false,
+                    muted: false,
+                    sharingScreen: false,
+                    handRaised: true,
+                    handPosition: position,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ));
+        await tester.pump();
+      }
+
+      final semantics = tester.ensureSemantics();
+
+      // Third in line — the number rides the hand so a person can tell their turn,
+      // drawn on the glyph and spoken in the one badge label.
+      await frame(3);
+      expect(find.byIcon(Icons.front_hand), findsOneWidget);
+      expect(find.text('3'), findsOneWidget);
+      expect(
+        find.bySemanticsLabel('Luca raised their hand, number 3 in line'),
+        findsOneWidget,
+      );
+
+      // No place known yet (our optimistic raise): the bare hand, no number.
+      await frame(0);
+      expect(find.byIcon(Icons.front_hand), findsOneWidget);
+      expect(find.text('0'), findsNothing);
+
+      semantics.dispose();
+    });
   });
 
   group('the connecting status', () {
