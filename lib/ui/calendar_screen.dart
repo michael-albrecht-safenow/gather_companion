@@ -33,9 +33,15 @@ import 'day_timeline.dart';
 /// a meeting crosses from upcoming to past, a header flips TODAY→TOMORROW, and the live
 /// button appears at the start and clears at the end without needing a roster change.
 class CalendarScreen extends StatefulWidget {
-  const CalendarScreen({super.key, required this.state});
+  const CalendarScreen({super.key, required this.state, @visibleForTesting this.clock});
 
   final AppState state;
+
+  /// The clock the screen reads "now" from — which day is today, which meetings are
+  /// past. Defaults to [DateTime.now]; tests inject a fixed instant so a fixture's day
+  /// and past/upcoming split don't drift with the wall clock (a meeting pinned to "now"
+  /// otherwise crosses midnight when the suite runs late in the day).
+  final DateTime Function()? clock;
 
   @override
   State<CalendarScreen> createState() => _CalendarScreenState();
@@ -102,7 +108,7 @@ class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObse
       body: ListenableBuilder(
         listenable: state,
         builder: (context, _) {
-          final now = DateTime.now();
+          final now = (widget.clock ?? DateTime.now)();
           // One timeline, two sources: plans this phone owns and read-only Google
           // events it only mirrors. Merged and sorted together so a 10am standup from
           // Google and an 11am plan made here sit in one day in the right order.
@@ -157,16 +163,32 @@ class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObse
 List<Widget> _timelineSections(BuildContext context, List<_Entry> upcoming, DateTime now) {
   if (upcoming.isEmpty) return const [];
   final today = DateTime(now.year, now.month, now.day);
-  final lastDay = upcoming
-      .map((e) => DateTime(e.endsAt.year, e.endsAt.month, e.endsAt.day))
-      .reduce((a, b) => a.isAfter(b) ? a : b);
-  final horizon = today.add(const Duration(days: 14));
-  final end = lastDay.isBefore(horizon) ? lastDay : horizon;
+  final horizon = DateTime(today.year, today.month, today.day + 14);
+
+  // Dense days from today to the horizon, so a clear day shows as "Free for the day"
+  // rather than a silent gap — plus every day a real event actually touches beyond the
+  // horizon. Capping the empty-day fill keeps a lone far-future meeting from painting a
+  // fortnight of blank days, while still giving it its own section so it stays visible
+  // and editable (the only way to reach its edit/delete is its block). Stepping by civil
+  // date, not +24h, keeps the headers right across a daylight-saving change.
+  final days = <DateTime>{};
+  for (var day = today; !day.isAfter(horizon); day = DateTime(day.year, day.month, day.day + 1)) {
+    days.add(day);
+  }
+  for (final e in upcoming) {
+    var day = DateTime(e.startsAt.year, e.startsAt.month, e.startsAt.day);
+    final last = DateTime(e.endsAt.year, e.endsAt.month, e.endsAt.day);
+    while (!day.isAfter(last)) {
+      if (day.isAfter(horizon)) days.add(day);
+      day = DateTime(day.year, day.month, day.day + 1);
+    }
+  }
+  final ordered = days.toList()..sort();
 
   final out = <Widget>[];
-  for (var day = today; !day.isAfter(end); day = day.add(const Duration(days: 1))) {
+  for (final day in ordered) {
     final dayStart = day;
-    final dayEnd = day.add(const Duration(days: 1));
+    final dayEnd = DateTime(day.year, day.month, day.day + 1);
     // Every entry that touches this day, clipped to it — a meeting across midnight or a
     // multi-day all-day event appears on each day it covers, bounded to the day's edges.
     final timed = <TimelineItem>[];
@@ -182,9 +204,9 @@ List<Widget> _timelineSections(BuildContext context, List<_Entry> upcoming, Date
       );
       (e.allDay ? allDay : timed).add(item);
     }
-    out.add(_SectionHeader(_dayLabel(day)));
+    out.add(_SectionHeader(_dayLabel(day, now: now)));
     out.add(DayTimeline(
-      bands: layoutDay(timed),
+      bands: layoutDay(timed, minItemDuration: kTimelineMinSlot),
       allDay: allDay,
       blockBuilder: (ctx, item) => upcoming[item.key as int].block(ctx),
     ));
@@ -1024,6 +1046,7 @@ class _MeetingEditorState extends State<_MeetingEditor> {
   }
 
   Future<void> _save() async {
+    if (_saving) return;
     final title = _title.text.trim();
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
@@ -1088,6 +1111,7 @@ class _MeetingEditorState extends State<_MeetingEditor> {
   /// Walks to the meeting being edited, then closes the sheet — the same hop the list
   /// card's "Walk here" ran, now that the timeline block hands off to this sheet.
   Future<void> _walkFromEditor() async {
+    if (_saving) return;
     final existing = widget.existing!;
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
@@ -1102,12 +1126,18 @@ class _MeetingEditorState extends State<_MeetingEditor> {
   /// Deletes the meeting being edited and closes the sheet; a failure keeps the sheet
   /// open with the reason.
   Future<void> _deleteFromEditor() async {
+    // Share the save busy flag so delete and save can't overlap: a delete mid-save could
+    // race `updateMeeting`'s calendar-mirror await and overwrite or resurrect a meeting.
+    // The Save button already disables on `_saving`; this closes the other direction.
+    if (_saving) return;
+    setState(() => _saving = true);
     final existing = widget.existing!;
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
     final error = await widget.state.deleteMeeting(existing.id);
     if (!mounted) return;
     if (error != null) {
+      setState(() => _saving = false);
       messenger.showSnackBar(SnackBar(content: Text(error)));
       return;
     }
@@ -1303,16 +1333,16 @@ String _durationLabel(int minutes) {
 /// hours, so `inDays` truncates tomorrow to 0 and the header says TODAY. UTC days
 /// are all 24 hours, so the difference is the number of calendar days regardless of
 /// any daylight-saving step in between.
-int _calendarDaysUntil(DateTime at) {
+int _calendarDaysUntil(DateTime at, {DateTime? now}) {
   final day = DateTime.utc(at.year, at.month, at.day);
-  final now = DateTime.now();
-  final today = DateTime.utc(now.year, now.month, now.day);
+  final ref = now ?? DateTime.now();
+  final today = DateTime.utc(ref.year, ref.month, ref.day);
   return day.difference(today).inDays;
 }
 
 /// Short day label for the list headers — TODAY / TOMORROW / weekday / date.
-String _dayLabel(DateTime at) {
-  final delta = _calendarDaysUntil(at);
+String _dayLabel(DateTime at, {DateTime? now}) {
+  final delta = _calendarDaysUntil(at, now: now);
   if (delta == 0) return 'TODAY';
   if (delta == 1) return 'TOMORROW';
   if (delta > 1 && delta < 7) return _weekdays[at.weekday - 1].toUpperCase();

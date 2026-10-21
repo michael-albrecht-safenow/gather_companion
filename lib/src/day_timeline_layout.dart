@@ -101,6 +101,7 @@ List<Band> layoutDay(
   List<TimelineItem> timed, {
   Duration collapseThreshold = const Duration(minutes: 90),
   Duration joinTolerance = Duration.zero,
+  Duration minItemDuration = Duration.zero,
 }) {
   final items = [for (final i in timed) if (!i.allDay) i]
     ..sort((a, b) {
@@ -141,7 +142,7 @@ List<Band> layoutDay(
       bands.add(FreeBand(prevEnd, start,
           collapsed: start.difference(prevEnd) > collapseThreshold));
     }
-    bands.add(BusyBand(start, end, packLanes(cluster)));
+    bands.add(BusyBand(start, end, packLanes(cluster, minItemDuration: minItemDuration)));
     prevEnd = end;
   }
 
@@ -154,7 +155,11 @@ List<Band> layoutDay(
   // day stays compact either way.
   final firstStart = clusters.first.first.start;
   final dayTop = DateTime(firstStart.year, firstStart.month, firstStart.day);
-  final dayEnd = dayTop.add(const Duration(days: 1));
+  // Next local calendar midnight, not +24h: on a daylight-saving fall-back day the day
+  // is 25h long, so adding a fixed Duration would land at 23:00 and drop the final hour
+  // from the trailing band; spring-forward would overshoot into tomorrow. Constructing
+  // the next civil date lets DateTime pick the right wall-clock midnight either way.
+  final dayEnd = DateTime(firstStart.year, firstStart.month, firstStart.day + 1);
   if (prevEnd != null && prevEnd.isBefore(dayEnd)) {
     bands.add(FreeBand(prevEnd, dayEnd,
         collapsed: dayEnd.difference(prevEnd) > collapseThreshold));
@@ -176,12 +181,23 @@ List<Band> layoutDay(
 /// cluster is told that width — so a 3-deep double-booking draws all its blocks at a
 /// third width, lined up, rather than each guessing its own.
 ///
+/// [minItemDuration] floors how much vertical room a lane reserves for an item: the
+/// widget never draws a block shorter than a fixed pixel minimum, so two back-to-back
+/// 15-minute events — which really do not overlap in time — would still collide on
+/// screen if stacked in one lane. Treating each item as occupying at least this long
+/// pushes such pairs into side-by-side lanes instead, matching what gets drawn. Zero
+/// (the default) keeps pure time-overlap packing.
+///
 /// Expects a non-empty cluster already sorted by start (as [layoutDay] passes it).
-List<PackedItem> packLanes(List<TimelineItem> cluster) {
-  // laneEnds[i] = when lane i's current occupant ends; a free lane is reusable.
+List<PackedItem> packLanes(List<TimelineItem> cluster,
+    {Duration minItemDuration = Duration.zero}) {
+  // laneEnds[i] = when lane i's current occupant visually ends (its real end, or the
+  // floored end if that reaches further); a free lane is reusable.
   final laneEnds = <DateTime>[];
   final laneOf = <int>[];
   for (final item in cluster) {
+    final itemEnd =
+        item.end.isAfter(item.start.add(minItemDuration)) ? item.end : item.start.add(minItemDuration);
     var lane = -1;
     for (var i = 0; i < laneEnds.length; i++) {
       // `!isAfter` so a 10:00–11:00 and an 11:00–12:00 share a lane — back-to-back is
@@ -193,9 +209,9 @@ List<PackedItem> packLanes(List<TimelineItem> cluster) {
     }
     if (lane == -1) {
       lane = laneEnds.length;
-      laneEnds.add(item.end);
+      laneEnds.add(itemEnd);
     } else {
-      laneEnds[lane] = item.end;
+      laneEnds[lane] = itemEnd;
     }
     laneOf.add(lane);
   }

@@ -134,14 +134,17 @@ class _PersonCalendarSheet extends StatelessWidget {
 List<Widget> _personSections(BuildContext context, List<GoogleEvent> events) {
   final now = DateTime.now();
   final today = DateTime(now.year, now.month, now.day);
-  final lastDay = events
-      .map((e) => DateTime(e.endsAt.year, e.endsAt.month, e.endsAt.day))
-      .reduce((a, b) => a.isAfter(b) ? a : b);
+  // Render the queried window, not the span of returned events. `fetchEventsFor` pulls a
+  // seven-day window, so draw exactly that: every day in it shows — a day with nothing
+  // reads as free — and an event stretching past it (a multi-week all-day banner) is
+  // clipped to the window rather than dragging the sheet into days that were never
+  // fetched. Stepping by civil date, not +24h, keeps the headers right across DST.
+  final windowEnd = DateTime(today.year, today.month, today.day + 7);
 
   final out = <Widget>[];
-  for (var day = today; !day.isAfter(lastDay); day = day.add(const Duration(days: 1))) {
+  for (var day = today; day.isBefore(windowEnd); day = DateTime(day.year, day.month, day.day + 1)) {
     final dayStart = day;
-    final dayEnd = day.add(const Duration(days: 1));
+    final dayEnd = DateTime(day.year, day.month, day.day + 1);
     final timed = <TimelineItem>[];
     final allDay = <TimelineItem>[];
     for (var i = 0; i < events.length; i++) {
@@ -157,7 +160,7 @@ List<Widget> _personSections(BuildContext context, List<GoogleEvent> events) {
     }
     out.add(_DayHeader(label: _dayLabel(day)));
     out.add(DayTimeline(
-      bands: layoutDay(timed),
+      bands: layoutDay(timed, minItemDuration: kTimelineMinSlot),
       allDay: allDay,
       blockBuilder: (ctx, item) => _PersonBlock(event: events[item.key as int]),
     ));

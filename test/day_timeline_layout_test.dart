@@ -26,6 +26,25 @@ void main() {
       expect(packed.map((p) => p.column), [0, 0]);
     });
 
+    test('back-to-back short events split into side-by-side lanes under a min slot', () {
+      // Two 15-min events at 10:00 and 10:15 do not overlap in time, so by default they
+      // pack into one lane. But the widget floors each to a minimum rendered height, so
+      // stacked they would collide on screen. A min slot longer than the 15-min gap makes
+      // the 10:00 event hold its lane until 10:28, pushing the 10:15 into its own.
+      TimelineItem short(int h, int m, String k) => TimelineItem(
+            start: DateTime(2026, 6, 15, h, m),
+            end: DateTime(2026, 6, 15, h, m).add(const Duration(minutes: 15)),
+            key: k,
+          );
+      final items = [short(10, 0, 'a'), short(10, 15, 'b')];
+
+      expect(packLanes(items).every((p) => p.columnCount == 1), isTrue);
+
+      final packed = packLanes(items, minItemDuration: const Duration(minutes: 28));
+      expect(packed.every((p) => p.columnCount == 2), isTrue);
+      expect(packed.map((p) => p.column), [0, 1]);
+    });
+
     test('two overlapping events take two lanes', () {
       final packed = packLanes([item(10, 12), item(11, 13)]);
       expect(packed.every((p) => p.columnCount == 2), isTrue);

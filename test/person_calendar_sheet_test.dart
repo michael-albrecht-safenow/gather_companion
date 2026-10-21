@@ -19,10 +19,12 @@ void main() {
     FlutterSecureStorage.setMockInitialValues({});
   });
 
-  // A couple of events today, so the sheet has a timeline to draw with visible free time.
+  // A couple of events tomorrow, so the sheet has a timeline to draw with visible free
+  // time. Tomorrow rather than today so the sheet's past-event filter never drops a
+  // fixture once the suite runs later than its start hour.
   GoogleEvent ev(String id, String title, int startHour, int endHour, {String? location}) {
     final now = DateTime.now();
-    final day = DateTime(now.year, now.month, now.day);
+    final day = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
     return GoogleEvent(
       id: id,
       title: title,

@@ -27,6 +27,12 @@ const double _pxPerMin = 56 / 60;
 /// stays legible and tappable.
 const double _minBlockHeight = 26;
 
+/// The least time a block visually occupies, derived from [_minBlockHeight] over
+/// [_pxPerMin] (26 / 0.933 ≈ 28 min, rounded up). [layoutDay] uses it to lane-pack so
+/// two back-to-back short events land side by side instead of overlapping in one lane —
+/// the callers pass it straight through, keeping the layout maths free of pixel units.
+const Duration kTimelineMinSlot = Duration(minutes: 28);
+
 /// A collapsed free band's fixed height — enough for its "3h free" label and the fade,
 /// regardless of how many hours it actually swallows.
 const double _collapsedHeight = 44;
