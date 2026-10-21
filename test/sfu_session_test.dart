@@ -388,6 +388,95 @@ void main() {
     });
   });
 
+  group('a node that dies silently (issue #83)', () {
+    // The rig's grace window is 20ms; wait past it, then let the recovery settle.
+    Future<void> pastGrace() async {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await settle();
+      await settle();
+    }
+
+    test('a peer whose node dies and never returns is re-resolved onto its new '
+        'node, without any cordon', () async {
+      // The incident: a colleague's SFU node stopped answering mid-call — no
+      // cordon-sfu, no reassign, the socket just went quiet. Her address stayed
+      // cached on the dead node, the retry loop re-asked the same corpse, and only
+      // she restarting fixed it. The down-edge grace gives up on the node so the
+      // peer is re-resolved onto wherever they land next.
+      rig.session.setAllowed({them});
+      await rig.session.start();
+
+      // Their media is on a different node than the one we publish from.
+      rig.addresses[them] = nodeB;
+      await rig.session.subscribe(them);
+      expect(rig.node(nodeB).has('consume-request'), isTrue,
+          reason: 'precondition: we asked nodeB for them');
+
+      // nodeB goes silent — unhealthy, every send on it now fails — and never
+      // comes back. Meanwhile the router re-places them on our own node, the way
+      // it would once they republished.
+      final deadNode = rig.node(nodeB);
+      deadNode.drop();
+      rig.addresses[them] = nodeA;
+      rig.node(nodeA).drain();
+
+      // Inside the grace window nothing has been given up on yet.
+      await settle();
+      expect(deadNode.disposed, isFalse, reason: 'still inside the grace window');
+
+      // Past the grace: the dead node is dropped and its peer re-resolved.
+      await pastGrace();
+
+      expect(deadNode.disposed, isTrue,
+          reason: 'the corpse is dropped, not left pooled');
+      expect(rig.node(nodeA).has('consume-request'), isTrue,
+          reason: 'them is asked for again on the node that now carries them');
+      expect(rig.node(nodeA).argsFor('consume-request')!['srcId'], them);
+    });
+
+    test('a transient blip that returns within grace is not given up on',
+        () async {
+      rig.session.setAllowed({them});
+      await rig.session.start();
+      rig.addresses[them] = nodeB;
+      await rig.session.subscribe(them);
+      final socket = rig.node(nodeB);
+      expect(socket.has('consume-request'), isTrue);
+
+      // Drops, then comes straight back — before the grace window elapses.
+      socket.drop();
+      socket.comeBack();
+      await pastGrace();
+
+      expect(socket.disposed, isFalse,
+          reason: 'a node that came back is reconnected, not dropped as dead');
+      expect(identical(rig.sockets[nodeB], socket), isTrue,
+          reason: 'the same pooled socket, re-joined — not replaced');
+    });
+
+    test('our own node dying is a move to a new one, not a peer-forget',
+        () async {
+      await rig.session.start();
+      await rig.session
+          .publish(FakeTrack('audio'), FakeStream(), tag: SfuTag.audio);
+      expect(rig.session.sfuAddr, nodeA);
+      final deadNode = rig.node(nodeA);
+      final before = rig.republishes;
+
+      // Our node goes silent and never comes back; the router will place us on
+      // nodeB. This must move us, not tear our peers down.
+      rig.addresses[me] = nodeB;
+      deadNode.drop();
+      await pastGrace();
+
+      expect(rig.session.sfuAddr, nodeB,
+          reason: 'we moved to the node the router now names');
+      expect(deadNode.disposed, isTrue);
+      expect(rig.republishes, greaterThan(before),
+          reason: 'the move asks the caller to republish onto the new node');
+    });
+  });
+
   group('a peer on a secondary node (issue #74)', () {
     const other = 'acct-other';
 

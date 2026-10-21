@@ -90,9 +90,12 @@ class SfuSession {
     SfuSignalling Function(String url, String? sessionId)? openSignalling,
     ms.Device Function()? buildDevice,
     void Function(String)? log,
+    // How long a node may stay down before we give up on it (issue #83). A seam
+    // for tests, which cannot wait out the real five seconds on a virtual clock.
+    Duration nodeDownGrace = const Duration(seconds: 5),
     // Assigned the long way round because a named parameter cannot be a private
     // initializing formal — same as `DirectCollector` and `SfuSignalling`.
-  })  :
+  })  : _nodeDownGraceWindow = nodeDownGrace,
         // ignore: prefer_initializing_formals
         _auth = auth,
         // ignore: prefer_initializing_formals
@@ -224,6 +227,25 @@ class SfuSession {
   /// Nodes whose socket is currently down, so a later `healthy` reads as a
   /// reconnection rather than as the first connect.
   final Set<String> _nodeDown = {};
+
+  /// Grace timers for nodes that are down, one per node, armed on the down edge.
+  ///
+  /// The twin of [_onNodeReconnected]: that handler only runs if a socket comes
+  /// *back*, so a node that silently dies and never returns — the peer's instance
+  /// drained or gone, the peer since republished elsewhere — would otherwise leave
+  /// everyone on it mapped to a dead url forever. The address cache ([_peerNode])
+  /// is never cleared, the retry loop re-asks the same corpse, and only the peer
+  /// restarting fixes it (issue #83). This fires when that happens and gives up on
+  /// the node so its peers re-resolve. Cancelled the moment the socket returns.
+  final Map<String, Timer> _nodeDownGrace = {};
+
+  /// How long a node may stay down before we forget what was on it.
+  ///
+  /// Matched to the recv-heal grace: long enough that an ordinary transport blip
+  /// heals through [_onNodeReconnected] (which cancels this) before it fires, short
+  /// enough that a genuinely dead node does not strand a colleague for long. Set
+  /// from the constructor so a test can shorten it.
+  final Duration _nodeDownGraceWindow;
 
   final Map<String, StreamSubscription<SfuStatus>> _nodeHealth = {};
 
@@ -406,9 +428,13 @@ class SfuSession {
       // just consumed does not read as a reconnection.
       _nodeHealth[url] = node.statuses.listen((status) {
         if (!status.healthy) {
-          _nodeDown.add(url);
+          // Arm the give-up grace only on the transition into down, not on every
+          // repeated unhealthy status, so a flapping socket does not keep pushing
+          // the deadline out.
+          if (_nodeDown.add(url)) _armNodeDownGrace(url);
           return;
         }
+        _nodeDownGrace.remove(url)?.cancel();
         if (_nodeDown.remove(url)) unawaited(_onNodeReconnected(url));
       });
 
@@ -2168,6 +2194,33 @@ class SfuSession {
     }
   }
 
+  /// Give a down node a grace window to come back before we give up on it.
+  ///
+  /// The down-edge twin of [_onNodeReconnected]. The server tells us when a node
+  /// is *draining* (`cordon-sfu`/`reassign` → [_reassign]) and the health stream
+  /// tells us when a dropped node *returns* ([_onNodeReconnected]), but a node that
+  /// silently dies — the instance gone, the peer since republished elsewhere —
+  /// sends neither: it just stops answering. Without this the peers on it stay
+  /// mapped to a dead url forever, the retry loop re-asks the same corpse, and only
+  /// the peer restarting fixes it (issue #83). If the socket has not come back when
+  /// this fires, treat the node exactly as a drain — [_reassign] forgets its peers
+  /// (clearing the address cache the retry loop reads), moves our own node or drops
+  /// a peer node, and re-asks the router where everyone went. Cancelled the instant
+  /// the socket returns healthy, so an ordinary blip never reaches here.
+  void _armNodeDownGrace(String url) {
+    if (_stopped) return;
+    _nodeDownGrace[url]?.cancel();
+    _nodeDownGrace[url] = Timer(_nodeDownGraceWindow, () {
+      _nodeDownGrace.remove(url);
+      // Re-check against current state: the socket may have come back, the node
+      // may have been dropped another way, or the session may have stopped.
+      if (_stopped || !_nodeDown.contains(url) || !_nodes.containsKey(url)) return;
+      _log('sfu: $url stayed down past grace; giving up on it so its peers '
+          're-resolve (issue #83)');
+      unawaited(_reassign(url));
+    });
+  }
+
   /// A node's socket dropped and came back. Everything it held died with it.
   ///
   /// Transports, producers and consumers all live on the far side of that
@@ -2259,6 +2312,7 @@ class SfuSession {
   Future<void> _dropNode(String url) async {
     await _nodeSubscriptions.remove(url)?.cancel();
     await _nodeHealth.remove(url)?.cancel();
+    _nodeDownGrace.remove(url)?.cancel();
     _nodeDown.remove(url);
     _recvTransports.remove(url)?.close();
     final node = _nodes.remove(url);
@@ -2415,6 +2469,10 @@ class SfuSession {
       await subscription.cancel();
     }
     _nodeHealth.clear();
+    for (final timer in _nodeDownGrace.values) {
+      timer.cancel();
+    }
+    _nodeDownGrace.clear();
     _nodeDown.clear();
     for (final node in _nodes.values.toList()) {
       await node.dispose();

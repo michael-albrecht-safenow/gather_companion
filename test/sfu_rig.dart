@@ -33,6 +33,9 @@ class Rig {
       routerUrl: routerUrl,
       openSignalling: (url, _) => open(url),
       buildDevice: () => device,
+      // Short enough that a test does not wait out the real five seconds, long
+      // enough that an ordinary `settle()` round trip does not trip it (issue #83).
+      nodeDownGrace: const Duration(milliseconds: 20),
     );
     session.needsRepublish.listen((_) => republishes++);
   }
