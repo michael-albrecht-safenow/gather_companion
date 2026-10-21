@@ -488,6 +488,17 @@ class SfuSignalling {
       // A rejected credential arrives here rather than as a close code.
       _setStatus(false, 'SFU refused the connection: $error');
       _connected = false;
+      // A `bad auth / TokenVerificationFailed` refusal means the held ID token is
+      // stale to the media plane — after a long suspend the SFU rejects a token
+      // that is not yet clock-expired, so [GatherAuth.idToken] would hand the
+      // *same* token to every retry and loop forever (#84). Force a fresh mint so
+      // the scheduled retry below presents a new credential. Fire-and-forget: the
+      // refresh completes before the backoff timer fires, and errors surface on
+      // the next `_open` → `idToken`.
+      if (_isBadAuth(error)) {
+        _log('sfu: $_url refused bad-auth — invalidating token before retry (#84)');
+        unawaited(_auth.invalidateIdToken());
+      }
       // Tell the caller now instead of leaving them to the timeout. A refusal is
       // an *answer* — the server is up and said no — and ten silent seconds
       // before the same news is ten seconds of a button doing nothing. The
@@ -521,6 +532,17 @@ class SfuSignalling {
 
     socket.connect();
     _setStatus(false, 'connecting');
+  }
+
+  /// Whether a connect refusal is about a stale credential rather than the
+  /// network. The server answers `{message: bad auth, data: {reason:
+  /// TokenVerificationFailed}}`; `socket_io_client` hands it here as the error,
+  /// whose string form carries both. Keyed on either string because only the
+  /// reason is stable across Gather's error shapes — same test as
+  /// `LiveCall._isStaleAuth`.
+  bool _isBadAuth(Object? error) {
+    final text = '$error';
+    return text.contains('TokenVerificationFailed') || text.contains('bad auth');
   }
 
   /// Wakes whoever is inside [start].

@@ -54,7 +54,8 @@ class LiveCall implements Call {
     SfuSession Function()? buildSfu,
     VoiceActivity? voice,
     void Function(String)? log,
-  })  : _voice = voice ?? VoiceActivity(),
+  })  : _auth = auth,
+        _voice = voice ?? VoiceActivity(),
         _log = log ?? _noop,
         _engine = engine ?? WebrtcMediaEngine(log: log),
         _buildSfu = buildSfu ??
@@ -88,6 +89,10 @@ class LiveCall implements Call {
 
   static void _noop(String _) {}
 
+  /// Held so the bad-auth heal can force a fresh ID token before a rebuild — the
+  /// `_buildSfu` closure captures it too, but a reconnect with the *same* cached
+  /// token the SFU just refused loops forever (#84).
+  final GatherAuth _auth;
   final void Function(String) _log;
   final CaptureEngine _engine;
   final SfuSession Function() _buildSfu;
@@ -414,8 +419,14 @@ class LiveCall implements Call {
       // through to the ordinary failure message instead.
       if (_isStaleAuth(error) && !_authHealing) {
         _authHealing = true;
-        _log('call: SFU refused bad-auth — rebuilding to mint a fresh token (#57)');
+        _log('call: SFU refused bad-auth — minting a fresh token and rebuilding (#57/#84)');
         try {
+          // Drop the cached token first. The rebuild re-opens the socket, which
+          // asks `GatherAuth.idToken` for a credential — but that hands back the
+          // *same* cached token until it is near clock-expiry, and the SFU has
+          // just refused it after a suspend. Without this, the rebuild presents
+          // the rejected token again and loops forever (#84).
+          await _auth.invalidateIdToken();
           // `_rebuild`, not the public `rebuild`: we are already inside the
           // serialise job, so taking the lock again would deadlock. It republishes
           // this tag onto the fresh session itself, so we return *that* result —

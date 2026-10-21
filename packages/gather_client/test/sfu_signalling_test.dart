@@ -188,6 +188,71 @@ void main() {
     });
   });
 
+  group('a bad-auth connect refusal (#84)', () {
+    /// Polls [test] until it holds or the deadline passes. The token invalidation
+    /// is fire-and-forget off `onConnectError`, so the extra refresh lands a
+    /// microtask or two after `start()` throws — awaiting a count rather than a
+    /// fixed delay keeps the test honest on a loaded runner.
+    Future<void> eventually(bool Function() test,
+        {Duration timeout = const Duration(seconds: 5), String? reason}) async {
+      final deadline = DateTime.now().add(timeout);
+      while (!test()) {
+        if (DateTime.now().isAfter(deadline)) {
+          throw StateError('condition never held: ${reason ?? ''}');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+    }
+
+    const badAuth = '{message: bad auth, data: {reason: TokenVerificationFailed}}';
+
+    test('forces a fresh token before the retry', () async {
+      // The whole point of #84. The server refuses the credential; the held token
+      // is not clock-expired, so without the invalidation the retry would present
+      // the *same* refused token forever. A bad-auth refusal must drop the cache
+      // so the next `_open` mints a new one.
+      sfu.refuseWith = badAuth;
+      final s = build();
+
+      await expectLater(s.start(), throwsA(isA<SfuException>()));
+
+      // One mint for the initial `_open`, a second forced by the refusal.
+      await eventually(() => http.refreshes >= 2,
+          reason: 'the bad-auth refusal did not force a token refresh');
+    });
+
+    test('a non-auth refusal does not force a refresh', () async {
+      // The invalidation is for stale credentials only. A plain transient refusal
+      // ("node draining", a 5xx) must not drop the token and hammer Google — the
+      // ordinary backoff retry re-presents the same still-valid token.
+      sfu.refuseWith = 'sfu node is draining';
+      final s = build();
+
+      await expectLater(s.start(), throwsA(isA<SfuException>()));
+
+      // Give any stray invalidation a window to land, then prove it did not.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(http.refreshes, 1,
+          reason: 'only the initial mint — a transient refusal keeps the token');
+    });
+
+    test('recovers on the retry once the token is fresh', () async {
+      // End to end: refuse bad-auth, which forces a refresh, then accept. The
+      // background backoff retry must reconnect with the new token rather than
+      // leaving the call dead until a restart.
+      sfu.refuseWith = badAuth;
+      final s = build();
+      await expectLater(s.start(), throwsA(isA<SfuException>()));
+
+      // The next attempt is allowed through, and the backoff timer fires it.
+      sfu.refuseWith = null;
+      await firstWhere(s.statuses, (st) => st.healthy,
+          reason: 'a healthy status after the token refreshed');
+      expect(s.connected, isTrue);
+      expect(http.refreshes, greaterThanOrEqualTo(2));
+    });
+  });
+
   group('the address the router hands out', () {
     // Pinned against the capture, verbatim. These two strings are the whole bug:
     // the left is what `addrs` carries, the right is what the desktop client

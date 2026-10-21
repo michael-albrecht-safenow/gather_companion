@@ -298,6 +298,24 @@ class GatherAuth {
     return _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
   }
 
+  /// Drop the cached ID token and mint a fresh one, bypassing the expiry margin.
+  ///
+  /// [idToken] hands back the held token until it is within [_refreshMargin] of
+  /// expiry, which is the right call for the common case. But Gather's SFU can
+  /// refuse a token that is *not* clock-expired — after a long iOS suspend the
+  /// media plane rejects the held token with `TokenVerificationFailed`, and
+  /// re-presenting the same cached one on every reconnect loops forever (#84).
+  /// This clears the cache so the next [idToken] re-mints, and joins the
+  /// in-flight refresh if one is already running. Errors surface on the next
+  /// [idToken] (which re-attempts, or throws permanent → re-pair), not here, so
+  /// a fire-and-forget caller on a reconnect path cannot crash on a dropped
+  /// packet.
+  Future<void> invalidateIdToken() {
+    _credentials = _credentials.copyWith(idToken: '');
+    final refresh = _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
+    return refresh.then((_) {}, onError: (_) {});
+  }
+
   Future<String> _refresh() async {
     if (!_credentials.isComplete) {
       throw const GatherAuthException('no Gather session — pair again', permanent: true);

@@ -513,12 +513,18 @@ void main() {
     /// A call whose sessions come from a fresh [Rig] each build, with the first
     /// [refuseCount] of them refusing `produce` the way the server does when the
     /// token went stale across a network gap. Mirrors the #41 harness above.
-    ({LiveCall call, List<Rig> rigs}) staleTokenCall({required int refuseCount}) {
+    ({LiveCall call, List<Rig> rigs, _CountingAuthHttp authHttp}) staleTokenCall(
+        {required int refuseCount}) {
       final rigs = <Rig>[];
       final localEngine = FakeCaptureEngine();
+      // A fake token endpoint so the heal's `invalidateIdToken` stays offline and
+      // its refreshes can be counted — a bad-auth heal must mint a fresh token,
+      // not re-present the one the SFU just refused (#84).
+      final authHttp = _CountingAuthHttp();
       final localCall = LiveCall(
         auth: GatherAuth(
           credentials: const GatherCredentials(refreshToken: 'unused'),
+          http: authHttp,
         ),
         spaceId: spaceId,
         srcId: me,
@@ -541,17 +547,23 @@ void main() {
           await rig.close();
         }
       });
-      return (call: localCall, rigs: rigs);
+      return (call: localCall, rigs: rigs, authHttp: authHttp);
     }
 
     test('rebuilds to mint a fresh token and republishes the track', () async {
       // The first session carries the stale token and refuses every produce; the
       // rebuilt one does not. Turning the mic on must survive that without a tap
       // being needed to retry.
-      final (:call, :rigs) = staleTokenCall(refuseCount: 1);
+      final (:call, :rigs, :authHttp) = staleTokenCall(refuseCount: 1);
 
       final detail = await call.setMicOn(true);
       await settle();
+
+      // The heal dropped the cached token and minted a fresh one before rebuilding
+      // — without this the rebuild re-presents the token the SFU just refused and
+      // loops forever (#84).
+      expect(authHttp.refreshes, greaterThanOrEqualTo(1),
+          reason: 'the bad-auth heal forced a token refresh');
 
       // The stale session was thrown away and a second stood up in its place —
       // exactly the restart the person used to have to do by hand.
@@ -574,7 +586,7 @@ void main() {
         () async {
       // Every session refuses, so the heal cannot win. It must give up after a
       // single rebuild and surface the ordinary failure, not rebuild forever.
-      final (:call, :rigs) = staleTokenCall(refuseCount: 99);
+      final (:call, :rigs, authHttp: _) = staleTokenCall(refuseCount: 99);
 
       final detail = await call.setMicOn(true);
       await settle();
@@ -825,4 +837,43 @@ void main() {
     expect(rig.node().disposed, isTrue);
     expect(call.state.micOn, isFalse);
   });
+}
+
+/// A [GatherHttp] token endpoint that never touches the network and counts how
+/// many times it was asked to mint — so a test can prove the bad-auth heal
+/// forced a refresh rather than re-presenting the refused token (#84).
+class _CountingAuthHttp implements GatherHttp {
+  int refreshes = 0;
+
+  @override
+  Future<({int status, Map<String, Object?> body})> postForm(
+    Uri uri,
+    Map<String, String> fields,
+  ) async {
+    refreshes++;
+    return (
+      status: 200,
+      body: {
+        'id_token': 'tok-$refreshes',
+        'refresh_token': fields['refresh_token'],
+        'user_id': 'uid-1',
+      },
+    );
+  }
+
+  @override
+  Future<({int status, Object? body})> getJson(Uri uri, String bearer) async =>
+      (status: 200, body: null);
+
+  @override
+  Future<({int status, List<int> body})> getBytes(Uri uri, String bearer) async =>
+      (status: 200, body: const <int>[]);
+
+  @override
+  Future<({int status, List<int> body})> postJson(
+    Uri uri,
+    String bearer,
+    Object? body,
+  ) async =>
+      (status: 200, body: const <int>[]);
 }
