@@ -39,6 +39,18 @@ void main() {
     expect(find.text('E0'), findsOneWidget);
   });
 
+  testWidgets('an on-the-hour first event still labels the free time before it', (tester) async {
+    // Regression: the leading gap used to be pinned to the event's own hour, so a
+    // 14:00 start showed no "Free till" at all. It now runs from the day start.
+    final timed = [item(at(14), at(15))];
+    await tester.pumpWidget(wrap(DayTimeline(
+      bands: layoutDay(timed),
+      allDay: const [],
+      blockBuilder: (_, i) => Text('E${i.key}'),
+    )));
+    expect(find.text('Free till 14:00'), findsOneWidget);
+  });
+
   testWidgets('a long empty afternoon collapses to a labelled band', (tester) async {
     // 09–10 then nothing until 15–16: a 5h gap, well over the collapse threshold.
     final timed = [item(at(9), at(10), key: 0), item(at(15), at(16), key: 1)];

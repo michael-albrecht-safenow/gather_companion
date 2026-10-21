@@ -37,8 +37,9 @@ class TimelineItem {
 
 /// One vertical slice of the rendered day, in order top to bottom. The day is exactly a
 /// run of these: busy clusters with gaps ([FreeBand]s) between and around them. There
-/// is no fixed 24-hour axis — the first band starts at the first event's hour and the
-/// last ends at the last event's, so an empty morning costs no screen.
+/// is no fixed 24-hour axis — a leading gap runs from the day's start to the first
+/// event (collapsed when long, so an empty morning costs a label not a screen) and the
+/// last band ends at the last event's end, with no trailing free time drawn.
 sealed class Band {
   const Band(this.start, this.end);
 
@@ -91,9 +92,10 @@ class PackedItem {
 ///
 /// Items whose busy spans touch or overlap (within [joinTolerance] — 0 means only a
 /// real overlap or exact back-to-back joins) collapse into one [BusyBand], lane-packed
-/// by [packLanes]. The space between clusters, and the leading gap before the first,
-/// becomes a [FreeBand]; one longer than [collapseThreshold] is flagged [collapsed].
-/// There is no trailing free band after the last event — the day simply ends there.
+/// by [packLanes]. The space between clusters, and the leading gap from the day's start
+/// to the first event, becomes a [FreeBand]; one longer than [collapseThreshold] is
+/// flagged [collapsed]. There is no trailing free band after the last event — the day
+/// simply ends there.
 ///
 /// An empty input yields no bands; the widget reads that as "free for the day".
 List<Band> layoutDay(
@@ -144,17 +146,20 @@ List<Band> layoutDay(
     prevEnd = end;
   }
 
-  // The leading gap is prepended last: its end is the first cluster's start, and its
-  // start is the hour the window opens on — the top of the first event's hour, so the
-  // grid's first label is a clean "HH:00". "Free till 10:00" wants that whole gap.
+  // The leading gap is prepended last: it runs from the start of the day to the first
+  // event, so an open morning always reads "Free till HH:MM" — the label is the first
+  // event's time, whatever hour it falls on and however long the lead-in. The window
+  // is not pinned to the event's own hour (which would swallow the gap whenever an
+  // event sat exactly on the hour); a long lead-in simply collapses to a faded band
+  // instead of a wall of empty grid, so the day stays compact either way.
   final firstStart = clusters.first.first.start;
-  final windowTop = DateTime(
-      firstStart.year, firstStart.month, firstStart.day, firstStart.hour);
-  if (firstStart.isAfter(windowTop)) {
+  final dayTop =
+      DateTime(firstStart.year, firstStart.month, firstStart.day);
+  if (firstStart.isAfter(dayTop)) {
     bands.insert(
         0,
-        FreeBand(windowTop, firstStart,
-            collapsed: firstStart.difference(windowTop) > collapseThreshold));
+        FreeBand(dayTop, firstStart,
+            collapsed: firstStart.difference(dayTop) > collapseThreshold));
   }
   return bands;
 }

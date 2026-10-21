@@ -93,10 +93,19 @@ class _BusyGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
-    final height = band.duration.inMinutes * _pxPerMin;
+    // The grid is at least its own span tall, but never shorter than the lowest block
+    // reaches: a brief event floors to [_minBlockHeight], so a lone 15-minute hold would
+    // otherwise overflow a 14px band and clip its own title. Take the furthest block
+    // bottom so every block fits.
+    final span = band.duration.inMinutes * _pxPerMin;
+    final lowest = band.items.fold<double>(span, (lo, p) {
+      final bottom =
+          p.item.start.difference(band.start).inMinutes * _pxPerMin + _blockHeight(p.item);
+      return bottom > lo ? bottom : lo;
+    });
 
     return SizedBox(
-      height: height,
+      height: lowest,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final laneArea = constraints.maxWidth - _gutterWidth;
@@ -118,7 +127,11 @@ class _BusyGrid extends StatelessWidget {
                 Positioned(
                   left: 0,
                   width: _gutterWidth - 6,
-                  top: (tick.difference(band.start).inMinutes * _pxPerMin) - 6,
+                  // Centred on the hour line, but clamped inside the band so the first
+                  // label never pokes up into the free band above nor the last below —
+                  // the overlap that read as two times stacked on top of each other.
+                  top: (((tick.difference(band.start).inMinutes * _pxPerMin) - 6)
+                      .clamp(0.0, (lowest - 13).clamp(0.0, lowest))),
                   child: Text(
                     _hm(tick),
                     textAlign: TextAlign.right,
@@ -176,42 +189,59 @@ class _Free extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 2),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(t.radius),
-          // Fades top-to-bottom to nothing, so a long open stretch reads as "this just
-          // keeps going" rather than a hard-edged block.
+          // A green wash, the theme's "available" colour, fading top-to-bottom to
+          // nothing so a long open stretch reads as "this just keeps going" — and
+          // distinct from the brand-blue busy blocks at a glance.
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [t.secondary.withValues(alpha: 0.5), t.secondary.withValues(alpha: 0.0)],
+            colors: [t.ok.withValues(alpha: 0.16), t.ok.withValues(alpha: 0.0)],
           ),
         ),
-        padding: const EdgeInsets.only(left: _gutterWidth),
-        alignment: Alignment.centerLeft,
-        child: Text(
-          label,
-          style: TextStyle(color: t.mutedForeground, fontSize: 12, fontWeight: FontWeight.w500),
-        ),
+        child: _freeBody(t, label, strong: true),
       );
     }
 
-    // A short proportional gap: its real height, a soft tint so it reads as open, and
-    // the free minutes once there is room to show them.
+    // A short proportional gap: its real height, the same green open-lane rail, and the
+    // free minutes once there is room to show them.
     final height = band.duration.inMinutes * _pxPerMin;
     return SizedBox(
       height: height,
-      child: Padding(
-        padding: const EdgeInsets.only(left: _gutterWidth),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: height >= 20
-              ? Text(
-                  label,
-                  style: TextStyle(color: t.faint, fontSize: 11),
-                )
-              : const SizedBox.shrink(),
-        ),
-      ),
+      child: height >= 18 ? _freeBody(t, height >= 20 ? label : '', strong: false) : null,
     );
   }
+
+  /// The shared innards of a free band: a green rail where the open lane would be,
+  /// aligned under the busy grid's blocks, with the label beside it. [strong] brightens
+  /// it for the collapsed band, which carries more visual weight than a thin gap.
+  Widget _freeBody(GatherTokens t, String label, {required bool strong}) => Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(width: _gutterWidth),
+          Container(
+            width: 3,
+            margin: const EdgeInsets.symmetric(vertical: 3),
+            decoration: BoxDecoration(
+              color: t.ok.withValues(alpha: strong ? 0.6 : 0.4),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: t.ok.withValues(alpha: strong ? 1.0 : 0.85),
+                  fontSize: strong ? 12 : 11,
+                  fontWeight: strong ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
 }
 
 /// A banner for an all-day event, full width above the grid — it has no hour to sit on
@@ -288,12 +318,14 @@ class _GridPainter extends CustomPainter {
 
 // ---- time helpers ----------------------------------------------------------
 
-/// Every whole hour from [start] (inclusive if on the hour, else the next one) to [end].
+/// Every whole hour from [start] (inclusive if on the hour, else the next one) up to but
+/// not including [end] — a label exactly on the band's bottom edge would spill past it
+/// into whatever follows, so the closing hour is left unlabelled.
 Iterable<DateTime> _hourTicks(DateTime start, DateTime end) sync* {
   var tick = start.minute == 0
       ? start
       : DateTime(start.year, start.month, start.day, start.hour + 1);
-  while (!tick.isAfter(end)) {
+  while (tick.isBefore(end)) {
     yield tick;
     tick = tick.add(const Duration(hours: 1));
   }

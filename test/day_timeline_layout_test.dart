@@ -55,31 +55,37 @@ void main() {
       expect(layoutDay([item(0, 24, allDay: true)]), isEmpty);
     });
 
-    test('no leading free band when the first event sits on the hour', () {
+    test('a leading free band runs from the day start even on the hour', () {
       final bands = layoutDay([item(10, 11)]);
-      // 10:00 start == window top, so the lead gap is zero-length and omitted.
-      expect(bands.whereType<FreeBand>(), isEmpty);
-      expect(bands.single, isA<BusyBand>());
+      // The lead gap is the whole morning (00:00 → 10:00), so "Free till 10:00" shows
+      // however the first event aligns — an on-the-hour start no longer swallows it.
+      final lead = bands.first as FreeBand;
+      expect(lead.start, at(0));
+      expect(lead.end, at(10));
+      expect(lead.collapsed, isTrue); // 10h > 90 min, so it collapses to a faded band
+      expect(bands.whereType<BusyBand>(), hasLength(1));
     });
 
-    test('leading gap present when the first event is mid-hour', () {
+    test('a short leading gap before an early event stays proportional', () {
       final bands = layoutDay([
-        TimelineItem(start: at(10, 30), end: at(11), key: 'a'),
+        TimelineItem(start: at(0, 30), end: at(1), key: 'a'),
       ]);
       final lead = bands.first as FreeBand;
-      expect(lead.start, at(10)); // hour top
-      expect(lead.end, at(10, 30));
+      expect(lead.start, at(0));
+      expect(lead.end, at(0, 30));
       expect(lead.collapsed, isFalse); // 30 min < 90 min threshold
     });
 
     test('a long gap between clusters is collapsed, a short one is not', () {
       // 09–10, then nothing until 14–15: a 4h gap, well over the 90-min default.
       final bands = layoutDay([item(9, 10), item(14, 15)]);
+      // Two gaps now: the leading one (day start → 09:00) and the one between clusters.
       final gaps = bands.whereType<FreeBand>().toList();
-      expect(gaps, hasLength(1));
-      expect(gaps.single.start, at(10));
-      expect(gaps.single.end, at(14));
-      expect(gaps.single.collapsed, isTrue);
+      expect(gaps, hasLength(2));
+      final between = gaps.last;
+      expect(between.start, at(10));
+      expect(between.end, at(14));
+      expect(between.collapsed, isTrue);
     });
 
     test('a short gap between clusters stays proportional', () {
@@ -88,8 +94,11 @@ void main() {
         item(9, 10),
         TimelineItem(start: at(10, 30), end: at(11), key: 'b'),
       ]);
-      final gap = bands.whereType<FreeBand>().single;
-      expect(gap.collapsed, isFalse);
+      // The between-cluster gap is the last free band (the first is the leading one).
+      final between = bands.whereType<FreeBand>().last;
+      expect(between.start, at(10));
+      expect(between.end, at(10, 30));
+      expect(between.collapsed, isFalse);
     });
 
     test('touching events form one busy band, not two', () {
