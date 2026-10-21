@@ -2762,8 +2762,10 @@ class AppState extends ChangeNotifier {
 
   /// Whether this build can offer a Google connection at all — false when no OAuth
   /// client was compiled in (every test, a placeholder build), so the UI can hide
-  /// the action rather than offer one that cannot work.
-  bool get googleAvailable => _googleCalendar != null;
+  /// the action rather than offer one that cannot work. Seeded colleague calendars
+  /// ([debugPeopleCalendars]) stand in for a real client on the simulator, so the
+  /// Plans affordance on person cards shows there too.
+  bool get googleAvailable => _googleCalendar != null || _debugPeopleCalendars.isNotEmpty;
 
   /// Seeds [googleConnected] from the keychain and, if connected, pulls the first
   /// batch of events. Called from [boot]; best-effort, never fails the launch.

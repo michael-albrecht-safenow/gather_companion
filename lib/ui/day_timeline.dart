@@ -68,16 +68,21 @@ class DayTimeline extends StatelessWidget {
           for (final item in allDay)
             _AllDayBanner(child: blockBuilder(context, item)),
           for (var i = 0; i < bands.length; i++)
-            _band(context, bands[i], isLeading: i == 0),
+            _band(context, bands[i],
+                isLeading: i == 0, isTrailing: i == bands.length - 1),
         ],
       ),
     );
   }
 
-  Widget _band(BuildContext context, Band band, {required bool isLeading}) =>
+  Widget _band(BuildContext context, Band band,
+          {required bool isLeading, required bool isTrailing}) =>
       switch (band) {
         BusyBand() => _BusyGrid(band: band, blockBuilder: blockBuilder),
-        FreeBand() => _Free(band: band, isLeading: isLeading),
+        // A free band can be both first and last on a one-gap day, but that only
+        // happens with no busy band at all, which [DayTimeline] draws as "Free for the
+        // day" before it ever reaches here — so leading wins the tie harmlessly.
+        FreeBand() => _Free(band: band, isLeading: isLeading, isTrailing: isTrailing),
       };
 }
 
@@ -171,17 +176,23 @@ class _BusyGrid extends StatelessWidget {
 /// to scale, so it collapses to a fixed height that fades out, labelled with how much
 /// time it stands for.
 class _Free extends StatelessWidget {
-  const _Free({required this.band, required this.isLeading});
+  const _Free({required this.band, required this.isLeading, required this.isTrailing});
 
   final FreeBand band;
   final bool isLeading;
+  final bool isTrailing;
 
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
+    // Leading and trailing gaps name the edge they open onto — "free till the first
+    // thing", "free after the last" — while a gap between two events just names how
+    // long it is, since both its ends are already on screen.
     final label = isLeading
         ? 'Free till ${_hm(band.end)}'
-        : '${_gapLabel(band.duration)} free';
+        : isTrailing
+            ? 'Free after ${_hm(band.start)}'
+            : '${_gapLabel(band.duration)} free';
 
     if (band.collapsed) {
       return Container(

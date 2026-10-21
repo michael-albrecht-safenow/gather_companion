@@ -79,10 +79,11 @@ void main() {
     test('a long gap between clusters is collapsed, a short one is not', () {
       // 09–10, then nothing until 14–15: a 4h gap, well over the 90-min default.
       final bands = layoutDay([item(9, 10), item(14, 15)]);
-      // Two gaps now: the leading one (day start → 09:00) and the one between clusters.
+      // Three gaps now: the leading one (day start → 09:00), the one between clusters,
+      // and the trailing one (15:00 → day end).
       final gaps = bands.whereType<FreeBand>().toList();
-      expect(gaps, hasLength(2));
-      final between = gaps.last;
+      expect(gaps, hasLength(3));
+      final between = gaps[1];
       expect(between.start, at(10));
       expect(between.end, at(14));
       expect(between.collapsed, isTrue);
@@ -94,8 +95,9 @@ void main() {
         item(9, 10),
         TimelineItem(start: at(10, 30), end: at(11), key: 'b'),
       ]);
-      // The between-cluster gap is the last free band (the first is the leading one).
-      final between = bands.whereType<FreeBand>().last;
+      // The between-cluster gap is the middle free band: the first is the leading one
+      // (day start → 09:00), the last is the trailing one (11:00 → day end).
+      final between = bands.whereType<FreeBand>().toList()[1];
       expect(between.start, at(10));
       expect(between.end, at(10, 30));
       expect(between.collapsed, isFalse);
@@ -115,9 +117,12 @@ void main() {
       expect(busy.end, at(13));
     });
 
-    test('no trailing free band after the last event', () {
+    test('a trailing free band runs from the last event to the day end', () {
       final bands = layoutDay([item(10, 11)]);
-      expect(bands.last, isA<BusyBand>());
+      final trailing = bands.last as FreeBand;
+      expect(trailing.start, at(11));
+      expect(trailing.end, at(24)); // midnight next day == at(24)
+      expect(trailing.collapsed, isTrue); // 13h > 90 min
     });
   });
 }

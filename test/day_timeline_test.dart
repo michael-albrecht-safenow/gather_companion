@@ -51,6 +51,16 @@ void main() {
     expect(find.text('Free till 14:00'), findsOneWidget);
   });
 
+  testWidgets('the free time after the last event is labelled', (tester) async {
+    final timed = [item(at(10), at(11))];
+    await tester.pumpWidget(wrap(DayTimeline(
+      bands: layoutDay(timed),
+      allDay: const [],
+      blockBuilder: (_, i) => Text('E${i.key}'),
+    )));
+    expect(find.text('Free after 11:00'), findsOneWidget);
+  });
+
   testWidgets('a long empty afternoon collapses to a labelled band', (tester) async {
     // 09–10 then nothing until 15–16: a 5h gap, well over the collapse threshold.
     final timed = [item(at(9), at(10), key: 0), item(at(15), at(16), key: 1)];
