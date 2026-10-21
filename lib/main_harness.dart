@@ -332,8 +332,13 @@ class _AppHarnessState extends State<_AppHarness> {
     // store's (empty) load. `--dart-define=PLANS=empty` leaves it blank to watch the
     // empty-state and create flow instead.
     if (const String.fromEnvironment('PLANS', defaultValue: 'demo') != 'empty') {
+      final now = DateTime.now();
       // ignore: invalid_use_of_visible_for_testing_member
-      widget.state.debugPlannedMeetings = demoPlannedMeetings(DateTime.now());
+      widget.state.debugPlannedMeetings = demoPlannedMeetings(now);
+      // Canned colleague calendars too, so tapping someone on the map or Dial opens a
+      // populated timeline — the sheet's whole point — rather than "no calendar".
+      // ignore: invalid_use_of_visible_for_testing_member
+      widget.state.debugPeopleCalendars = demoPeopleCalendars(now);
     }
     if (mounted) widget.driver.start();
   }

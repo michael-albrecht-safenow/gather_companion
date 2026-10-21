@@ -102,7 +102,21 @@ class _HomeShellState extends State<HomeShell> {
   ///
   /// Gameboy mode is the exception: the handheld wraps the office, so that is the
   /// screen the retro shell exists to show and the one it opens on.
-  late _Tab _tab = widget.state.gameboyMode ? _Tab.map : _Tab.dial;
+  late _Tab _tab = _openingTab();
+
+  /// The tab to open on. Normally the Dial (or the office in Gameboy mode), but a
+  /// `--dart-define=INITIAL_TAB=plans` override lets the simulator harness boot straight
+  /// onto a given tab for driving and screenshotting it — the const is empty in any real
+  /// build, so this is inert outside the harness.
+  _Tab _openingTab() {
+    const forced = String.fromEnvironment('INITIAL_TAB');
+    if (forced.isNotEmpty) {
+      for (final tab in _Tab.values) {
+        if (tab.name == forced) return tab;
+      }
+    }
+    return widget.state.gameboyMode ? _Tab.map : _Tab.dial;
+  }
 
   /// Built once and held. A fresh `Listenable.merge` on every build would hand
   /// the map's `ListenableBuilder` a new object each frame and make it
