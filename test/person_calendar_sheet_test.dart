@@ -67,6 +67,32 @@ void main() {
     expect(find.textContaining('free'), findsWidgets);
   });
 
+  testWidgets('tapping a short event reveals its full time in a peek', (tester) async {
+    // A 15-minute block is too short to print its own time, so the tap is the only way
+    // to read it — the whole point of the peek.
+    // A genuine 15-min event tomorrow (whole-day in the future so it never falls past,
+    // and the ev() helper only takes whole hours).
+    final now = DateTime.now();
+    final tomorrow = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
+    final state = AppState()
+      ..debugPeopleCalendars = {
+        'Ada': PersonCalendar.ok([
+          GoogleEvent(
+            id: 'a1',
+            title: 'Quick sync',
+            startsAt: tomorrow.add(const Duration(hours: 9)),
+            endsAt: tomorrow.add(const Duration(hours: 9, minutes: 15)),
+          ),
+        ]),
+      };
+
+    await openSheet(tester, state, 'Ada');
+    await tester.tap(find.text('Quick sync'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('09:00 – 09:15'), findsOneWidget);
+  });
+
   testWidgets('a colleague who shared nothing reads as no calendar', (tester) async {
     final state = AppState()..debugPeopleCalendars = {'Mira': PersonCalendar.noCalendar};
 

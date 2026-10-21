@@ -189,9 +189,11 @@ class _DayHeader extends StatelessWidget {
   }
 }
 
-/// A read-only block on a colleague's timeline: their event's title and, where there is
-/// room, its place. Muted — you cannot act on someone else's calendar — and title-less
-/// free/busy blocks simply show "Busy".
+/// A read-only block on a colleague's timeline: their event's title, its time range
+/// where the block is tall enough, and its place where there is more room still. Muted —
+/// you cannot act on someone else's calendar — but every block taps through to [_EventPeek]
+/// for the full detail, which is the only way to read the time off a short event the block
+/// is too small to print it on.
 class _PersonBlock extends StatelessWidget {
   const _PersonBlock({required this.event});
 
@@ -203,45 +205,141 @@ class _PersonBlock extends StatelessWidget {
     final hasPlace = event.location != null && event.location!.isNotEmpty;
     return Material(
       color: t.secondary,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-        child: LayoutBuilder(
-          builder: (context, c) {
-            final showPlace = c.maxHeight >= 50 && hasPlace;
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  event.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: t.foreground, fontSize: 12.5, fontWeight: FontWeight.w600, height: 1.15),
-                ),
-                if (showPlace) ...[
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      Icon(Icons.place_outlined, size: 11, color: t.mutedForeground),
-                      const SizedBox(width: 2),
-                      Flexible(
-                        child: Text(
-                          event.location!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: t.mutedForeground, fontSize: 10.5),
-                        ),
-                      ),
-                    ],
+      child: InkWell(
+        onTap: () => _showEventPeek(context, event),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+          child: LayoutBuilder(
+            builder: (context, c) {
+              // Title always; the time appears once the block clears a line for it, the
+              // place once there is a line beyond that. A shorter block shows less and the
+              // tap fills in the rest, so nothing overflows the lane.
+              final showTime = c.maxHeight >= 38;
+              final showPlace = c.maxHeight >= 56 && hasPlace;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    event.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: t.foreground, fontSize: 12.5, fontWeight: FontWeight.w600, height: 1.15),
                   ),
+                  if (showTime) ...[
+                    const SizedBox(height: 1),
+                    Text(
+                      _eventTime(event),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: t.mutedForeground,
+                        fontSize: 10.5,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                  if (showPlace) ...[
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Icon(Icons.place_outlined, size: 11, color: t.mutedForeground),
+                        const SizedBox(width: 2),
+                        Flexible(
+                          child: Text(
+                            event.location!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: t.mutedForeground, fontSize: 10.5),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
-              ],
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );
   }
 }
+
+/// A read-only detail card for one of a colleague's events, opened by tapping its block.
+/// The block itself may be too short to print the time; this always carries it in full,
+/// plus the place when there is one — so a two-line sliver on the grid is still legible.
+void _showEventPeek(BuildContext context, GoogleEvent event) {
+  final t = context.tokens;
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: t.card,
+    showDragHandle: true,
+    builder: (context) => _EventPeek(event: event),
+  );
+}
+
+class _EventPeek extends StatelessWidget {
+  const _EventPeek({required this.event});
+
+  final GoogleEvent event;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final hasPlace = event.location != null && event.location!.isNotEmpty;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              event.title,
+              style: TextStyle(color: t.foreground, fontSize: 17, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 14),
+            _PeekRow(icon: Icons.schedule, text: '${_dayLabel(event.startsAt)} · ${_eventTime(event)}'),
+            if (hasPlace) ...[
+              const SizedBox(height: 8),
+              _PeekRow(icon: Icons.place_outlined, text: event.location!),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PeekRow extends StatelessWidget {
+  const _PeekRow({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: t.mutedForeground),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(text, style: TextStyle(color: t.foreground, fontSize: 14)),
+        ),
+      ],
+    );
+  }
+}
+
+/// "09:00 – 10:00", or "All day" for an all-day event.
+String _eventTime(GoogleEvent e) =>
+    e.allDay ? 'All day' : '${_hm(e.startsAt)} – ${_hm(e.endsAt)}';
+
+String _hm(DateTime d) =>
+    '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
 class _Hint extends StatelessWidget {
   const _Hint({required this.icon, required this.text});
