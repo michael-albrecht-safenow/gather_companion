@@ -15,6 +15,7 @@ library;
 
 import 'package:gather_client/gather_client.dart';
 
+import '../src/calendar.dart';
 import '../src/media/call.dart';
 
 /// One made-up colleague.
@@ -190,3 +191,59 @@ RosterRow officeRow(CallPerson p, ({int x, int y}) at, {String direction = 'Down
       speaking: speaking,
       handRaised: handRaised,
     );
+
+// ---- the Plans tab ----------------------------------------------------------
+//
+// The app harness boots with an empty keychain, so the Plans tab would read
+// "No plans yet" and the timeline redesign could not be eyeballed on a bare sim.
+// This seeds a demo day that exercises every branch of the timeline at once:
+// side-by-side double-bookings, a long gap that collapses to a faded band, a
+// leading "Free till HH:MM" the morning after, and a clear day that reads "Free
+// for the day". Local plans only — the app harness carries no Google client, so
+// all-day banners and the colleague sheet still need a real `--dart-define` build.
+
+/// A spread of planned meetings, anchored to [now], that lights up the timeline.
+///
+/// Today's cluster is pinned relative to [now] (not a wall-clock hour) so it is
+/// always in the future and always renders, whatever time the sim is launched;
+/// the later days use fixed clock hours to show a leading free band and an empty
+/// day deterministically.
+List<PlannedMeeting> demoPlannedMeetings(DateTime now) {
+  // The top of the hour after next: today's first block sits on an hour line, so
+  // the grid's labels line up with a block edge, and nothing is already past.
+  final base = DateTime(now.year, now.month, now.day, now.hour)
+      .add(const Duration(hours: 1));
+  final today = DateTime(now.year, now.month, now.day);
+  DateTime day(int offset, int h, [int m = 0]) =>
+      today.add(Duration(days: offset, hours: h, minutes: m));
+
+  PlannedMeeting mk(String id, String title, DateTime s, DateTime e,
+          {String? room, String? stable}) =>
+      PlannedMeeting(
+          id: id, title: title, startsAt: s, endsAt: e, roomStableId: stable, roomName: room);
+
+  return [
+    // Today: a short standup, then an overlapping pair (double-booking → two
+    // lanes), then a >90min gap (collapses to a faded "Nh free") before a wrap-up.
+    mk('demo-standup', 'Standup', base, base.add(const Duration(minutes: 15)),
+        room: 'Huddle', stable: 'room-huddle'),
+    mk('demo-review', 'Design review', base.add(const Duration(hours: 1)),
+        base.add(const Duration(hours: 3)),
+        room: 'Focus', stable: 'room-focus'),
+    mk('demo-1on1', '1:1 with Ada', base.add(const Duration(hours: 1, minutes: 30)),
+        base.add(const Duration(hours: 2)),
+        room: 'Lounge', stable: 'room-lounge'),
+    mk('demo-wrap', 'Wrap-up', base.add(const Duration(hours: 5)),
+        base.add(const Duration(hours: 5, minutes: 45)),
+        room: 'Lounge', stable: 'room-lounge'),
+    // Tomorrow: one mid-afternoon slot. It sits off the hour (14:30) on purpose, so
+    // the leading free band has a span to label and the morning reads "Free till 14:30"
+    // — an on-the-hour start would window exactly to it and show no leading band.
+    mk('demo-sync', 'Team sync', day(1, 14, 30), day(1, 15, 30),
+        room: 'Huddle', stable: 'room-huddle'),
+    // Day after tomorrow has nothing — but an event on day+3 keeps it in the
+    // rendered range, so it shows as a "Free for the day" marker between the two.
+    mk('demo-roadmap', 'Roadmap planning', day(3, 10), day(3, 11, 30),
+        room: 'Focus', stable: 'room-focus'),
+  ];
+}

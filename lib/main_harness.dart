@@ -37,6 +37,7 @@ import 'package:gather_client/gather_client.dart';
 import 'harness/call_scenarios.dart';
 import 'harness/demo_footage.dart';
 import 'harness/fake_collector.dart';
+import 'harness/harness_data.dart';
 import 'harness/scripted_call.dart';
 import 'src/app_state.dart';
 import 'src/credentials.dart';
@@ -325,6 +326,15 @@ class _AppHarnessState extends State<_AppHarness> {
       await UiPreferences().saveGameboyThemeId(const String.fromEnvironment('GBTHEME'));
     }
     await widget.state.boot();
+    // Seed the Plans tab so the timeline redesign can be eyeballed on a bare sim —
+    // boot loads an empty keychain here, so without this the tab reads "No plans
+    // yet". Set *after* boot, which otherwise overwrites `_plannedMeetings` with the
+    // store's (empty) load. `--dart-define=PLANS=empty` leaves it blank to watch the
+    // empty-state and create flow instead.
+    if (const String.fromEnvironment('PLANS', defaultValue: 'demo') != 'empty') {
+      // ignore: invalid_use_of_visible_for_testing_member
+      widget.state.debugPlannedMeetings = demoPlannedMeetings(DateTime.now());
+    }
     if (mounted) widget.driver.start();
   }
 
