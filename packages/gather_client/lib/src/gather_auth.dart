@@ -305,14 +305,21 @@ class GatherAuth {
   /// refuse a token that is *not* clock-expired — after a long iOS suspend the
   /// media plane rejects the held token with `TokenVerificationFailed`, and
   /// re-presenting the same cached one on every reconnect loops forever (#84).
-  /// This clears the cache so the next [idToken] re-mints, and joins the
-  /// in-flight refresh if one is already running. Errors surface on the next
-  /// [idToken] (which re-attempts, or throws permanent → re-pair), not here, so
-  /// a fire-and-forget caller on a reconnect path cannot crash on a dropped
-  /// packet.
+  /// When no refresh is in flight this clears the cache so the next [idToken]
+  /// re-mints; when one is already running it simply joins it rather than
+  /// clearing, because that refresh is already minting a fresh token — wiping
+  /// the cache a second time would throw away the token it just assigned (a
+  /// racing invalidation landing in the window where [_refresh] has set
+  /// `_credentials` but is still awaiting `_onRotated` persistence), leaving an
+  /// empty cache that forces a needless extra refresh on the next read. Errors
+  /// surface on the next [idToken] (which re-attempts, or throws permanent →
+  /// re-pair), not here, so a fire-and-forget caller on a reconnect path cannot
+  /// crash on a dropped packet.
   Future<void> invalidateIdToken() {
-    _credentials = _credentials.copyWith(idToken: '');
-    final refresh = _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
+    final refresh = _refreshing ??= () {
+      _credentials = _credentials.copyWith(idToken: '');
+      return _refresh().whenComplete(() => _refreshing = null);
+    }();
     return refresh.then((_) {}, onError: (_) {});
   }
 
