@@ -1225,6 +1225,15 @@ class SfuSession {
       if (_priority.contains(srcId)) _sendPriority();
     } on Object catch (error) {
       _log('sfu: asking for $srcId failed: $error');
+      // Drop the cached placement so the retry re-asks the router rather than
+      // reusing the url that just failed. `_nodeUrlFor` caches the address
+      // before the connect it feeds into, so a node that has silently died —
+      // the peer since republished elsewhere — leaves a stale entry here that
+      // the retry loop would otherwise read straight back out, re-attempting the
+      // same corpse forever and leaving the peer inaudible (issue #83). Clearing
+      // it costs one extra router round trip when the failure was transient and
+      // the answer is unchanged.
+      _peerNode.remove(srcId);
       if (_awaitingAddr.add(srcId)) {
         _publishRemotes();
         _expediteAddrRetry();

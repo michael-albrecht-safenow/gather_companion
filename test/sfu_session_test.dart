@@ -475,6 +475,45 @@ void main() {
       expect(rig.republishes, greaterThan(before),
           reason: 'the move asks the caller to republish onto the new node');
     });
+
+    test('a post-grace resolve onto a still-failing node does not stick: the '
+        'next answer re-resolves onto where the peer actually went', () async {
+      // The reviewer case: at grace expiry the router still names the dead node,
+      // so the re-resolve re-caches it and the first attempt there fails. If that
+      // failed placement were left in `_peerNode`, every later retry would read it
+      // straight back out and keep asking the corpse — the peer republishes
+      // elsewhere and is never heard. The failed attempt must evict the cache so
+      // the next answer is free to name the real node (issue #83).
+      rig.session.setAllowed({them});
+      await rig.session.start();
+
+      // Their media is on nodeB, which refuses every consume-request from here on
+      // — the node is up enough to connect but cannot serve them, the shape a
+      // just-drained node takes while the router has not caught up.
+      rig.addresses[them] = nodeB;
+      rig.nodeRefusals['consume-request'] = 'refused';
+      await rig.session.subscribe(them);
+      await settle();
+      expect(rig.node(nodeB).has('consume-request'), isTrue,
+          reason: 'precondition: we tried nodeB and it refused');
+
+      // The router now places them on nodeA, which serves them. Nothing re-asks on
+      // its own in this test's time budget, so push the answer the server would:
+      // a fresh consume-try is the full-state announcement that drives a reconcile.
+      rig.nodeRefusals.remove('consume-request');
+      rig.addresses[them] = nodeA;
+      rig.node(nodeA).drain();
+      rig.announce(them, {'audio': 'prod-them-audio'}, url: nodeA);
+      await settle();
+      await settle();
+
+      // The reconcile re-resolved rather than reusing the cached refusing node:
+      // the consume lands on nodeA. A stale `_peerNode[them] == nodeB` would have
+      // sent it back to the node that cannot serve them.
+      expect(rig.node(nodeA).has('consume'), isTrue,
+          reason: 'them is consumed on the node that now carries them');
+      expect(rig.node(nodeA).argsFor('consume')!['srcId'], them);
+    });
   });
 
   group('a peer on a secondary node (issue #74)', () {
