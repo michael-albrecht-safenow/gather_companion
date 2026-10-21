@@ -21,8 +21,10 @@ import 'package:gather_client/gather_client.dart';
 
 import '../src/app_state.dart';
 import '../src/calendar.dart';
+import '../src/day_timeline_layout.dart';
 import '../src/google_calendar.dart';
 import '../theme/gather_theme.dart';
+import 'day_timeline.dart';
 
 /// The Plans list splits entries into upcoming vs past and labels day headers and the
 /// live "Go to meeting" button against the current time. Those checks run on build, but
@@ -134,7 +136,7 @@ class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObse
             padding: EdgeInsets.only(top: 8, bottom: bottomInset + 96),
             children: [
               if (showConnect) _ConnectGoogleBanner(state: state),
-              ..._withDayHeaders(context, upcoming),
+              ..._timelineSections(context, upcoming, now),
               if (past.isNotEmpty) ...[
                 const _SectionHeader('EARLIER'),
                 for (final e in past) e.build(context, past: true),
@@ -147,39 +149,206 @@ class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObse
   }
 }
 
-/// Upcoming entries, split by day the way the Activity feed is — a wall of times
-/// with no dates stops being readable past the first screen.
-List<Widget> _withDayHeaders(BuildContext context, List<_Entry> entries) {
+/// Upcoming entries as one day-headed [DayTimeline] per day — the whole point of the
+/// redesign. Every day from today to the last day an event touches gets a section, so a
+/// clear day shows up as "Free for the day" rather than silently vanishing; a lone
+/// event weeks out would otherwise paint a fortnight of empty days, so the horizon is
+/// capped and the far event just sits at the end of it.
+List<Widget> _timelineSections(BuildContext context, List<_Entry> upcoming, DateTime now) {
+  if (upcoming.isEmpty) return const [];
+  final today = DateTime(now.year, now.month, now.day);
+  final lastDay = upcoming
+      .map((e) => DateTime(e.endsAt.year, e.endsAt.month, e.endsAt.day))
+      .reduce((a, b) => a.isAfter(b) ? a : b);
+  final horizon = today.add(const Duration(days: 14));
+  final end = lastDay.isBefore(horizon) ? lastDay : horizon;
+
   final out = <Widget>[];
-  String? current;
-  for (final e in entries) {
-    final label = _dayLabel(e.startsAt);
-    if (label != current) {
-      out.add(_SectionHeader(label));
-      current = label;
+  for (var day = today; !day.isAfter(end); day = day.add(const Duration(days: 1))) {
+    final dayStart = day;
+    final dayEnd = day.add(const Duration(days: 1));
+    // Every entry that touches this day, clipped to it — a meeting across midnight or a
+    // multi-day all-day event appears on each day it covers, bounded to the day's edges.
+    final timed = <TimelineItem>[];
+    final allDay = <TimelineItem>[];
+    for (var i = 0; i < upcoming.length; i++) {
+      final e = upcoming[i];
+      if (!e.startsAt.isBefore(dayEnd) || !e.endsAt.isAfter(dayStart)) continue;
+      final item = TimelineItem(
+        start: e.startsAt.isBefore(dayStart) ? dayStart : e.startsAt,
+        end: e.endsAt.isAfter(dayEnd) ? dayEnd : e.endsAt,
+        allDay: e.allDay,
+        key: i,
+      );
+      (e.allDay ? allDay : timed).add(item);
     }
-    out.add(e.build(context, past: false));
+    out.add(_SectionHeader(_dayLabel(day)));
+    out.add(DayTimeline(
+      bands: layoutDay(timed),
+      allDay: allDay,
+      blockBuilder: (ctx, item) => upcoming[item.key as int].block(ctx),
+    ));
   }
   return out;
 }
 
-/// One row in the merged Plans timeline: either a [PlannedMeeting] this phone owns
-/// or a read-only [GoogleEvent] it mirrors. Carries just enough — a start, an end and
-/// a card builder — for the screen to sort and group the two kinds as one list.
+/// One entry in the merged Plans timeline: either a [PlannedMeeting] this phone owns or
+/// a read-only [GoogleEvent] it mirrors. Carries a start, an end, whether it is all-day,
+/// a compact [block] for the timeline grid, and the full [build] card still used by the
+/// dimmed "EARLIER" past list.
 class _Entry {
-  _Entry._(this.startsAt, this.endsAt, this._build);
+  _Entry._(this.startsAt, this.endsAt, this.allDay, this._block, this._card);
 
-  factory _Entry.plan(AppState state, PlannedMeeting m) =>
-      _Entry._(m.startsAt, m.endsAt, (context, {required past}) => _MeetingCard(state: state, meeting: m, past: past));
+  factory _Entry.plan(AppState state, PlannedMeeting m) => _Entry._(
+        m.startsAt,
+        m.endsAt,
+        false,
+        (context) => _TimelineBlock.plan(state, m),
+        (context, {required past}) => _MeetingCard(state: state, meeting: m, past: past),
+      );
 
-  factory _Entry.google(AppState state, GoogleEvent e) =>
-      _Entry._(e.startsAt, e.endsAt, (context, {required past}) => _GoogleEventCard(state: state, event: e, past: past));
+  factory _Entry.google(AppState state, GoogleEvent e) => _Entry._(
+        e.startsAt,
+        e.endsAt,
+        e.allDay,
+        (context) => _TimelineBlock.google(state, e),
+        (context, {required past}) => _GoogleEventCard(state: state, event: e, past: past),
+      );
 
   final DateTime startsAt;
   final DateTime endsAt;
-  final Widget Function(BuildContext context, {required bool past}) _build;
+  final bool allDay;
+  final Widget Function(BuildContext context) _block;
+  final Widget Function(BuildContext context, {required bool past}) _card;
 
-  Widget build(BuildContext context, {required bool past}) => _build(context, past: past);
+  Widget block(BuildContext context) => _block(context);
+  Widget build(BuildContext context, {required bool past}) => _card(context, past: past);
+}
+
+/// The compact block a timeline lane draws: a title, its time, a place when pinned, and
+/// a brand ring while it is live. Filled brand for a plan this phone owns, muted for a
+/// read-only Google event, so the two read apart at a glance. Fills whatever height the
+/// grid gives it; the time hides on a block too short to hold it.
+class _TimelineBlock extends StatelessWidget {
+  const _TimelineBlock._({
+    required this.title,
+    required this.time,
+    required this.place,
+    required this.live,
+    required this.owned,
+    required this.onTap,
+  });
+
+  factory _TimelineBlock.plan(AppState state, PlannedMeeting m) {
+    final now = DateTime.now();
+    return _TimelineBlock._(
+      title: m.title,
+      time: _timeRange(m),
+      place: (m.roomName?.isNotEmpty ?? false) ? m.roomName : null,
+      live: !m.startsAt.isAfter(now) && m.endsAt.isAfter(now),
+      owned: true,
+      onTap: (context) => _openEditor(context, state, m),
+    );
+  }
+
+  factory _TimelineBlock.google(AppState state, GoogleEvent e) {
+    final now = DateTime.now();
+    final live = !e.startsAt.isAfter(now) && e.endsAt.isAfter(now);
+    return _TimelineBlock._(
+      title: e.title,
+      time: e.allDay ? 'All day' : _googleTimeRange(e),
+      place: (e.location?.isNotEmpty ?? false) ? e.location : null,
+      live: live,
+      owned: false,
+      onTap: (context) async {
+        // A live Google event whose location resolves to a room here walks you in — the
+        // same affordance the old card's "Go to meeting" gave, now on the whole block.
+        if (!(live && state.canGoToMeeting(e))) return;
+        final messenger = ScaffoldMessenger.of(context);
+        final error = await state.walkToGoogleEvent(e);
+        if (error != null) messenger.showSnackBar(SnackBar(content: Text(error)));
+      },
+    );
+  }
+
+  final String title;
+  final String time;
+  final String? place;
+  final bool live;
+  final bool owned;
+  final void Function(BuildContext context) onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    final bg = owned ? t.brand : t.secondary;
+    final fg = owned ? t.primaryForeground : t.foreground;
+    return Material(
+      color: bg,
+      child: InkWell(
+        onTap: () => onTap(context),
+        child: Container(
+          decoration: live
+              ? BoxDecoration(
+                  border: Border.all(color: t.brand, width: 2),
+                  borderRadius: BorderRadius.circular(t.radius),
+                )
+              : null,
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+          child: LayoutBuilder(
+            builder: (context, c) {
+              // A short block holds only the title; the time and then the place appear
+              // as it grows. The thresholds leave headroom so a block never overflows
+              // its lane — the rows are laid out, not scrolled.
+              final showTime = c.maxHeight >= 42;
+              final showPlace = c.maxHeight >= 66 && place != null;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: fg, fontSize: 12.5, fontWeight: FontWeight.w600, height: 1.15),
+                  ),
+                  if (showTime) ...[
+                    const SizedBox(height: 1),
+                    Text(
+                      time,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: fg.withValues(alpha: 0.82),
+                        fontSize: 10.5,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                  if (showPlace) ...[
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Icon(Icons.place_outlined, size: 11, color: fg.withValues(alpha: 0.7)),
+                        const SizedBox(width: 2),
+                        Flexible(
+                          child: Text(
+                            place!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: fg.withValues(alpha: 0.7), fontSize: 10.5),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// The Plans tab's Google connection, as an app-bar action. A cloud-off icon offers
@@ -787,6 +956,29 @@ class _MeetingEditorState extends State<_MeetingEditor> {
                 onChanged: (m) => setState(() => _remindMinutes = m),
               ),
             ),
+            // Walk and delete used to live on the meeting's list card. The timeline
+            // draws a compact block with no room for them, so they move here — the one
+            // place an existing meeting is already open for action.
+            if (editing) ...[
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  if (widget.existing!.roomName?.isNotEmpty ?? false)
+                    _Action(
+                      icon: Icons.directions_walk_rounded,
+                      label: 'Walk here',
+                      onTap: _walkFromEditor,
+                    ),
+                  const Spacer(),
+                  _Action(
+                    icon: Icons.delete_outline_rounded,
+                    label: 'Delete',
+                    tint: t.danger,
+                    onTap: _deleteFromEditor,
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
@@ -891,6 +1083,35 @@ class _MeetingEditorState extends State<_MeetingEditor> {
       if (room.stableId == stableId) return room;
     }
     return null;
+  }
+
+  /// Walks to the meeting being edited, then closes the sheet — the same hop the list
+  /// card's "Walk here" ran, now that the timeline block hands off to this sheet.
+  Future<void> _walkFromEditor() async {
+    final existing = widget.existing!;
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final error = await widget.state.walkToMeeting(existing);
+    if (!mounted) return;
+    navigator.pop();
+    messenger.showSnackBar(SnackBar(
+      content: Text(error ?? 'On your way to ${existing.roomName}.'),
+    ));
+  }
+
+  /// Deletes the meeting being edited and closes the sheet; a failure keeps the sheet
+  /// open with the reason.
+  Future<void> _deleteFromEditor() async {
+    final existing = widget.existing!;
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final error = await widget.state.deleteMeeting(existing.id);
+    if (!mounted) return;
+    if (error != null) {
+      messenger.showSnackBar(SnackBar(content: Text(error)));
+      return;
+    }
+    navigator.pop();
   }
 }
 

@@ -26,8 +26,10 @@ void main() {
     // Starts now rather than hours out, so the meeting's date is always today
     // whatever the clock reads — a two-hour offset ran into tomorrow (and failed the
     // TODAY assertion) when the suite happened to run in the last two hours of a day.
-    // The 30-minute end still sits in the future, so it reads as upcoming.
     Duration fromNow = Duration.zero,
+    // Default long enough that its timeline block has room to draw the room; a short
+    // block shows only the title.
+    Duration length = const Duration(hours: 2),
     String? roomName = 'Lounge',
   }) {
     final start = DateTime.now().add(fromNow);
@@ -35,7 +37,7 @@ void main() {
       id: id,
       title: title,
       startsAt: start,
-      endsAt: start.add(const Duration(minutes: 30)),
+      endsAt: start.add(length),
       roomStableId: roomName == null ? null : 'stable',
       roomName: roomName,
     );
@@ -59,27 +61,44 @@ void main() {
     await tester.pumpWidget(wrap(state));
 
     expect(find.text('Design review'), findsOneWidget);
+    // A two-hour block has the height to draw the room beneath the title.
     expect(find.text('Lounge'), findsOneWidget);
     // Starting now, it is by definition today.
     expect(find.text('TODAY'), findsOneWidget);
-    expect(find.text('Walk here'), findsOneWidget);
   });
 
-  testWidgets('a meeting with no room offers no walk action', (tester) async {
+  testWidgets('tapping a meeting opens the editor with walk and delete', (tester) async {
+    final state = AppState()..debugPlannedMeetings = [meeting(title: 'Design review')];
+
+    await tester.pumpWidget(wrap(state));
+    await tester.tap(find.text('Design review'));
+    await tester.pumpAndSettle();
+
+    // Walk and delete moved off the list card onto the edit sheet the block opens.
+    expect(find.text('Edit meeting'), findsOneWidget);
+    expect(find.text('Walk here'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+  });
+
+  testWidgets('a roomless meeting opens an editor with no walk action', (tester) async {
     final state = AppState()..debugPlannedMeetings = [meeting(roomName: null)];
 
     await tester.pumpWidget(wrap(state));
+    await tester.tap(find.text('Standup'));
+    await tester.pumpAndSettle();
 
     expect(find.text('Walk here'), findsNothing);
     expect(find.text('Delete'), findsOneWidget);
   });
 
-  testWidgets('deleting a meeting takes it off the list', (tester) async {
+  testWidgets('deleting a meeting from the editor takes it off the timeline', (tester) async {
     final state = AppState()..debugPlannedMeetings = [meeting(title: 'Standup')];
 
     await tester.pumpWidget(wrap(state));
     expect(find.text('Standup'), findsOneWidget);
 
+    await tester.tap(find.text('Standup'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
 

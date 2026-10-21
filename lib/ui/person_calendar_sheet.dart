@@ -14,8 +14,10 @@ library;
 import 'package:flutter/material.dart';
 
 import '../src/app_state.dart';
+import '../src/day_timeline_layout.dart';
 import '../src/google_calendar.dart';
 import '../theme/gather_theme.dart';
+import 'day_timeline.dart';
 
 /// Opens the calendar sheet for the person named [label]. A thin wrapper over
 /// `showModalBottomSheet` so both call sites open it identically.
@@ -111,11 +113,9 @@ class _PersonCalendarSheet extends StatelessWidget {
                         text: 'Nothing on $firstName’s calendar for the next week.',
                       );
                     }
-                    return ListView.separated(
+                    return ListView(
                       shrinkWrap: true,
-                      itemCount: upcoming.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                      itemBuilder: (context, i) => _PersonEventRow(event: upcoming[i]),
+                      children: _personSections(context, upcoming),
                     );
                   },
                 ),
@@ -128,8 +128,72 @@ class _PersonCalendarSheet extends StatelessWidget {
   }
 }
 
-class _PersonEventRow extends StatelessWidget {
-  const _PersonEventRow({required this.event});
+/// The colleague's week as one [DayTimeline] per day — the same shape the Plans tab
+/// draws for yourself, so "when are they free" reads at a glance. Every day from today
+/// to the last event they have gets a section; a clear day shows "Free for the day".
+List<Widget> _personSections(BuildContext context, List<GoogleEvent> events) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final lastDay = events
+      .map((e) => DateTime(e.endsAt.year, e.endsAt.month, e.endsAt.day))
+      .reduce((a, b) => a.isAfter(b) ? a : b);
+
+  final out = <Widget>[];
+  for (var day = today; !day.isAfter(lastDay); day = day.add(const Duration(days: 1))) {
+    final dayStart = day;
+    final dayEnd = day.add(const Duration(days: 1));
+    final timed = <TimelineItem>[];
+    final allDay = <TimelineItem>[];
+    for (var i = 0; i < events.length; i++) {
+      final e = events[i];
+      if (!e.startsAt.isBefore(dayEnd) || !e.endsAt.isAfter(dayStart)) continue;
+      final item = TimelineItem(
+        start: e.startsAt.isBefore(dayStart) ? dayStart : e.startsAt,
+        end: e.endsAt.isAfter(dayEnd) ? dayEnd : e.endsAt,
+        allDay: e.allDay,
+        key: i,
+      );
+      (e.allDay ? allDay : timed).add(item);
+    }
+    out.add(_DayHeader(label: _dayLabel(day)));
+    out.add(DayTimeline(
+      bands: layoutDay(timed),
+      allDay: allDay,
+      blockBuilder: (ctx, item) => _PersonBlock(event: events[item.key as int]),
+    ));
+  }
+  return out;
+}
+
+/// A day label above a colleague's timeline — Today / Tomorrow / a weekday / a date.
+class _DayHeader extends StatelessWidget {
+  const _DayHeader({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 14, 0, 2),
+      child: Text(
+        label.toUpperCase(),
+        style: TextStyle(
+          color: t.mutedForeground,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.6,
+        ),
+      ),
+    );
+  }
+}
+
+/// A read-only block on a colleague's timeline: their event's title and, where there is
+/// room, its place. Muted — you cannot act on someone else's calendar — and title-less
+/// free/busy blocks simply show "Busy".
+class _PersonBlock extends StatelessWidget {
+  const _PersonBlock({required this.event});
 
   final GoogleEvent event;
 
@@ -137,52 +201,43 @@ class _PersonEventRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final hasPlace = event.location != null && event.location!.isNotEmpty;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: t.background,
-        borderRadius: BorderRadius.circular(t.radius),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Column(
+    return Material(
+      color: t.secondary,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+        child: LayoutBuilder(
+          builder: (context, c) {
+            final showPlace = c.maxHeight >= 50 && hasPlace;
+            return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   event.title,
-                  style: TextStyle(color: t.foreground, fontSize: 15, fontWeight: FontWeight.w600),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: t.foreground, fontSize: 12.5, fontWeight: FontWeight.w600, height: 1.15),
                 ),
-                if (hasPlace) ...[
-                  const SizedBox(height: 4),
+                if (showPlace) ...[
+                  const SizedBox(height: 2),
                   Row(
                     children: [
-                      Icon(Icons.place_outlined, size: 13, color: t.mutedForeground),
-                      const SizedBox(width: 4),
+                      Icon(Icons.place_outlined, size: 11, color: t.mutedForeground),
+                      const SizedBox(width: 2),
                       Flexible(
                         child: Text(
                           event.location!,
+                          maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: t.mutedForeground, fontSize: 12),
+                          style: TextStyle(color: t.mutedForeground, fontSize: 10.5),
                         ),
                       ),
                     ],
                   ),
                 ],
               ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          Text(
-            event.allDay ? 'All day' : '${_dayLabel(event.startsAt)} ${_hm(event.startsAt)}',
-            style: TextStyle(
-              color: t.faint,
-              fontSize: 12,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -213,9 +268,6 @@ class _Hint extends StatelessWidget {
     );
   }
 }
-
-String _hm(DateTime d) =>
-    '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
 /// "Today" / "Tomorrow" / a weekday, to put a loose day beside the time without the
 /// sheet needing the Plans tab's full day-headed grouping.
