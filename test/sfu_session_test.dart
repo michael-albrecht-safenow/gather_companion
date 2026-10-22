@@ -1166,6 +1166,96 @@ void main() {
         clock.elapse(const Duration(seconds: 1));
       });
     });
+
+    test('resubscribes a stale audio tag when a bare re-announce is a no-op', () {
+      // Issue #61 hardening. The soft re-announce only heals if the SFU answers
+      // the repeat `consume-request` with a fresh `consume-try`. A server that
+      // treats the duplicate as a no-op — the rig's default, since it only
+      // re-announces when the test tells it to — would leave the stale id in
+      // place and the watchdog climbing against it forever. After a couple of
+      // fruitless soft tries the heal must escalate to a full
+      // unsubscribe/resubscribe (a `requested:false`→`true` toggle the server
+      // must answer), which re-consumes video once but recovers audio.
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+
+        // Refuse audio with a stale-producer error while video consumes fine.
+        var refuseAudio = true;
+        rig.node().answer('consume', (args) {
+          if (args['tag'] == 'audio' && refuseAudio) {
+            throw const SfuException('consume refused: no such producer');
+          }
+          return {
+            'id': 'consumer-${args['srcId']}-${args['tag']}',
+            'producerId': rig.producerIds['${args['srcId']}|${args['tag']}'],
+            'producerPaused': false,
+            'rtpParameters': Rig.rtpParameters,
+          };
+        });
+
+        rig.announce(them, {'audio': 'p-audio', 'video': 'p-video'});
+        clock.flushMicrotasks();
+
+        // Visible but audible-dead to start.
+        expect(rig.session.remotes.single.streams.keys, [SfuTag.video]);
+        expect(consumesFor(rig.node(), them, 'video'), 1);
+
+        // First watchdog tick: a soft re-announce, no resubscribe. Crucially we
+        // inject no fresh `consume-try`, so the soft re-announce resolves
+        // nothing — the no-op-SFU case — and audio stays dead.
+        clock.elapse(const Duration(seconds: 5));
+        clock.flushMicrotasks();
+        expect(rig.session.remotes.single.streams.keys, [SfuTag.video],
+            reason: 'a bare re-announce the server ignores heals nothing');
+        expect(
+            rig.node().sent.any((f) =>
+                f.method == 'consume-request' &&
+                f.args['srcId'] == them &&
+                f.args['requested'] == false),
+            isFalse,
+            reason: 'the soft try must not resubscribe yet');
+
+        // Next tick escalates: the peer is unsubscribed (a `requested:false`
+        // toggle, tearing the working video down) and resubscribed.
+        clock.elapse(const Duration(seconds: 10));
+        clock.flushMicrotasks();
+        expect(
+            rig.node().sent.any((f) =>
+                f.method == 'consume-request' &&
+                f.args['srcId'] == them &&
+                f.args['requested'] == false),
+            isTrue,
+            reason: 'a stale tag the soft re-announce could not clear must '
+                'force a fresh announce by resubscribing');
+
+        // The resubscribe is a genuinely fresh subscription the server answers
+        // with a live audio producer; audio now consumes, and video is
+        // re-consumed once as the cost of the toggle.
+        refuseAudio = false;
+        rig.announce(them, {'audio': 'p-audio-2', 'video': 'p-video'});
+        clock.flushMicrotasks();
+
+        expect(rig.session.remotes.single.streams.keys,
+            containsAll(<SfuTag>[SfuTag.audio, SfuTag.video]),
+            reason: 'audio recovered against the resubscribed producer id');
+        expect(consumesFor(rig.node(), them, 'video'), 2,
+            reason: 'the resubscribe re-consumes video exactly once');
+
+        // Stand-down: the recovered peer stops the watchdog.
+        final asked = consumeRequestsFor(rig.node(), them);
+        clock.elapse(const Duration(seconds: 40));
+        clock.flushMicrotasks();
+        expect(consumeRequestsFor(rig.node(), them), asked,
+            reason: 'a recovered audio tag stops the watchdog');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
   });
 
   group('send-side stall', () {
