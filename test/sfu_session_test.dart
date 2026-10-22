@@ -386,6 +386,49 @@ void main() {
           reason: 'whoever was on the old node has to be asked for again');
       expect(rig.republishes, 1);
     });
+
+    test('a router unreachable when our node drains is retried until it answers',
+        () async {
+      // The outage window from issue #87: a cordon tells us to leave our node
+      // while the local network is down, so the move finds no address and
+      // fails. With no retry the old node's health listener is already gone and
+      // outbound media would stay dead until a restart; the watchdog has to keep
+      // trying until the router can place us again. Real timers rather than a
+      // virtual clock, because the move awaits a broadcast-stream cancel that a
+      // fake clock does not settle deterministically.
+      await rig.session.start();
+      await rig.session.subscribe(them);
+      final old = rig.node();
+
+      // Router cannot place us: a cordon arrives mid-outage. `_assign` exhausts
+      // its four address attempts (each answered `addrFound: false`) and fails.
+      rig.addresses.remove(me);
+      rig.router.push('cordon-sfu', {'sfuAddr': nodeA});
+      await Future<void>.delayed(const Duration(seconds: 1));
+
+      expect(rig.session.sfuAddr, isNull,
+          reason: 'the move failed — we hold no publishing node');
+      expect(rig.republishes, 0,
+          reason: 'nothing to republish onto: there is no node yet');
+      expect(old.disposed, isTrue,
+          reason: 'the drained node was dropped before the failed assign');
+
+      // The network comes back and the router can place us again.
+      rig.addresses[me] = nodeB;
+      rig.addresses[them] = nodeB;
+
+      // The own-node watchdog re-tries on its two-second backoff and lands on
+      // nodeB. Poll past the backoff rather than racing it.
+      for (var i = 0; i < 80 && rig.session.sfuAddr == null; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+
+      expect(rig.session.sfuAddr, nodeB,
+          reason: 'the retry moved us the moment the router answered');
+      expect(rig.node(nodeB).has('get-rtp-capabilities'), isTrue);
+      expect(rig.republishes, 1,
+          reason: 'a republish is announced once the move finally succeeds');
+    });
   });
 
   group('a peer on a secondary node (issue #74)', () {

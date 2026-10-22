@@ -1290,6 +1290,15 @@ class SfuSession {
   /// Set while [_rebuildSend] runs, so overlapping fires do not stack.
   bool _healingSend = false;
 
+  Timer? _ownNodeRetry;
+
+  /// How long the own-node watchdog waits before each re-assign attempt.
+  ///
+  /// Two seconds to start, doubling to a thirty-second cap. Armed only when a
+  /// move off our publishing node fails because the router is unreachable, so
+  /// the first delay rides out a brief outage before re-asking.
+  Duration _ownNodeRetryBackoff = const Duration(seconds: 2);
+
   /// Arm the watchdog that heals a receive path which never came up.
   ///
   /// Shaped like [_scheduleAddrRetry]: a self-cancelling one-shot with a
@@ -2220,18 +2229,50 @@ class SfuSession {
         return;
       }
       _log('sfu: moved to $_sfuAddr');
+      _ownNodeRetryBackoff = const Duration(seconds: 2);
       _announceRepublish();
     } on Object catch (error) {
       // Logged rather than thrown: this runs from a server push, so there is no
       // caller to catch it, and a session that cannot move is still a session
-      // that can receive.
+      // that can receive. But a move that fails because the router is
+      // unreachable leaves us with no publishing node at all — and the old
+      // node's health listener is already gone, so nothing re-triggers this on
+      // its own. Arm a backoff retry so outbound media comes back when the
+      // router does, instead of staying dead until the app restarts (issue #87).
       _log('sfu: could not move to another node: $error');
+      _scheduleOwnNodeRetry();
     } finally {
       _moving = false;
     }
   }
 
   bool _moving = false;
+
+  /// Keep trying to move to another node after a failed [_moveOwnNode].
+  ///
+  /// Shaped like [_scheduleAddrRetry]/[_scheduleRecvHeal]: a self-cancelling
+  /// one-shot with a reentrancy guard and a `_stopped` check, re-arming with a
+  /// growing backoff. The retry body is [_moveOwnNode] itself — its teardown is
+  /// inert on re-entry (the send transport is already gone and `_sfuAddr` is
+  /// null, so no node is dropped), and it re-arms this timer on another failure
+  /// and resets the backoff on success. Only the arming lives here.
+  void _scheduleOwnNodeRetry() {
+    if (_ownNodeRetry != null || _stopped) return;
+    _ownNodeRetry = Timer(_ownNodeRetryBackoff, () {
+      _ownNodeRetry = null;
+      // Re-evaluate against current state: a `cordon-sfu`/`reassign` or a node
+      // reconnection may have re-placed us while we waited, in which case a
+      // retry would tear down a node we are now publishing from. Stand down and
+      // reset the backoff.
+      if (_stopped || _sfuAddr != null) {
+        _ownNodeRetryBackoff = const Duration(seconds: 2);
+        return;
+      }
+      final next = _ownNodeRetryBackoff.inSeconds * 2;
+      _ownNodeRetryBackoff = Duration(seconds: next > 30 ? 30 : next);
+      unawaited(_moveOwnNode());
+    });
+  }
 
   /// Forget everything we knew about the peers on [url], returning who they were.
   ///
@@ -2379,6 +2420,9 @@ class SfuSession {
     _sendHealTimer = null;
     _sendHealBackoff = const Duration(seconds: 6);
     _healingSend = false;
+    _ownNodeRetry?.cancel();
+    _ownNodeRetry = null;
+    _ownNodeRetryBackoff = const Duration(seconds: 2);
     _spatialDebounce?.cancel();
     _spatialDebounce = null;
     _awaitingAddr.clear();
