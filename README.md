@@ -866,6 +866,11 @@ is read off their roster row.
 Screen-share lives on the **call screen**, not this bar. When faces are up, a share
 control publishes your own screen to the room (`setScreenShareOn` in
 `lib/ui/call_screen.dart`); the office control bar stays deliberately minimal.
+Sharing the phone's **whole screen** needs a one-time iOS setup step first: the
+checked-in Xcode project ships only the Runner target, so the Broadcast Upload
+Extension that ReplayKit needs must be created and provisioned by hand. See
+`ios/BroadcastExtension/README.md` for that step; until it is done, the share
+control is wired but whole-screen capture is unavailable on a device.
 
 Mic and camera drive a real capture session and publish to Gather's SFU, the same
 mediasoup media plane the desktop client uses, with Gather's own three-layer
