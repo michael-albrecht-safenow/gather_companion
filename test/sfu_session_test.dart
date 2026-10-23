@@ -404,7 +404,15 @@ void main() {
       // its four address attempts (each answered `addrFound: false`) and fails.
       rig.addresses.remove(me);
       rig.router.push('cordon-sfu', {'sfuAddr': nodeA});
-      await Future<void>.delayed(const Duration(seconds: 1));
+
+      // Wait past the *original* move's last attempt before restoring the
+      // router. `_addressFor(attempts: 4)` re-asks at roughly 0, 0.4, 1.2 and
+      // 2.8s, so a restore any earlier would let that first move succeed on its
+      // own third or fourth attempt and this test would pass with no watchdog at
+      // all. Holding the outage until ~3.2s forces the original move to exhaust
+      // every attempt and fail, so only the retry armed on that failure can
+      // recover — which is the behaviour under test.
+      await Future<void>.delayed(const Duration(milliseconds: 3200));
 
       expect(rig.session.sfuAddr, isNull,
           reason: 'the move failed — we hold no publishing node');
@@ -413,7 +421,9 @@ void main() {
       expect(old.disposed, isTrue,
           reason: 'the drained node was dropped before the failed assign');
 
-      // The network comes back and the router can place us again.
+      // The network comes back and the router can place us again. The original
+      // move is already finished and failed, so the next assign can only come
+      // from the own-node watchdog.
       rig.addresses[me] = nodeB;
       rig.addresses[them] = nodeB;
 

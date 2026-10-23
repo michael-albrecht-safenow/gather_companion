@@ -2239,6 +2239,20 @@ class SfuSession {
       // node's health listener is already gone, so nothing re-triggers this on
       // its own. Arm a backoff retry so outbound media comes back when the
       // router does, instead of staying dead until the app restarts (issue #87).
+      //
+      // Roll back any partial assignment first. `_assign` sets `_sfuAddr`/`_node`
+      // *before* it connects the node and loads its capabilities, so a router
+      // that returns an address for a node that then fails to connect leaves
+      // `_sfuAddr` pointing at a node we never finished joining. The retry guard
+      // stands down on `_sfuAddr != null`, so a non-null address here would
+      // suppress every retry and strand outbound media on a dead node. Clearing
+      // it — and dropping the half-open socket — means only a *completed* move
+      // leaves `_sfuAddr` set, which is the only state that should silence the
+      // watchdog.
+      final stranded = _sfuAddr;
+      _sfuAddr = null;
+      _node = null;
+      if (stranded != null) await _dropNode(stranded);
       _log('sfu: could not move to another node: $error');
       _scheduleOwnNodeRetry();
     } finally {
