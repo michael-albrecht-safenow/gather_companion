@@ -38,6 +38,7 @@ class CallState {
     this.publishingScreen = false,
     this.participants = const [],
     this.connecting = const {},
+    this.unreachable = const {},
     this.detail,
     this.needsHandoff = false,
   });
@@ -59,6 +60,15 @@ class CallState {
   /// nobody restarts waiting on a peer the session is already chasing. Sourced
   /// from `SfuSession.connectingPeers`.
   final Set<String> connecting;
+
+  /// srcIds of peers we have been unable to consume for long enough to call
+  /// unreachable — their producers sit on an SFU node whose subscriber socket
+  /// never connects or that refuses every consume. The tiles for them read
+  /// "can't reach" so a person reads a failure rather than a colleague who simply
+  /// has mic and camera off, and nobody restarts the app on a peer the heal is
+  /// still chasing in the background. Sourced from `SfuSession.unreachablePeers`
+  /// (issue #90).
+  final Set<String> unreachable;
 
   /// Whether the room is actually receiving each track, as opposed to us merely
   /// having it open.
@@ -109,6 +119,7 @@ class CallState {
     bool? publishingScreen,
     List<CallParticipant>? participants,
     Set<String>? connecting,
+    Set<String>? unreachable,
     String? detail,
     bool clearDetail = false,
     bool? needsHandoff,
@@ -120,6 +131,7 @@ class CallState {
         publishingScreen: publishingScreen ?? this.publishingScreen,
         participants: participants ?? this.participants,
         connecting: connecting ?? this.connecting,
+        unreachable: unreachable ?? this.unreachable,
         detail: clearDetail ? null : (detail ?? this.detail),
         needsHandoff: needsHandoff ?? this.needsHandoff,
       );

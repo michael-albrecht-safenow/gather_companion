@@ -769,6 +769,49 @@ void main() {
       });
     });
 
+    test('an unreachable peer clears when it legitimately announces empty', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        rig.addresses[them] = nodeB;
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.node(nodeB).push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+
+        void denyAfter(Duration window) {
+          clock.elapse(window);
+          clock.flushMicrotasks();
+          rig.node(nodeB).push(
+              'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+          clock.flushMicrotasks();
+        }
+
+        denyAfter(const Duration(seconds: 6)); // cycle 1
+        denyAfter(const Duration(seconds: 11)); // cycle 2
+        denyAfter(const Duration(seconds: 21)); // cycle 3
+        denyAfter(const Duration(seconds: 31)); // cycle 4 — surfaces
+
+        expect(rig.session.unreachablePeers, contains(them),
+            reason: 'four refused heal cycles surface the peer');
+
+        // The peer was denied, then legitimately turned mic and camera off: the
+        // SFU answers with an authoritative empty producer map. That resolves the
+        // denial and builds no consumer, so the unreachable flag must clear here —
+        // not linger describing a colleague who is now simply quiet (issue #90).
+        rig.announce(them, const {}, url: nodeB);
+        clock.flushMicrotasks();
+        expect(rig.session.unreachablePeers, isNot(contains(them)),
+            reason: 'an authoritative empty announce resolves the denial, so the '
+                'give-up flag must clear even though no consumer is built');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
     test('a co-stranded peer on a live node still heals despite a dead node', () {
       fakeAsync((clock) {
         const dead = 'acct-dead';

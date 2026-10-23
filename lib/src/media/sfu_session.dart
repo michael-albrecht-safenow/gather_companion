@@ -1902,6 +1902,17 @@ class SfuSession {
             if (_tagOf(entry.key) case final tag?)
               if (entry.value is String) tag: entry.value as String,
         };
+        // Resolving the denial is the only thing that un-strands this peer, so an
+        // authoritative empty map — which never builds a consumer — must also drop
+        // the give-up bookkeeping, the dual of what _consume does when a consumer
+        // is built. Without it, a peer that had been flagged unreachable keeps a
+        // stale "can't reach" tile after legitimately going mic-and-camera-off,
+        // and its retry counter survives to resume from a stale height on a later
+        // re-strand rather than counting consecutive cycles (issue #90).
+        if (_announced[srcId]!.isEmpty) {
+          _strandedRetries.remove(srcId);
+          if (_unreachable.remove(srcId)) _publishRemotes();
+        }
         unawaited(_reconcile(srcId));
 
       case 'consume-close':

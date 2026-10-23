@@ -82,6 +82,7 @@ class CallTile {
     this.handRaised = false,
     this.handPosition = 0,
     this.connecting = false,
+    this.unreachable = false,
   });
 
   /// `SpaceUser.id` when we could place them, otherwise the media `srcId`. Only
@@ -123,6 +124,16 @@ class CallTile {
   /// chasing. Cleared the instant their media lands and they become a real
   /// participant. Sourced from `CallState.connecting`.
   final bool connecting;
+
+  /// Whether the heal has given up reaching this peer for now — subscribed, no
+  /// media, and past the give-up threshold on a dead or forever-refusing node.
+  ///
+  /// Unlike [connecting], which is the hopeful early moment, this is the honest
+  /// failure: the tile reads "can't reach" so a person stops waiting on a silent,
+  /// dark colleague the background heal is still chasing. Cleared the instant a
+  /// consumer finally builds or the peer's node recovers. Sourced from
+  /// `CallState.unreachable` (issue #90).
+  final bool unreachable;
 
   /// Whether this tile has a frame to show, as opposed to a face to draw.
   ///
@@ -698,6 +709,11 @@ List<CallTile> _tiles(AppState state) {
       // what tells a walk-up colleague apart from somebody sitting silent.
       connecting: row.userAccountId != null &&
           call.connecting.contains(row.userAccountId),
+      // The failure bucket for the same no-media peer: the heal has chased them
+      // past the give-up threshold on a dead or refusing node. Bridged the same
+      // way, and drawn as "can't reach" instead of "connecting…" (issue #90).
+      unreachable: row.userAccountId != null &&
+          call.unreachable.contains(row.userAccountId),
     ));
   }
   return tiles;
@@ -1469,11 +1485,27 @@ class _TileFrame extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Flexible(child: _Plate(text: tile.label)),
+                        // The terminal failure takes the pip ahead of both
+                        // "connecting…" and "muted": the heal gave up reaching
+                        // this peer, so "can't reach" is the true state and the
+                        // one that tells a person the silence is a fault, not a
+                        // colleague sitting quiet — and not to restart on a peer
+                        // the background heal is still chasing (issue #90).
+                        if (tile.unreachable) ...[
+                          const SizedBox(width: 6),
+                          Semantics(
+                            label: "Can't reach",
+                            child: _Plate(
+                              icon: Icons.cloud_off,
+                              text: compact ? '' : "Can't reach",
+                            ),
+                          ),
+                        ]
                         // Stands in for the mute pip while a peer is mid-connect:
                         // they have no track yet, so "muted" would be a guess,
                         // but "connecting…" is the true state and the one that
                         // tells a person to wait a beat rather than restart.
-                        if (tile.connecting) ...[
+                        else if (tile.connecting) ...[
                           const SizedBox(width: 6),
                           Semantics(
                             label: 'Connecting…',
