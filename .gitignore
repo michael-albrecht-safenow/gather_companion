@@ -69,6 +69,7 @@ service-account*.json
 *.raw.jsonl
 sfu-capture*.jsonl
 
-# Local-only secrets passed to the build via --dart-define (GOOGLE_CLIENT_ID).
-# Never committed: the OAuth client id is not a repo artifact.
+# Per-developer build overrides passed via --dart-define. The committed default
+# lives in dart_defines.json (the iOS OAuth client id is a public client, not a
+# secret). .env stays local only for per-dev overrides.
 .env

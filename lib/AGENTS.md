@@ -93,13 +93,13 @@ device build silently loses the feature. **Every real device/release build must
 pass it:**
 
 ```sh
-flutter run -d <device> --dart-define=GOOGLE_CLIENT_ID=<iOS OAuth client id>
+flutter run -d <device> --dart-define-from-file=dart_defines.json
 ```
 
-The id is a *public* OAuth client (PKCE, no secret), kept out of source on purpose.
-Get it from the `gather-companion` Google Cloud project, or combine with
-`--dart-define-from-file`. Add `--dart-define=GCAL_DEBUG=true` to log the gate
-decision.
+The default id ships in the committed `dart_defines.json`. It is a *public* OAuth
+client (PKCE, no secret), so it is safe in source. Override with
+`--dart-define=GOOGLE_CLIENT_ID=<id>` to build against a different client. Add
+`--dart-define=GCAL_DEBUG=true` to log the gate decision.
 
 **The OAuth client's bundle ID must match the bundle the build actually ships**,
 or Google rejects the auth with `redirect_uri_mismatch`/invalid-client. The repo

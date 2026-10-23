@@ -974,12 +974,17 @@ needs its **own** iOS OAuth client registered under that exact ID.
 **3.** Pass the id into every device/release build you want the feature in:
 
 ```sh
-flutter run -d <device> \
-  --dart-define=GOOGLE_CLIENT_ID=<iOS OAuth client id from the gather-companion project>
+flutter run -d <device> --dart-define-from-file=dart_defines.json
 ```
 
-The id is a public client, safe to carry in a launch config or a
-`--dart-define-from-file` JSON — just not committed.
+The default id ships in the committed `dart_defines.json`. It is a public iOS
+OAuth client (no secret), safe to carry in the repo. To build against a different
+client (your own bundle id, a fork's project), override it:
+
+```sh
+flutter run -d <device> \
+  --dart-define=GOOGLE_CLIENT_ID=<your iOS OAuth client id>
+```
 
 **4.** To confirm the gate turned the feature on, add `--dart-define=GCAL_DEBUG=true`:
 the log says `gcal: client id compiled in` when it is wired, or `gcal: no
