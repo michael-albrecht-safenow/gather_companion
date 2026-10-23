@@ -61,8 +61,8 @@ fi
 # reviewed. Keeps the request to exactly once per PR even if the hook re-fires.
 already_requested=$(gh api "repos/${owner}/${repo}/pulls/${number}/requested_reviewers" 2>/dev/null \
   | jq -r 'any((.users // [])[]; (.login // "") | ascii_downcase | test("copilot"))' 2>/dev/null || true)
-already_reviewed=$(gh api "repos/${owner}/${repo}/pulls/${number}/reviews" 2>/dev/null \
-  | jq -r 'any((. // [])[]; (.user.login // "") | ascii_downcase | test("copilot"))' 2>/dev/null || true)
+already_reviewed=$(gh api --paginate "repos/${owner}/${repo}/pulls/${number}/reviews" 2>/dev/null \
+  | jq -s -r 'any((add // [])[]; (.user.login // "") | ascii_downcase | test("copilot"))' 2>/dev/null || true)
 if [ "$already_requested" = "true" ] || [ "$already_reviewed" = "true" ]; then
   echo "pr-add-copilot-reviewer: Copilot already requested/reviewed on ${pr_url}; skipping" >&2
   exit 0
