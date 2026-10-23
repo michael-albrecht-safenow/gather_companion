@@ -996,6 +996,44 @@ GOOGLE_CLIENT_ID compiled in — feature disabled` when it is not. In the app, t
 > Google accounts added as **test users** can authorize — anyone else is blocked at
 > the consent step. Add the account as a test user, or publish the consent screen.
 
+### Publishing the consent screen to production
+
+Two routes, pick by who the users are:
+
+- **Internal (easiest).** If every user signs in with the same Google Workspace
+  org, set the audience to **Internal** (Google Auth Platform → **Zielgruppe /
+  Audience**). No verification, no test-user cap, no domain or homepage needed.
+  Only same-org accounts can authorize. Prefer this if all users are on one org.
+- **External + verification.** For public or mixed-domain users, the app must be
+  published **External** and pass Google's app verification (required because
+  `calendar.readonly` is sensitive). Review takes days–weeks; until it passes,
+  only test users work.
+
+The External route cannot be completed from code — a human needs these
+**prerequisites first** (Google Auth Platform → **Branding**), so gather them
+before starting:
+
+1. **A domain you own** — e.g. `gather-companion.example.com`. Must be added under
+   **Authorized domains** and **verified in [Google Search
+   Console](https://search.google.com/search-console)** (the same Google account
+   that owns the Cloud project must own the verification). No domain = no External
+   publish.
+2. **Homepage URL** — a public page on that domain describing the app.
+3. **Privacy policy URL** — public, on that domain. Must state that the app reads
+   calendar data read-only and never writes or shares it.
+4. **Terms of service URL** — public, on that domain.
+5. **App logo** — square PNG/JPG/BMP, 120×120, ≤1 MB (optional for the form but
+   expected for verification).
+6. **Developer contact email** — Google uses it for project notices (the current
+   project uses `michi404040@gmail.com`).
+7. **Demo video + scope justification** — the verification review asks for a video
+   showing the OAuth flow and how the calendar scope is used.
+
+So the blocker for going public is **owning and verifying a domain that hosts a
+homepage, privacy policy, and terms page** — stand those up first, then fill the
+Branding form, then submit for verification. If a single Workspace org covers all
+users, skip all of this and use **Internal** instead.
+
 ---
 
 ## 🧪 Tests
