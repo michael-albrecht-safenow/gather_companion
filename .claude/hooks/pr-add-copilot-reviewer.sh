@@ -12,8 +12,9 @@
 # pre-commit-reminder.sh's `git commit` gate) and no-ops on everything else.
 #
 # Gates (all must pass to auto-request):
-#   1. Real code change: doc-only PRs (*.md, docs/, README/LICENSE/… ) are
-#      skipped — Copilot review adds no value there.
+#   1. Real product-code change: PRs that touch only documentation (*.md, docs/,
+#      README/LICENSE/… ) or repo tooling/meta (.claude/, .github/) are skipped —
+#      Copilot review adds no value there.
 #   2. Significance: >50 changed code lines auto-requests. At or below 50 the
 #      script does NOT auto-request; instead it hands the decision to the agent
 #      via additionalContext ("request manually if this is a major change").
@@ -78,6 +79,7 @@ code_stats=$(printf '%s' "$files_json" | jq -s '
         (.filename | test("\\.(md|markdown|mdx|rst|txt|adoc)$"; "i"))
         or (.filename | test("(^|/)(README|CHANGELOG|CHANGES|LICENSE|NOTICE|CONTRIBUTING|AGENTS|CODEOWNERS)[^/]*$"; "i"))
         or (.filename | test("(^|/)docs/"; "i"))
+        or (.filename | test("(^|/)\\.(claude|github)/"; "i"))
       ) | not
     ))
   | {files: length, changes: (map((.additions // 0) + (.deletions // 0)) | add // 0)}
@@ -88,9 +90,9 @@ code_changes=$(printf '%s' "$code_stats" | jq -r '.changes // 0' 2>/dev/null || 
 [ -z "$code_files" ] && code_files=0
 [ -z "$code_changes" ] && code_changes=0
 
-# Gate 1: doc-only PR (no code files touched) => never request.
+# Gate 1: no product-code files touched (doc/tooling-only) => never request.
 if [ "$code_files" -eq 0 ] 2>/dev/null; then
-  echo "pr-add-copilot-reviewer: doc-only change on ${pr_url}; Copilot NOT requested" >&2
+  echo "pr-add-copilot-reviewer: doc/tooling-only change on ${pr_url}; Copilot NOT requested" >&2
   exit 0
 fi
 
