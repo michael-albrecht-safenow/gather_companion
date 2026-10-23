@@ -60,6 +60,12 @@ class Rig {
   final Set<String> slowToConnect = {};
   final Map<String, Completer<void>> _connectGates = {};
 
+  /// Node urls whose `start()` should *throw* — a genuinely dead node, as
+  /// distinct from [slowToConnect] which merely hangs. The subscriber socket
+  /// never connects, so `_connectNode` exhausts its attempts and the peer on it
+  /// is never consumable: mode-1 of issue #90.
+  final Set<String> deadNodes = {};
+
   /// Let a node held by [slowToConnect] finish connecting.
   void releaseConnect(String url) => _connectGates[url]?.complete();
 
@@ -133,6 +139,10 @@ class Rig {
     socket.failingWith.addAll(nodeRefusals);
     if (slowToConnect.contains(url)) {
       socket.startGate = (_connectGates[url] = Completer<void>()).future;
+    }
+    if (deadNodes.contains(url)) {
+      socket.startGate =
+          Future<void>.error(SfuException('$url did not answer in 10s'));
     }
     return socket;
   }

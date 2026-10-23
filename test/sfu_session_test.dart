@@ -714,6 +714,110 @@ void main() {
           reason: 'a caller that reused the pooled node must await its join, '
               'not race past it onto an unauthorised socket');
     });
+
+    test('a peer the node keeps refusing surfaces as unreachable, then clears '
+        'when it finally consumes', () {
+      fakeAsync((clock) {
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        // Their media is on a second node that answers every consume
+        // `consume-not-allowed` — the mode-2 deafness of issue #90, where the
+        // re-join/re-request heals forever and the colleague stays silent.
+        rig.addresses[them] = nodeB;
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.node(nodeB).push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+
+        expect(rig.session.unreachablePeers, isEmpty,
+            reason: 'one denial is not yet give-up — the heal has to try first');
+
+        // Each heal cycle re-requests and is denied again; the give-up counter
+        // climbs 5s, 10s, 20s, 30s. Re-arm the denial after each so the peer
+        // stays stranded and never consumes.
+        void denyAfter(Duration window) {
+          clock.elapse(window);
+          clock.flushMicrotasks();
+          rig.node(nodeB).push(
+              'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+          clock.flushMicrotasks();
+        }
+
+        denyAfter(const Duration(seconds: 6)); // cycle 1
+        denyAfter(const Duration(seconds: 11)); // cycle 2
+        denyAfter(const Duration(seconds: 21)); // cycle 3
+        denyAfter(const Duration(seconds: 31)); // cycle 4 — surfaces
+
+        expect(rig.session.unreachablePeers, contains(them),
+            reason: 'four heal cycles without recovery is a dead/refusing node; '
+                'surface it so the UI stops hiding a silent colleague');
+
+        // The node finally lets us consume — a late recovery the heal never gave
+        // up chasing. The built consumer un-flags the peer.
+        rig.announce(them, {'audio': 'p-audio'}, url: nodeB);
+        clock.flushMicrotasks();
+        expect(rig.session.remotes.any((r) => r.srcId == them), isTrue,
+            reason: 'the background re-request was still running, so recovery '
+                'lands');
+        expect(rig.session.unreachablePeers, isNot(contains(them)),
+            reason: 'a built consumer is the authoritative recovery signal');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a co-stranded peer on a live node still heals despite a dead node', () {
+      fakeAsync((clock) {
+        const dead = 'acct-dead';
+        const deadNode = 'wss://sfu-v2.test:443/ip-10-0-0-9';
+        rig.session.setAllowed({them, other, dead});
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        // One peer consumed on our node: the room is receiving, so the partial
+        // heal runs rather than the full rebuild.
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.announce(them, {'audio': 'p-audio'});
+        clock.flushMicrotasks();
+        expect(rig.session.remotes.any((r) => r.srcId == them), isTrue);
+
+        // A peer on a genuinely dead node whose socket never connects, and a
+        // second peer denied on a reachable node. If a dead node's join could
+        // abort the heal, the denied peer would be starved along with it.
+        rig.addresses[dead] = deadNode;
+        rig.deadNodes.add(deadNode);
+        rig.session.subscribe(dead).ignore();
+        clock.flushMicrotasks();
+
+        rig.addresses[other] = nodeB;
+        rig.session.subscribe(other).ignore();
+        clock.flushMicrotasks();
+        rig.node(nodeB).push(
+            'consume-not-allowed', {'srcId': other, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+
+        // Let the heal cycles run — the dead node keeps failing to connect
+        // throughout, the kind of throw that must never starve a co-stranded
+        // peer on a live node.
+        clock.elapse(const Duration(seconds: 40));
+        clock.flushMicrotasks();
+
+        // The reachable peer is re-requested; announce so its consumer builds.
+        rig.announce(other, {'audio': 'p-other'}, url: nodeB);
+        clock.flushMicrotasks();
+
+        expect(rig.session.remotes.any((r) => r.srcId == other), isTrue,
+            reason: 'a dead node must not keep a co-stranded peer on a live node '
+                'from healing');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
   });
 
   group('publishing', () {
