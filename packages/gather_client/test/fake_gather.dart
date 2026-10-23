@@ -124,11 +124,22 @@ class FakeConnection {
   /// that guess on every green run. This returns the moment the frame lands.
   ///
   /// [key] is `type` for the frames that have no `action` — the heartbeat.
-  Future<Map<String, Object?>> waitFor(String action, {String key = 'action'}) async {
+  ///
+  /// [where] narrows past a name that is sent more than once. `reportActivity`
+  /// is sent twice — `isActive: true` on enter, then whatever `setActive` asks —
+  /// and the two land in a socket race the backward scan would otherwise resolve
+  /// to the enter frame, returning the wrong one the moment it arrives.
+  Future<Map<String, Object?>> waitFor(
+    String action, {
+    String key = 'action',
+    bool Function(Map<String, Object?>)? where,
+  }) async {
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (true) {
       for (var i = received.length - 1; i >= 0; i--) {
-        if (received[i][key] == action) return received[i];
+        if (received[i][key] == action && (where == null || where(received[i]))) {
+          return received[i];
+        }
       }
       if (DateTime.now().isAfter(deadline)) {
         throw StateError('the client never sent $action');

@@ -1087,7 +1087,10 @@ void main() {
       expect(c.setActive(false).ok, isTrue);
       await pumpEventQueue();
 
-      final sent = await conn.waitFor('reportActivity');
+      final sent = await conn.waitFor(
+        'reportActivity',
+        where: (f) => ((f['args'] as List).last as Map)['isActive'] == false,
+      );
       expect(sent['args'], [
         'Connection',
         null,
