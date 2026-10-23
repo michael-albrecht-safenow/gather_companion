@@ -146,7 +146,8 @@ None of these connections disturbs the others, which was the long-standing fear:
 Gather's gateway was believed to evict a duplicate `spaceId` + `authUserId` with
 close code 4031. Measured on 2026-08-06 against a live 111-person space, with the
 desktop client joined and watched throughout: the client's socket was never closed
-and never dropped a frame. The structural reason is that `Connection` is
+and never dropped a frame. (A point-in-time measurement — worth re-checking if
+Gather changes its gateway.) The structural reason is that `Connection` is
 per-connection while `SpaceUser` is per-person-per-space — so the phone, the
 bridge and the desktop client are all looking at, and for party mode moving, the
 same single avatar. There is no second you to collide with.
@@ -500,6 +501,7 @@ npx gather-app-bridge logout         forget it again (pair to get a new one)
 npx gather-app-bridge doctor         what can it see, and how to see more
 npx gather-app-bridge resync         force a full state resync
 npx gather-app-bridge logs -f        follow the daemon log
+npx gather-app-bridge watch          attach to the live event feed (see below)
 npx gather-app-bridge token          show the pairing details again
 npx gather-app-bridge restart|stop|start|uninstall
 npx gather-app-bridge replay [file]  re-check the notification regex on a log
@@ -615,8 +617,8 @@ across screen locks.
 
 **Event types:** `follow.started/stopped`, `self.changed`, `space.changed`,
 `notification.shown`, `bridge.status`. The Dart package still decodes several
-types the bridge no longer emits (`media.changed`, `player.joinedSpace/leftSpace`,
-`chat.message`), so a phone can read an older bridge.
+types the bridge no longer emits (`media.changed`, `media.connection`,
+`player.joinedSpace/leftSpace`, `chat.message`), so a phone can read an older bridge.
 
 The Dart definitions in `packages/gather_events` are the same contract, so the
 app decodes these into a sealed class hierarchy.
@@ -721,27 +723,8 @@ flutter run -d <device> \
 ```
 
 The Plans tab's **Google Calendar** connection is compiled in only when a build
-passes `--dart-define=GOOGLE_CLIENT_ID=<id>`. There is no default in source, so a
-plain `flutter run`/`flutter build` ships without it and the "Connect Google
-Calendar" banner never appears. Every device/release build you want the feature in
-needs the flag:
-
-```sh
-flutter run -d <device> \
-  --dart-define=GOOGLE_CLIENT_ID=<iOS OAuth client id from the gather-companion project>
-```
-
-The id is a public OAuth client (PKCE, no secret) — safe to carry in a launch
-config or a `--dart-define-from-file` JSON, just not committed. `GCAL_DEBUG=true`
-logs whether the gate turned the feature on.
-
-The OAuth client's registered bundle ID has to match the bundle the build ships,
-or Google rejects auth with `redirect_uri_mismatch`. The repo default is
-`com.jonasgrunau.gatherCompanion`; local signing flips it to
-`com.michaelalbrecht.gatherCompanion`, so each needs its own iOS OAuth client.
-Create one in the Google Cloud console under the `gather-companion` project →
-APIs & Services → Credentials → Create credentials → OAuth client ID → iOS, with
-that bundle ID. iOS clients get no secret; copy the client ID into the flag.
+passes `--dart-define=GOOGLE_CLIENT_ID=<id>` — see
+[Google Calendar](#-google-calendar) for the full setup.
 
 Your phone and computer have to be on the same network **to pair**, and for push
 registration afterwards. Presence itself needs neither. Phone platforms ask for
@@ -861,19 +844,28 @@ one exception: meetings you schedule ahead of time, and the only screen whose co
 are this phone's own rather than Gather's. Gather has no calendar to read — its game
 socket carries no scheduled-event model — so a plan lives in the phone's keychain, not
 on Gather. Each can pin a Gather room so the card walks you there when the hour comes,
-and raises a local reminder before it starts (optionally mirrored into the phone's own
-calendar, which is the one bridge back to the Google/Outlook account Gather reads). In
-Gameboy mode, where the floating rail stands down, every tab — Plans included — is
-reached through the handheld's Select menu.
+and raises a local reminder before it starts. Mirroring a plan back into the phone's
+own device calendar — the one bridge back to the Google/Outlook account Gather reads —
+is a planned addition, not yet built. Plans can also **connect a Google account** and
+show its events read-only beside your own — the same events the desktop's Calendar
+Panel shows; see [Google Calendar](#-google-calendar) to wire it up. In Gameboy mode,
+where the floating rail stands down, every tab — Plans included — is reached through
+the handheld's Select menu.
 
 ### 🎙️ Gather's controls, on the phone
 
 Across the bottom of the office sits Gather's own control bar, adapted: you (tap it
 for Active / Busy / Away and your status line, both read back off the roster), your
-**microphone**, your **camera**, the eight **reactions**, and **one door** — back to
+**microphone**, your **camera**, the eight **reactions** — with **raise hand** folded
+in beside them, so a crowded bar does not crush the door — and **one door**: back to
 your desk when you are away from it, out of the conversation when you are in one.
 Those are one button because they are one intention, and one button on the desktop.
-Screen-share is deliberately absent; there is nothing on a phone worth sharing.
+Your own raised-hand state is local-first (`AppState.myHandRaised`); everybody else's
+is read off their roster row.
+
+Screen-share lives on the **call screen**, not this bar. When faces are up, a share
+control publishes your own screen to the room (`setScreenShareOn` in
+`lib/ui/call_screen.dart`); the office control bar stays deliberately minimal.
 
 Mic and camera drive a real capture session and publish to Gather's SFU, the same
 mediasoup media plane the desktop client uses, with Gather's own three-layer
@@ -946,6 +938,101 @@ socket is gone. Everything after that is the push path described
 [above](#-notifications-and-reaching-a-phone-that-is-asleep): the bridge on your
 computer notices, and FCM wakes the phone. No computer awake, no push — that is
 the one thing a laptop being the sender cannot get around.
+
+---
+
+## 📅 Google Calendar
+
+The Plans tab can show your **Google Calendar** read-only, beside the plans this
+phone owns — the same events the desktop's Calendar Panel shows, which Gather's own
+game socket carries nothing of. Only one OAuth scope is requested,
+`calendar.readonly`, so a leaked token can read meetings and change nothing; writing
+back into Google stays the deferred device-calendar mirror's job.
+
+It is deliberately **pod-free**: no `google_sign_in` (its iOS half still ships only a
+CocoaPods podspec, which this SPM-only project avoids). The OAuth round trip runs
+through iOS's own `ASWebAuthenticationSession` reached by a method channel, and the
+reversed-client-id redirect is derived from the client id — so there is no
+`Info.plist` URL-scheme to register, only the one id to supply.
+
+**The feature is compiled out unless you pass a client id at build time.** There is
+no default in source (`String.fromEnvironment` in `lib/main.dart`), so a plain
+`flutter run`/`flutter build` ships without it and the "Connect Google Calendar"
+banner never appears. To set it up:
+
+**1.** In the [Google Cloud console](https://console.cloud.google.com/), under the
+`gather-companion` project → **APIs & Services → Credentials → Create credentials →
+OAuth client ID → iOS**, create an iOS client. iOS clients are public (PKCE) and get
+**no secret**.
+
+**2.** The client's **bundle ID must match the build you ship**, or Google rejects
+the auth with `redirect_uri_mismatch`. The repo default is
+`com.jonasgrunau.gatherCompanion`; local signing flips it to
+`com.michaelalbrecht.gatherCompanion` (see the signing note). Each distinct bundle
+needs its **own** iOS OAuth client registered under that exact ID.
+
+**3.** Pass the id into every device/release build you want the feature in:
+
+```sh
+flutter run -d <device> --dart-define-from-file=dart_defines.json
+```
+
+The default id ships in the committed `dart_defines.json`. It is a public iOS
+OAuth client (no secret), safe to carry in the repo. To build against a different
+client (your own bundle id, a fork's project), override it:
+
+```sh
+flutter run -d <device> \
+  --dart-define=GOOGLE_CLIENT_ID=<your iOS OAuth client id>
+```
+
+**4.** To confirm the gate turned the feature on, add `--dart-define=GCAL_DEBUG=true`:
+the log says `gcal: client id compiled in` when it is wired, or `gcal: no
+GOOGLE_CLIENT_ID compiled in — feature disabled` when it is not. In the app, the
+"Connect Google Calendar" banner appears in Plans only once an id is compiled in.
+
+> **Consent screen.** `calendar.readonly` is a *sensitive* scope. If the OAuth
+> consent screen for the `gather-companion` project is still in **Testing**, only
+> Google accounts added as **test users** can authorize — anyone else is blocked at
+> the consent step. Add the account as a test user, or publish the consent screen.
+
+### Publishing the consent screen to production
+
+Two routes, pick by who the users are:
+
+- **Internal (easiest).** If every user signs in with the same Google Workspace
+  org, set the audience to **Internal** (Google Auth Platform → **Zielgruppe /
+  Audience**). No verification, no test-user cap, no domain or homepage needed.
+  Only same-org accounts can authorize. Prefer this if all users are on one org.
+- **External + verification.** For public or mixed-domain users, the app must be
+  published **External** and pass Google's app verification (required because
+  `calendar.readonly` is sensitive). Review takes days–weeks; until it passes,
+  only test users work.
+
+The External route cannot be completed from code — a human needs these
+**prerequisites first** (Google Auth Platform → **Branding**), so gather them
+before starting:
+
+1. **A domain you own** — e.g. `gather-companion.example.com`. Must be added under
+   **Authorized domains** and **verified in [Google Search
+   Console](https://search.google.com/search-console)** (the same Google account
+   that owns the Cloud project must own the verification). No domain = no External
+   publish.
+2. **Homepage URL** — a public page on that domain describing the app.
+3. **Privacy policy URL** — public, on that domain. Must state that the app reads
+   calendar data read-only and never writes or shares it.
+4. **Terms of service URL** — public, on that domain.
+5. **App logo** — square PNG/JPG/BMP, 120×120, ≤1 MB (optional for the form but
+   expected for verification).
+6. **Developer contact email** — Google uses it for project notices (the current
+   project uses `michi404040@gmail.com`).
+7. **Demo video + scope justification** — the verification review asks for a video
+   showing the OAuth flow and how the calendar scope is used.
+
+So the blocker for going public is **owning and verifying a domain that hosts a
+homepage, privacy policy, and terms page** — stand those up first, then fill the
+Branding form, then submit for verification. If a single Workspace org covers all
+users, skip all of this and use **Internal** instead.
 
 ---
 
@@ -1044,7 +1131,8 @@ objects to going twice.
   the correct roster, by name. What has *not* been observed on the wire is a
   follow actually starting — `followTargetId` is an optional column and nobody
   was following during capture — so the one path this app is built on rests on
-  the SDK's own model definition rather than an observation.
+  the SDK's own model definition rather than an observation. Worth re-validating
+  against Gather's `SpaceUser` model whenever the wire format drifts.
 - 📊 `GameProtocolReader.stats()` reports frame types and unrecognised-frame
   counts, so a future format change shows up as a number rather than as silence.
   Check it via `GET /collectors` (`stats`).
