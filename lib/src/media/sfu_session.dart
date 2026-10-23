@@ -1442,11 +1442,45 @@ class SfuSession {
         _log('sfu: $srcId still stale after $tries re-announce(s); '
             'resubscribing to force a fresh announce');
         _staleTagRetries.remove(srcId);
-        await unsubscribe(srcId);
-        if (_stopped) return;
-        await subscribe(srcId);
+        await _resubscribe(srcId);
       }
     }
+  }
+
+  /// Force a fresh announce for one subscribed peer without forgetting it.
+  ///
+  /// The hard escalation for a stale tag the soft re-announce could not clear.
+  /// It sends the SFU the same `requested:false`→`true` toggle a full
+  /// unsubscribe/resubscribe would — which the server must answer with a fresh
+  /// `consume-try`, independent of duplicate-request semantics — but keeps the
+  /// peer in [_subscribed] throughout. Dropping it there (as `unsubscribe`
+  /// does) across the await would let a concurrent cluster-leave
+  /// `setSubscriptions({})` slip into the gap, find nothing to remove, and then
+  /// have this method restore the departed peer's subscription and reciprocal
+  /// allow grant against the caller's wishes. Holding the membership means a
+  /// concurrent removal still sees the peer and lets it go, while recovery for a
+  /// peer that is still wanted re-consumes its working video once — the one-time
+  /// cost of guaranteed audio recovery (issue #61).
+  Future<void> _resubscribe(String srcId) async {
+    if (!_subscribed.contains(srcId)) return;
+
+    final url = _peerNode.remove(srcId);
+    final node = url == null ? null : _nodes[url];
+    node?.emit('consume-request', {
+      'srcId': srcId,
+      'srcStreamId': _spaceId,
+      'requested': false,
+    });
+
+    // Forget the stale receive state so the fresh announce rebuilds it clean.
+    _announced.remove(srcId);
+    for (final tag in SfuTag.values) {
+      _closeConsumer(srcId, tag);
+    }
+    _publishRemotes();
+
+    if (_stopped || !_subscribed.contains(srcId)) return;
+    await _requestPeer(srcId);
   }
 
   /// Re-request the receive path for a handful of stranded peers.
@@ -2069,7 +2103,13 @@ class SfuSession {
       // from the full grace window rather than mid-climb.
       _consumeDenied.remove(srcId);
       _producerGone.remove(key);
-      _staleTagRetries.remove(srcId);
+      // Clear the escalation counter only when this peer has no stale tag left.
+      // The counter is keyed by `srcId`, but `_producerGone` is per-tag: a
+      // healthy video (or screen) consume must not reset the ladder while this
+      // peer's audio tag is still gone, or a producer replaced after the first
+      // soft retry would restart escalation at try 1 and could keep broken audio
+      // from ever reaching the hard resubscribe backstop.
+      if (!_staleTagPeers().contains(srcId)) _staleTagRetries.remove(srcId);
       if (_strandedPeers().isEmpty && _staleTagPeers().isEmpty) {
         _recvHealTimer?.cancel();
         _recvHealTimer = null;

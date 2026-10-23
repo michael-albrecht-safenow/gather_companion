@@ -1220,17 +1220,34 @@ void main() {
             reason: 'the soft try must not resubscribe yet');
 
         // Next tick escalates: the peer is unsubscribed (a `requested:false`
-        // toggle, tearing the working video down) and resubscribed.
+        // toggle, tearing the working video down) and then resubscribed. Assert
+        // both halves in order — a `requested:false` *followed by* a fresh
+        // `requested:true` — rather than just the teardown. The teardown alone
+        // is not recovery: `rig.announce` injects a fresh `consume-try`
+        // regardless of subscription state, so a resubscribe that dropped the
+        // closing `requested:true` would still let the assertions below pass.
+        // Pinning the toggle order is what protects the re-request that the
+        // audio recovery actually depends on.
         clock.elapse(const Duration(seconds: 10));
         clock.flushMicrotasks();
-        expect(
-            rig.node().sent.any((f) =>
-                f.method == 'consume-request' &&
-                f.args['srcId'] == them &&
-                f.args['requested'] == false),
-            isTrue,
+        final toggles = rig
+            .node()
+            .sent
+            .where((f) =>
+                f.method == 'consume-request' && f.args['srcId'] == them)
+            .toList();
+        final lastOff =
+            toggles.lastIndexWhere((f) => f.args['requested'] == false);
+        expect(lastOff, isNonNegative,
             reason: 'a stale tag the soft re-announce could not clear must '
-                'force a fresh announce by resubscribing');
+                'tear the subscription down with a `requested:false` toggle');
+        expect(
+            toggles
+                .skip(lastOff + 1)
+                .any((f) => f.args['requested'] == true),
+            isTrue,
+            reason: 'the resubscribe must follow the teardown with a fresh '
+                '`requested:true` — the re-request audio recovery depends on');
 
         // The resubscribe is a genuinely fresh subscription the server answers
         // with a live audio producer; audio now consumes, and video is
