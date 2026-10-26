@@ -2309,12 +2309,21 @@ class SfuSession {
       // stop reading "can't reach" now — publish so remoteChanges carries it.
       _strandedRetries.remove(srcId);
       if (_unreachable.remove(srcId)) _publishRemotes();
-      // A built consumer proves this peer's node authorised us, so the node is no
-      // longer forever-refusing: clear its escalation cap so a *later* wedge gets
-      // a fresh [_nodeEscalationCap] drops rather than inheriting a spent count
+      // A built consumer proves this peer's node authorised us for *this* peer —
+      // but a node can serve one colleague while still refusing another. Clearing
+      // the node's escalation cap here resets the budget to a fresh
+      // [_nodeEscalationCap] drops; do that only once nobody on this node is still
+      // stranded. Otherwise the healthy peer's every (re)consume wipes the budget
+      // mid-climb, so the cap is never reached and each escalation re-drops the
+      // socket and interrupts this working consumer — the thrash the cap exists to
+      // stop. Keep the budget until the refused peers that triggered it recover;
+      // then a *later* wedge starts fresh rather than inheriting a spent count
       // (issue #95). Keyed by url, read from the mapping consume-try set for us.
       final nodeUrl = _peerNode[srcId];
-      if (nodeUrl != null) _nodeEscalations.remove(nodeUrl);
+      if (nodeUrl != null &&
+          !_strandedPeers().any((peer) => _peerNode[peer] == nodeUrl)) {
+        _nodeEscalations.remove(nodeUrl);
+      }
       // Clear the escalation counter only when this peer has no stale tag left.
       // The counter is keyed by `srcId`, but `_producerGone` is per-tag: a
       // healthy video (or screen) consume must not reset the ladder while this
