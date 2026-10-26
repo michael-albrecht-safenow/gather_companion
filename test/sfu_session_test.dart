@@ -863,6 +863,141 @@ void main() {
     });
   });
 
+  group('a node that keeps refusing is escalated (issue #95)', () {
+    const other = 'acct-other';
+
+    // The escalation decision is logged, not otherwise exposed: re-joining a
+    // refusing node on its cached socket loops forever (the issue #74 heal), so
+    // past the give-up window the session drops the node and re-resolves its
+    // peers on a fresh connection. That drop (_reassign -> _dropNode) tears down
+    // stream subscriptions whose cancels do not settle on a virtual clock — the
+    // reason the issue #83 _reassign tests run on the real event loop — so these
+    // assert the *decision* (threshold, cap, own-node skip, reset-on-consume),
+    // which is the new code, and lean on the issue #83 suite for the drop itself.
+    List<String> escalationsOf(String url) => rig.logs
+        .where((l) => l.contains('escalation') && l.contains(url))
+        .toList();
+
+    // Advance one heal cycle and re-arm the denial so the peer stays stranded.
+    void denyAfter(FakeAsync clock, Duration window, String src, String url) {
+      clock.elapse(window);
+      clock.flushMicrotasks();
+      rig.node(url).push(
+          'consume-not-allowed', {'srcId': src, 'srcStreamId': spaceId});
+      clock.flushMicrotasks();
+    }
+
+    // Subscribe one peer consumed on our node (so the room is receiving — the
+    // issue #90 partial signature) and one refused on nodeB, and return once the
+    // first denial for the refused peer has landed.
+    void arm(FakeAsync clock) {
+      rig.session.setAllowed({them, other});
+      rig.session.setConversation(clusterId: 'c1', meetingId: 'm1');
+      rig.session.start().ignore();
+      clock.flushMicrotasks();
+
+      rig.session.subscribe(them).ignore();
+      clock.flushMicrotasks();
+      rig.announce(them, {'audio': 'p-audio'});
+      clock.flushMicrotasks();
+      expect(rig.session.remotes.any((r) => r.srcId == them), isTrue);
+
+      rig.addresses[other] = nodeB;
+      rig.session.subscribe(other).ignore();
+      clock.flushMicrotasks();
+      rig.node(nodeB).push(
+          'consume-not-allowed', {'srcId': other, 'srcStreamId': spaceId});
+      clock.flushMicrotasks();
+    }
+
+    test('surfaces first, then escalates the refusing node past the give-up '
+        'window — not before', () {
+      fakeAsync((clock) {
+        arm(clock);
+
+        denyAfter(clock, const Duration(seconds: 6), other, nodeB); // cycle 1
+        denyAfter(clock, const Duration(seconds: 11), other, nodeB); // 2
+        denyAfter(clock, const Duration(seconds: 21), other, nodeB); // 3
+        denyAfter(clock, const Duration(seconds: 31), other, nodeB); // 4 surfaces
+        denyAfter(clock, const Duration(seconds: 31), other, nodeB); // 5
+
+        expect(rig.session.unreachablePeers, contains(other),
+            reason: 'four refused cycles surface the peer');
+        expect(escalationsOf(nodeB), isEmpty,
+            reason: 'surfacing comes first; the cheap heal is still being tried');
+
+        denyAfter(clock, const Duration(seconds: 31), other, nodeB); // 6 escalates
+
+        expect(escalationsOf(nodeB), hasLength(1),
+            reason: 'past the give-up window the refusing node is escalated');
+        expect(escalationsOf(nodeB).single, contains('1/2'),
+            reason: 'the first of a capped number of attempts');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('escalation is capped, then the peer is left flagged while the heal '
+        'keeps looping harmlessly', () {
+      fakeAsync((clock) {
+        arm(clock);
+
+        // The backoff caps at 30s after the first four cycles, so from there a
+        // uniform 31s elapse fires exactly one heal cycle. Each escalation resets
+        // the stranded counter, so the next is six cycles further on — run long
+        // enough to cross the cap twice over and then some.
+        final windows = <int>[6, 11, 21, ...List<int>.filled(24, 31)];
+        for (final w in windows) {
+          denyAfter(clock, Duration(seconds: w), other, nodeB);
+        }
+
+        // _nodeEscalationCap is 2: a drop, then a drop covering a reconnect that
+        // itself landed poisoned, and no more — further drops would only thrash.
+        expect(escalationsOf(nodeB), hasLength(2),
+            reason: 'a forever-refusing node is escalated at most twice');
+        expect(escalationsOf(nodeB).map((l) => l.contains('1/2')).toList(),
+            [true, false]);
+        expect(escalationsOf(nodeB).last, contains('2/2'));
+        expect(rig.session.unreachablePeers, contains(other),
+            reason: 'past the cap the peer stays flagged, heal still looping');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+
+    test('a peer refused on our own publishing node is never escalated', () {
+      fakeAsync((clock) {
+        rig.session.setAllowed({them});
+        rig.session.start().ignore();
+        clock.flushMicrotasks();
+
+        // `them` is on nodeA — the node we publish from, where `_sfuAddr` points.
+        // Dropping it would be the heavier _moveOwnNode, so escalation must skip
+        // it even when every consume there is refused.
+        rig.session.subscribe(them).ignore();
+        clock.flushMicrotasks();
+        rig.node(nodeA).push(
+            'consume-not-allowed', {'srcId': them, 'srcStreamId': spaceId});
+        clock.flushMicrotasks();
+
+        // Well past the escalate window.
+        for (final w in <int>[6, 11, 21, 31, 31, 31, 31, 31]) {
+          denyAfter(clock, Duration(seconds: w), them, nodeA);
+        }
+
+        expect(escalationsOf(nodeA), isEmpty,
+            reason: 'our own publishing node is never dropped by this escalation');
+        expect(rig.session.unreachablePeers, contains(them),
+            reason: 'it is still surfaced as unreachable — just not escalated');
+
+        rig.close().ignore();
+        clock.elapse(const Duration(seconds: 1));
+      });
+    });
+  });
+
   group('publishing', () {
     test('produce carries the tag Gather keys on, and keeps the producer',
         () async {

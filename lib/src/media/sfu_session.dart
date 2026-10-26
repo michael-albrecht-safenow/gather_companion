@@ -241,6 +241,20 @@ class SfuSession {
   /// reach" rather than left silently missing. See [unreachablePeers].
   final Set<String> _unreachable = {};
 
+  /// How many times we have escalated a forever-refusing node by dropping its
+  /// socket and re-resolving its peers, keyed by node **url**.
+  ///
+  /// Surfacing a peer as [_unreachable] (issue #90) makes a refusing node
+  /// *visible* but re-requesting it never recovers it: `_healStranded` re-joins
+  /// the cached socket, and a node that answers every consume `consume-not-allowed`
+  /// keeps refusing that same socket for the life of the call. The only thing that
+  /// re-auths us is a *fresh* socket, so after [_strandedEscalateAfter] stranded
+  /// cycles this escalates via [_reassign] — drop the node and re-resolve its peers
+  /// onto a new connection. Keyed by url rather than `srcId` so the cap survives
+  /// [_forgetPeersOn] clearing the per-peer [_strandedRetries], bounding escalation
+  /// to [_nodeEscalationCap] attempts per node before it gives up (issue #95).
+  final Map<String, int> _nodeEscalations = {};
+
   /// Peers we want but the router could not place yet. See [_addressFor].
   final Set<String> _awaitingAddr = {};
   Timer? _addrRetry;
@@ -1452,6 +1466,34 @@ class SfuSession {
         }
         if (surfaced) _publishRemotes();
 
+        // Surfacing makes a refusing node visible; it does not recover it. Once a
+        // peer has stayed stranded past [_strandedEscalateAfter] cycles, the
+        // cheap heal has demonstrably failed — re-joining the cached socket does
+        // not clear a node that keeps answering `consume-not-allowed`. Escalate:
+        // drop that node's socket and re-resolve its peers onto a fresh
+        // connection, which is the one thing that re-auths us (issue #95). Skip
+        // our own publishing node (that is the heavier [_moveOwnNode]) and a node
+        // already down (the issue #83 grace path owns that). Collect distinct
+        // nodes first so co-stranded peers on one node escalate it once, and cap
+        // attempts per node so a node that cannot be recovered does not thrash.
+        final escalate = <String>{};
+        for (final srcId in stranded) {
+          if ((_strandedRetries[srcId] ?? 0) < _strandedEscalateAfter) continue;
+          final url = _peerNode[srcId];
+          if (url == null || url == _sfuAddr) continue;
+          if (_nodeDown.contains(url)) continue;
+          if ((_nodeEscalations[url] ?? 0) >= _nodeEscalationCap) continue;
+          escalate.add(url);
+        }
+        for (final url in escalate) {
+          final attempt = (_nodeEscalations[url] ?? 0) + 1;
+          _nodeEscalations[url] = attempt;
+          _log('sfu: node $url keeps refusing consumes; escalation '
+              '$attempt/$_nodeEscalationCap — dropping its socket and '
+              're-resolving its peers on a fresh connection (issue #95)');
+          unawaited(_reassign(url));
+        }
+
         if (_consumers.isEmpty) {
           await _rebuildReceive();
         } else {
@@ -1513,6 +1555,25 @@ class SfuSession {
   /// user within about a minute rather than leaving the colleague silently
   /// missing for the life of the call (issue #90).
   static const _strandedUnreachableAfter = 4;
+
+  /// Heal cycles a peer may stay stranded before we escalate its node.
+  ///
+  /// Two past [_strandedUnreachableAfter]: the tile reads "can't reach" first,
+  /// then if the peer is still stranded we stop trusting the cheap heal and drop
+  /// the node. With the 5→10→20→30s backoff that is ~2 minutes in — long enough
+  /// that a node genuinely coming back on its own has had every chance, short
+  /// enough that a forever-refusing node is dropped and re-resolved rather than
+  /// left dead for the whole call (issue #95).
+  static const _strandedEscalateAfter = 6;
+
+  /// Times we escalate one node before giving up on it.
+  ///
+  /// Two: a single drop-and-reconnect clears the common transient auth wedge, a
+  /// second covers a reconnect that itself landed poisoned, and beyond that the
+  /// node is not coming back from the client side — further drops would only
+  /// thrash its peers. The peer stays flagged [_unreachable] and the heal keeps
+  /// looping harmlessly (issue #95).
+  static const _nodeEscalationCap = 2;
 
   /// Soft re-announces to tolerate before a stale-tag peer is resubscribed.
   ///
@@ -2248,6 +2309,12 @@ class SfuSession {
       // stop reading "can't reach" now — publish so remoteChanges carries it.
       _strandedRetries.remove(srcId);
       if (_unreachable.remove(srcId)) _publishRemotes();
+      // A built consumer proves this peer's node authorised us, so the node is no
+      // longer forever-refusing: clear its escalation cap so a *later* wedge gets
+      // a fresh [_nodeEscalationCap] drops rather than inheriting a spent count
+      // (issue #95). Keyed by url, read from the mapping consume-try set for us.
+      final nodeUrl = _peerNode[srcId];
+      if (nodeUrl != null) _nodeEscalations.remove(nodeUrl);
       // Clear the escalation counter only when this peer has no stale tag left.
       // The counter is keyed by `srcId`, but `_producerGone` is per-tag: a
       // healthy video (or screen) consume must not reset the ladder while this
@@ -2689,6 +2756,7 @@ class SfuSession {
     _staleTagRetries.clear();
     _strandedRetries.clear();
     _unreachable.clear();
+    _nodeEscalations.clear();
     _recvHealBackoff = const Duration(seconds: 5);
     _healing = false;
     _sendHealTimer?.cancel();

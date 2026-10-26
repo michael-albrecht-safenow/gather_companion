@@ -33,6 +33,7 @@ class Rig {
       routerUrl: routerUrl,
       openSignalling: (url, _) => open(url),
       buildDevice: () => device,
+      log: logs.add,
       // Short enough that a test does not wait out the real five seconds, long
       // enough that an ordinary `settle()` round trip does not trip it (issue #83).
       nodeDownGrace: const Duration(milliseconds: 20),
@@ -42,6 +43,11 @@ class Rig {
 
   late final SfuSession session;
   final FakeDevice device = FakeDevice();
+
+  /// Everything the session logged, for tests that assert on a decision the
+  /// session makes but does not otherwise expose — e.g. escalating a
+  /// forever-refusing node (issue #95).
+  final List<String> logs = [];
 
   /// Where the router says each person's media lives. A missing entry is
   /// `addrFound: false` — the normal answer for somebody not yet placed.
