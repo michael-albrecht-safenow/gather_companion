@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
@@ -39,6 +40,8 @@ class _PairScreenState extends State<PairScreen> {
 
   /// Set while a code is being claimed, so the detector stops firing into it.
   bool _claiming = false;
+  /// Set while the in-app login webview is up, so nothing else fires under it.
+  bool _signingIn = false;
   String? _error;
 
   @override
@@ -94,6 +97,32 @@ class _PairScreenState extends State<PairScreen> {
     await _controller.start();
   }
 
+  /// The bridge-free path: sign in to Gather in-app, no computer involved.
+  Future<void> _signIn() async {
+    if (_signingIn || _claiming) return;
+    await _controller.stop();
+    if (!mounted) return;
+    setState(() {
+      _signingIn = true;
+      _error = null;
+    });
+
+    final failure = await widget.state.signInWithGather();
+    if (!mounted) return;
+
+    if (failure == null && widget.state.isConfigured) {
+      widget.onClose?.call();
+      return;
+    }
+    // Either a reported failure, or a silent cancel that left us unconfigured —
+    // in both cases drop back to the scanner.
+    setState(() {
+      _signingIn = false;
+      _error = failure;
+    });
+    await _controller.start();
+  }
+
   Future<void> _typeItInstead() async {
     await _controller.stop();
     if (!mounted) return;
@@ -110,6 +139,11 @@ class _PairScreenState extends State<PairScreen> {
   Widget build(BuildContext context) {
     final t = context.tokens;
 
+    // The in-app login is backed by a native WKWebView registered only in the iOS
+    // AppDelegate; elsewhere the channel has no handler and the button would dead-end
+    // in a MissingPluginException. Offer it only where it works; QR pairing stays.
+    final canWebSignIn = defaultTargetPlatform == TargetPlatform.iOS;
+
     return Scaffold(
       backgroundColor: t.background,
       body: SafeArea(
@@ -125,9 +159,80 @@ class _PairScreenState extends State<PairScreen> {
                 ),
               ),
             ),
+            if (canWebSignIn) ...[
+              _SignInButton(
+                onPressed: (_claiming || _signingIn) ? null : _signIn,
+                busy: _signingIn,
+              ),
+              const _SignInNote(),
+            ],
             _Hint(error: _error, onType: _claiming ? null : _typeItInstead),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The primary, bridge-free path: sign in to Gather on the phone itself.
+///
+/// Sits above the pairing hint because it is the one that needs no computer. The
+/// QR flow stays under it as the fallback for a phone that would rather pair.
+class _SignInButton extends StatelessWidget {
+  const _SignInButton({required this.onPressed, required this.busy});
+
+  final VoidCallback? onPressed;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kTextGutter, 6, kTextGutter, 0),
+      child: SizedBox(
+        width: double.infinity,
+        child: FilledButton(
+          onPressed: onPressed,
+          style: FilledButton.styleFrom(
+            backgroundColor: t.brand,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+          child: busy
+              ? SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation(t.background),
+                  ),
+                )
+              : const Text('Sign in to Gather'),
+        ),
+      ),
+    );
+  }
+}
+
+/// A steer toward the one sign-in method that works in the embedded webview.
+///
+/// Gather's hosted login page offers a "Continue with Google" button, but Google
+/// refuses OAuth inside an embedded `WKWebView` (`disallowed_useragent`), so that
+/// button dead-ends. The page is Gather's own, so the button cannot be hidden from
+/// here; the honest fix is to tell the person which door opens before they try the
+/// one that does not. Email + one-time code runs on Gather's own origin and works.
+class _SignInNote extends StatelessWidget {
+  const _SignInNote();
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kTextGutter, 8, kTextGutter, 0),
+      child: Text(
+        'Use your email and the one-time code. Google sign-in does not work inside '
+        'the app yet.',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12, height: 1.4, color: t.faint),
       ),
     );
   }

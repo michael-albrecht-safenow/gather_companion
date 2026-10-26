@@ -10,6 +10,7 @@ import 'calendar_mirror.dart';
 import 'calendar_store.dart';
 import 'credentials.dart';
 import 'gather_link.dart';
+import 'gather_web_login.dart';
 import 'google_calendar.dart';
 import 'directory.dart';
 import 'link_status.dart';
@@ -239,7 +240,11 @@ class AppState extends ChangeNotifier {
     // client configured (every test, and a placeholder build). Null reads as "not
     // offered": the Plans tab shows local plans only and never tries to connect.
     GoogleCalendar? googleCalendar,
+    // The in-app Gather login (embedded webview + token harvest). Defaulted to the
+    // real method channel; a suite injects a fake that returns canned credentials.
+    GatherWebLogin? webLogin,
   }) : _notifier = notifier ?? Notifier(),
+       _webLogin = webLogin ?? const ChannelGatherWebLogin(),
        _connectivityChanges =
            connectivityChanges ?? Connectivity().onConnectivityChanged,
        _connectivityNow = connectivityNow ?? Connectivity().checkConnectivity,
@@ -274,6 +279,7 @@ class AppState extends ChangeNotifier {
   final CalendarStore _calendarStore;
   final CalendarMirror _calendarMirror;
   final GoogleCalendar? _googleCalendar;
+  final GatherWebLogin _webLogin;
   final Collector Function(GatherAuth auth, String? spaceId) _buildCollector;
   final ActivityFeed Function(GatherAuth auth) _buildActivityFeed;
   final void Function(String) _log;
@@ -980,20 +986,52 @@ class AppState extends ChangeNotifier {
               'what reads the session across.';
         }
 
-        _credentials = gather;
-        _spaceId = spaceId;
-        await _credentialStore.save(gather);
-        await _credentialStore.saveSpaceId(spaceId);
-
-        await _notifier.requestPermission();
-        _snapshot = PresenceSnapshot.empty;
-        // The held office belongs to the space we were in. Pairing into another one
-        // must not flash the old floor plan under the new roster.
-        _clearHeldMap();
-        notifyListeners();
-        _attach();
+        await _adoptCredentials(gather, spaceId: spaceId);
         return null;
     }
+  }
+
+  /// Signs in to Gather in-app, with no bridge and no computer.
+  ///
+  /// Drives the embedded webview ([GatherWebLogin]): the user logs in on Gather's
+  /// own page and the native side hands back the session it persisted. Returns null
+  /// when it took, a sentence to show otherwise, and stays silent on a user cancel
+  /// (null credentials → null return, no error). Space is unknown at login; the
+  /// collector resolves it from `recent-spaces` on connect.
+  Future<String?> signInWithGather() async {
+    final GatherCredentials? session;
+    try {
+      session = await _webLogin.signIn();
+    } on Object catch (e) {
+      return 'Could not sign in to Gather: $e';
+    }
+    if (session == null) return null; // dismissed, or no session to read
+    if (!session.isComplete) {
+      return 'Signed in, but no Gather session came back. Try again.';
+    }
+    await _adoptCredentials(session, spaceId: null);
+    return null;
+  }
+
+  /// The shared tail of every way credentials arrive — bridge pairing or in-app
+  /// login. Persists them, resets presence, and brings the socket up. [spaceId] is
+  /// the space to open first, or null to let the collector resolve one.
+  Future<void> _adoptCredentials(
+    GatherCredentials gather, {
+    required String? spaceId,
+  }) async {
+    _credentials = gather;
+    _spaceId = spaceId;
+    await _credentialStore.save(gather);
+    await _credentialStore.saveSpaceId(spaceId);
+
+    await _notifier.requestPermission();
+    _snapshot = PresenceSnapshot.empty;
+    // The held office belongs to the space we were in. Adopting into another one
+    // must not flash the old floor plan under the new roster.
+    _clearHeldMap();
+    notifyListeners();
+    _attach();
   }
 
   Future<void> unpair() async {
