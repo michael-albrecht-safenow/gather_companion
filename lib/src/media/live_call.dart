@@ -676,6 +676,11 @@ class LiveCall implements Call {
       // this set moves, so a tile flips to "connecting…" and back without ever
       // holding a stream of its own.
       connecting: _sfu?.connectingPeers ?? const {},
+      // Peers the heal has chased past the give-up threshold without ever
+      // consuming — a dead or forever-refusing node. The session re-emits
+      // `remoteChanges` whenever this set moves, so a tile flips to "can't reach"
+      // and back on a late recovery, the same way `connecting` does (issue #90).
+      unreachable: _sfu?.unreachablePeers ?? const {},
     ));
   }
 

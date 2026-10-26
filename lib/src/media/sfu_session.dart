@@ -223,6 +223,24 @@ class SfuSession {
   /// re-announce has failed enough times to look like a no-op (issue #61).
   final Map<String, int> _staleTagRetries = {};
 
+  /// How many consecutive heal cycles a stranded peer has survived without a
+  /// consumer being built for it, keyed by `srcId`.
+  ///
+  /// The receive-heal watchdog never gives up — a late node recovery can still
+  /// land, so the background re-request must keep going for the life of the call
+  /// (see [_scheduleRecvHeal]). But a peer whose producers live on a dead or
+  /// forever-refusing SFU node ([_consumeDenied] that no re-join clears, or a
+  /// node whose subscriber socket never connects) would otherwise sit silent and
+  /// dark with no sign to the user that anything is wrong. This counter climbs
+  /// each heal cycle the peer stays stranded, and once it reaches
+  /// [_strandedUnreachableAfter] the peer is surfaced in [_unreachable] so the UI
+  /// can flag it — without stopping the heal (issue #90).
+  final Map<String, int> _strandedRetries = {};
+
+  /// Peers we have given up reaching for now, surfaced to the UI as "can't
+  /// reach" rather than left silently missing. See [unreachablePeers].
+  final Set<String> _unreachable = {};
+
   /// Peers we want but the router could not place yet. See [_addressFor].
   final Set<String> _awaitingAddr = {};
   Timer? _addrRetry;
@@ -290,6 +308,18 @@ class SfuSession {
   /// sitting with mic and camera off — and so nobody restarts the app waiting on
   /// a peer the retry is already chasing. Changes here ride [remoteChanges].
   Set<String> get connectingPeers => Set.unmodifiable(_awaitingAddr);
+
+  /// Peers we have been unable to consume for long enough to call unreachable.
+  ///
+  /// A colleague whose producers sit on an SFU node that will not let us consume
+  /// — a node whose subscriber socket never connects, or one that answers every
+  /// consume `consume-not-allowed` — would otherwise stay silent and dark with
+  /// nothing to tell the person apart from a colleague who simply has mic and
+  /// camera off. The UI marks their tile "can't reach" so a person reads a
+  /// failure rather than a missing colleague, and so nobody restarts the app on a
+  /// peer the heal is still chasing in the background. Changes here ride
+  /// [remoteChanges].
+  Set<String> get unreachablePeers => Set.unmodifiable(_unreachable);
 
   /// Whether we are ready to publish. False until [start] has run through.
   bool get ready => _device?.loaded == true && _node != null;
@@ -1376,6 +1406,13 @@ class SfuSession {
       });
       final stillStale = _staleTagPeers();
       _staleTagRetries.removeWhere((srcId, _) => !stillStale.contains(srcId));
+      // Drop the unreachable bookkeeping for peers we no longer subscribe to, the
+      // same pruning the faults above get. A peer that left while flagged must not
+      // stay in [_unreachable] describing a colleague who is gone.
+      _strandedRetries.removeWhere((srcId, _) => !_subscribed.contains(srcId));
+      final unreachablePruned = _unreachable.length;
+      _unreachable.removeWhere((srcId) => !_subscribed.contains(srcId));
+      if (_unreachable.length != unreachablePruned) _publishRemotes();
 
       // Re-evaluate against current state, not the state that armed us. Two
       // faults bring us here: a stranded peer (denied, and we hold no consumer
@@ -1396,6 +1433,25 @@ class SfuSession {
       // re-requests just those peers, leaving every working transport and
       // consumer untouched.
       if (stranded.isNotEmpty) {
+        // Climb the give-up counter for each peer that is still stranded this
+        // cycle, and once it has survived [_strandedUnreachableAfter] cycles
+        // without recovering, surface it as unreachable so the UI stops hiding a
+        // dead or forever-refusing node behind a silent, dark tile. This does not
+        // stop the heal below: the background re-request keeps going so a late
+        // node recovery still lands — the peer is merely now visibly flagged
+        // rather than silently missing (issue #90).
+        var surfaced = false;
+        for (final srcId in stranded) {
+          final tries = (_strandedRetries[srcId] ?? 0) + 1;
+          _strandedRetries[srcId] = tries;
+          if (tries >= _strandedUnreachableAfter && _unreachable.add(srcId)) {
+            _log('sfu: $srcId still stranded after $tries heal cycle(s); '
+                'marking unreachable while the heal keeps retrying');
+            surfaced = true;
+          }
+        }
+        if (surfaced) _publishRemotes();
+
         if (_consumers.isEmpty) {
           await _rebuildReceive();
         } else {
@@ -1446,6 +1502,17 @@ class SfuSession {
           !_consumers.containsKey(key))
       .map((key) => key.split('|').first)
       .toSet();
+
+  /// Heal cycles a peer may stay stranded before it is surfaced as unreachable.
+  ///
+  /// The heal backoff doubles 5→10→20→30s and caps there, so four cycles is the
+  /// back half of the first minute: enough that an ordinary cluster blip — a node
+  /// re-join that lands on the next try, a peer whose producers take a moment to
+  /// register — recovers before it trips and never flashes a false "can't reach",
+  /// few enough that a genuinely dead or forever-refusing node surfaces to the
+  /// user within about a minute rather than leaving the colleague silently
+  /// missing for the life of the call (issue #90).
+  static const _strandedUnreachableAfter = 4;
 
   /// Soft re-announces to tolerate before a stale-tag peer is resubscribed.
   ///
@@ -1549,7 +1616,17 @@ class SfuSession {
       if (node != null) nodes.add(node);
     }
     for (final node in nodes) {
-      await _joinNode(node);
+      // Guard each join. A stranded peer whose node is dead makes _joinNode throw
+      // ("did not answer in 10s"), and an unguarded throw here would abort the
+      // whole heal — starving co-stranded peers on perfectly live nodes, who
+      // would then wait out the next backoff for no reason. Log the dead node and
+      // carry on so one corpse never blocks the others (issue #90).
+      try {
+        await _joinNode(node);
+      } catch (e) {
+        _log('sfu: re-join of a stranded peer\'s node failed ($e); '
+            'continuing to co-stranded peers on other nodes');
+      }
     }
 
     // The joins above awaited a round trip, during which unsubscribe() may have
@@ -1625,7 +1702,12 @@ class SfuSession {
       }
 
       // Next watchdog fire re-evaluates against faults that arrive after the
-      // rebuild, not the ones that triggered it.
+      // rebuild, not the ones that triggered it. The give-up counters
+      // ([_strandedRetries]/[_unreachable]) are deliberately *not* cleared here:
+      // a rebuild is exactly what a forever-denied peer gets every cycle, so
+      // resetting them would stop that peer ever surfacing as unreachable. A
+      // built consumer ([_consume]) or a node recovery ([_forgetPeersOn]) is what
+      // clears them.
       _consumeDenied.clear();
       _producerGone.clear();
       _staleTagRetries.clear();
@@ -1773,6 +1855,8 @@ class SfuSession {
 
     _announced.remove(srcId);
     _staleTagRetries.remove(srcId);
+    _strandedRetries.remove(srcId);
+    _unreachable.remove(srcId);
     for (final tag in SfuTag.values) {
       _closeConsumer(srcId, tag);
     }
@@ -1818,6 +1902,17 @@ class SfuSession {
             if (_tagOf(entry.key) case final tag?)
               if (entry.value is String) tag: entry.value as String,
         };
+        // Resolving the denial is the only thing that un-strands this peer, so an
+        // authoritative empty map — which never builds a consumer — must also drop
+        // the give-up bookkeeping, the dual of what _consume does when a consumer
+        // is built. Without it, a peer that had been flagged unreachable keeps a
+        // stale "can't reach" tile after legitimately going mic-and-camera-off,
+        // and its retry counter survives to resume from a stale height on a later
+        // re-strand rather than counting consecutive cycles (issue #90).
+        if (_announced[srcId]!.isEmpty) {
+          _strandedRetries.remove(srcId);
+          if (_unreachable.remove(srcId)) _publishRemotes();
+        }
         unawaited(_reconcile(srcId));
 
       case 'consume-close':
@@ -2147,6 +2242,12 @@ class SfuSession {
       // from the full grace window rather than mid-climb.
       _consumeDenied.remove(srcId);
       _producerGone.remove(key);
+      // A built consumer is the authoritative "recovered" signal for this peer,
+      // so clear its give-up counter and un-flag it as unreachable, consistent
+      // with how the other faults above clear. If it was flagged, the tile must
+      // stop reading "can't reach" now — publish so remoteChanges carries it.
+      _strandedRetries.remove(srcId);
+      if (_unreachable.remove(srcId)) _publishRemotes();
       // Clear the escalation counter only when this peer has no stale tag left.
       // The counter is keyed by `srcId`, but `_producerGone` is per-tag: a
       // healthy video (or screen) consume must not reset the ladder while this
@@ -2447,15 +2548,23 @@ class SfuSession {
       for (final entry in _peerNode.entries)
         if (entry.value == url) entry.key,
     ];
+    var unflagged = false;
     for (final srcId in moved) {
       _peerNode.remove(srcId);
       _announced.remove(srcId);
       for (final tag in SfuTag.values) {
         _closeConsumer(srcId, tag);
       }
+      // The node these peers sat on reconnected or was reassigned, so the fresh
+      // consume-try that follows is a clean re-attempt: drop the give-up counter
+      // and un-flag them so a recovery that works lands un-marked, and one that
+      // fails climbs the counter from scratch rather than from a stale height
+      // (issue #90).
+      _strandedRetries.remove(srcId);
+      if (_unreachable.remove(srcId)) unflagged = true;
     }
     _recvTransports.remove(url)?.close();
-    if (moved.isNotEmpty) _publishRemotes();
+    if (moved.isNotEmpty || unflagged) _publishRemotes();
     return moved;
   }
 
@@ -2578,6 +2687,8 @@ class SfuSession {
     _consumeDenied.clear();
     _producerGone.clear();
     _staleTagRetries.clear();
+    _strandedRetries.clear();
+    _unreachable.clear();
     _recvHealBackoff = const Duration(seconds: 5);
     _healing = false;
     _sendHealTimer?.cancel();
