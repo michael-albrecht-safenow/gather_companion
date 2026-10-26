@@ -157,6 +157,7 @@ class _PairScreenState extends State<PairScreen> {
               onPressed: (_claiming || _signingIn) ? null : _signIn,
               busy: _signingIn,
             ),
+            const _SignInNote(),
             _Hint(error: _error, onType: _claiming ? null : _typeItInstead),
           ],
         ),
@@ -199,6 +200,31 @@ class _SignInButton extends StatelessWidget {
                 )
               : const Text('Sign in to Gather'),
         ),
+      ),
+    );
+  }
+}
+
+/// A steer toward the one sign-in method that works in the embedded webview.
+///
+/// Gather's hosted login page offers a "Continue with Google" button, but Google
+/// refuses OAuth inside an embedded `WKWebView` (`disallowed_useragent`), so that
+/// button dead-ends. The page is Gather's own, so the button cannot be hidden from
+/// here; the honest fix is to tell the person which door opens before they try the
+/// one that does not. Email + one-time code runs on Gather's own origin and works.
+class _SignInNote extends StatelessWidget {
+  const _SignInNote();
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(kTextGutter, 8, kTextGutter, 0),
+      child: Text(
+        'Use your email and the one-time code. Google sign-in does not work inside '
+        'the app yet.',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12, height: 1.4, color: t.faint),
       ),
     );
   }
