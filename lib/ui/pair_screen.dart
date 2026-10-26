@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
@@ -138,6 +139,11 @@ class _PairScreenState extends State<PairScreen> {
   Widget build(BuildContext context) {
     final t = context.tokens;
 
+    // The in-app login is backed by a native WKWebView registered only in the iOS
+    // AppDelegate; elsewhere the channel has no handler and the button would dead-end
+    // in a MissingPluginException. Offer it only where it works; QR pairing stays.
+    final canWebSignIn = defaultTargetPlatform == TargetPlatform.iOS;
+
     return Scaffold(
       backgroundColor: t.background,
       body: SafeArea(
@@ -153,11 +159,13 @@ class _PairScreenState extends State<PairScreen> {
                 ),
               ),
             ),
-            _SignInButton(
-              onPressed: (_claiming || _signingIn) ? null : _signIn,
-              busy: _signingIn,
-            ),
-            const _SignInNote(),
+            if (canWebSignIn) ...[
+              _SignInButton(
+                onPressed: (_claiming || _signingIn) ? null : _signIn,
+                busy: _signingIn,
+              ),
+              const _SignInNote(),
+            ],
             _Hint(error: _error, onType: _claiming ? null : _typeItInstead),
           ],
         ),

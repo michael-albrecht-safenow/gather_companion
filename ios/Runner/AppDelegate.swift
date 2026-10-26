@@ -117,6 +117,10 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
   private var result: FlutterResult?
   private var controller: UIViewController?
   private weak var webView: WKWebView?
+  /// Re-probes IndexedDB while the login is on screen. Firebase persists the session
+  /// asynchronously, and an SPA login can complete with no further navigation to
+  /// fire `didFinish` — so a one-shot probe can miss the write entirely.
+  private var harvestTimer: Timer?
 
   static func register(with messenger: FlutterBinaryMessenger) {
     let instance = GatherWebLoginChannel()
@@ -145,7 +149,11 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
 
   private func present() {
     let config = WKWebViewConfiguration()
-    config.websiteDataStore = .default()
+    // Nonpersistent: the session we harvest is saved to the keychain, so nothing of
+    // value is lost by not persisting cookies/IndexedDB here. It also makes "Sign out
+    // of Gather" (AppState.unpair, which clears only the native stores) stick — the
+    // next sign-in starts clean instead of silently re-harvesting the old account.
+    config.websiteDataStore = .nonPersistent()
     config.userContentController.add(self, name: Self.messageName)
 
     let webView = WKWebView(frame: .zero, configuration: config)
@@ -183,6 +191,12 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
 
     webView.load(URLRequest(url: Self.loginURL))
     topViewController()?.present(vc, animated: true)
+
+    // The write can land after the last navigation's probe, so keep probing while the
+    // view is up. `finish` invalidates this on success, cancel or the Dart timeout.
+    harvestTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+      self?.webView?.evaluateJavaScript(Self.harvestScript, completionHandler: nil)
+    }
   }
 
   @objc private func cancelTapped() {
@@ -198,6 +212,14 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
   func userContentController(
     _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
   ) {
+    // Script handlers are exposed to every frame and origin in the webview. Only our
+    // own probe, running in the Gather main frame, may hand back a session — otherwise
+    // an off-origin iframe reached during login could inject its own credentials.
+    guard message.frameInfo.isMainFrame,
+          message.frameInfo.securityOrigin.host.hasSuffix("gather.town")
+    else {
+      return
+    }
     guard message.name == Self.messageName,
           let body = message.body as? [String: Any],
           let refreshToken = body["refreshToken"] as? String,
@@ -215,6 +237,8 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
   private func finish(with payload: [String: Any]?) {
     guard let result = self.result else { return }
     self.result = nil
+    harvestTimer?.invalidate()
+    harvestTimer = nil
     webView?.configuration.userContentController
       .removeScriptMessageHandler(forName: Self.messageName)
     controller?.dismiss(animated: true)
@@ -256,6 +280,10 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
             var key = row && row.fbase_key;
             if (typeof key === 'string' && key.indexOf('\(authUserKeyNeedle)') === 0) {
               var v = row.value || {};
+              // Gather signs in anonymously first (to request the OTP); that record
+              // also has a refresh token. Skip it, or we'd adopt an anonymous identity
+              // instead of the user's account. Keep scanning for the real one.
+              if (v.isAnonymous === true) continue;
               var tm = v.stsTokenManager || {};
               if (tm.refreshToken) {
                 window.webkit.messageHandlers.\(messageName).postMessage({
