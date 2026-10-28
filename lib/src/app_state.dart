@@ -243,8 +243,14 @@ class AppState extends ChangeNotifier {
     // The in-app Gather login (embedded webview + token harvest). Defaulted to the
     // real method channel; a suite injects a fake that returns canned credentials.
     GatherWebLogin? webLogin,
+    // The recent-spaces lookup for the just-signed-in session, so login can resolve
+    // a space before adopting rather than handing the collector a null it cannot
+    // fill from an empty `recent-spaces`. Defaulted to a throwaway [GatherAuth] over
+    // the harvested credentials; a suite injects a fake list.
+    Future<List<GatherSpace>> Function(GatherCredentials)? recentSpacesOf,
   }) : _notifier = notifier ?? Notifier(),
        _webLogin = webLogin ?? const ChannelGatherWebLogin(),
+       _recentSpacesOf = recentSpacesOf ?? _realRecentSpacesOf,
        _connectivityChanges =
            connectivityChanges ?? Connectivity().onConnectivityChanged,
        _connectivityNow = connectivityNow ?? Connectivity().checkConnectivity,
@@ -270,6 +276,13 @@ class AppState extends ChangeNotifier {
 
   static ActivityFeed _realActivityFeed(GatherAuth auth) => ActivityFeed(auth: auth);
 
+  /// The default recent-spaces lookup: a throwaway [GatherAuth] over the harvested
+  /// credentials, asked once for the spaces this account has lately opened.
+  static Future<List<GatherSpace>> _realRecentSpacesOf(
+    GatherCredentials creds,
+  ) =>
+      GatherAuth(credentials: creds).recentSpaces();
+
   final Notifier _notifier;
   Notifier get notifier => _notifier;
 
@@ -280,6 +293,7 @@ class AppState extends ChangeNotifier {
   final CalendarMirror _calendarMirror;
   final GoogleCalendar? _googleCalendar;
   final GatherWebLogin _webLogin;
+  final Future<List<GatherSpace>> Function(GatherCredentials) _recentSpacesOf;
   final Collector Function(GatherAuth auth, String? spaceId) _buildCollector;
   final ActivityFeed Function(GatherAuth auth) _buildActivityFeed;
   final void Function(String) _log;
@@ -996,9 +1010,16 @@ class AppState extends ChangeNotifier {
   /// Drives the embedded webview ([GatherWebLogin]): the user logs in on Gather's
   /// own page and the native side hands back the session it persisted. Returns null
   /// when it took, a sentence to show otherwise, and stays silent on a user cancel
-  /// (null credentials → null return, no error). Space is unknown at login; the
-  /// collector resolves it from `recent-spaces` on connect.
-  Future<String?> signInWithGather() async {
+  /// (null credentials → null return, no error).
+  ///
+  /// The space is resolved *before* adopting, not left to the collector. A freshly
+  /// harvested session has no space on its credentials, and `recent-spaces` can come
+  /// back empty — which stranded the collector with nothing to join and no way to
+  /// say so. So this fetches the account's recent spaces and asks [chooseSpace] (the
+  /// UI) which one to open; only then are the credentials adopted with that id.
+  Future<String?> signInWithGather({
+    required Future<GatherSpace?> Function(List<GatherSpace>) chooseSpace,
+  }) async {
     final GatherCredentials? session;
     try {
       session = await _webLogin.signIn();
@@ -1009,7 +1030,21 @@ class AppState extends ChangeNotifier {
     if (!session.isComplete) {
       return 'Signed in, but no Gather session came back. Try again.';
     }
-    await _adoptCredentials(session, spaceId: null);
+
+    final List<GatherSpace> spaces;
+    try {
+      spaces = await _recentSpacesOf(session);
+    } on Object catch (e) {
+      return 'Signed in, but could not load your spaces: $e';
+    }
+    if (spaces.isEmpty) {
+      return 'Signed in, but you haven\'t opened a space in Gather recently. '
+          'Open your space once in Gather, then sign in again.';
+    }
+
+    final chosen = await chooseSpace(spaces);
+    if (chosen == null) return null; // picker dismissed — a deliberate cancel
+    await _adoptCredentials(session, spaceId: chosen.id);
     return null;
   }
 
