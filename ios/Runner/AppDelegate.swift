@@ -106,7 +106,13 @@ final class GoogleAuthChannel: NSObject, ASWebAuthenticationPresentationContextP
 final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// Gather's web app. Its login redirects stay inside this origin, so there is no
   /// callback to catch — we read the session it persists on success.
-  private static let loginURL = URL(string: "https://app.v2.gather.town/")!
+  // The sign-in form directly, not the app root. The root ("/") resolves to the
+  // logged-out home, which shows an empty "no spaces" list and buries the sign-in —
+  // a confusing first screen in a webview with no address bar. `/signin` lands the
+  // user on the login form; Gather redirects to the app (and persists the session we
+  // harvest) once they finish. The webview is non-persistent, so it is always a
+  // fresh, logged-out load — `/signin` never bounces to the app.
+  private static let loginURL = URL(string: "https://app.v2.gather.town/signin")!
 
   /// The IndexedDB record key the Firebase web SDK writes the session under. The
   /// suffix is Gather's public Firebase web API key (see `tool/probe-google-auth.mjs`).
@@ -173,13 +179,50 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
       barButtonSystemItem: .cancel, target: self, action: #selector(cancelTapped))
     bar.items = [item]
 
+    // A notice strip: Google and SSO sign-in silently fail inside an embedded
+    // WKWebView (Google refuses its OAuth in an embedded user-agent), leaving the
+    // user on a page that never completes. Only the email + one-time-code path works
+    // here, so say so up front rather than letting them hit the dead end.
+    let notice = UILabel()
+    notice.text =
+      "⚠️ Sign in with Email and a one-time code. Google and SSO sign-in don’t work in this window."
+    notice.numberOfLines = 0
+    notice.textAlignment = .center
+    // Semibold on a warning-yellow strip: the grey version read as chrome and got
+    // skipped, so this is meant to catch the eye before the user reaches for Google.
+    // Scaled through `UIFontMetrics` so it still honours Dynamic Type.
+    let noticeBase = UIFont.systemFont(
+      ofSize: UIFont.preferredFont(forTextStyle: .subheadline).pointSize, weight: .semibold)
+    notice.font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: noticeBase)
+    notice.adjustsFontForContentSizeCategory = true
+    // A fixed dark ink, not `.label`: on a yellow strip `.label` would turn white in
+    // dark mode and wash out. Dark-on-yellow stays legible in either appearance.
+    notice.textColor = UIColor(white: 0.12, alpha: 1.0)
+    notice.translatesAutoresizingMaskIntoConstraints = false
+
+    // A UILabel has no padding, so inset it inside a tinted strip.
+    let noticeBar = UIView()
+    noticeBar.backgroundColor = .systemYellow
+    noticeBar.translatesAutoresizingMaskIntoConstraints = false
+    noticeBar.addSubview(notice)
+
     vc.view.addSubview(bar)
+    vc.view.addSubview(noticeBar)
     vc.view.addSubview(webView)
     NSLayoutConstraint.activate([
       bar.topAnchor.constraint(equalTo: vc.view.safeAreaLayoutGuide.topAnchor),
       bar.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
       bar.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
-      webView.topAnchor.constraint(equalTo: bar.bottomAnchor),
+
+      noticeBar.topAnchor.constraint(equalTo: bar.bottomAnchor),
+      noticeBar.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
+      noticeBar.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
+      notice.topAnchor.constraint(equalTo: noticeBar.topAnchor, constant: 10),
+      notice.bottomAnchor.constraint(equalTo: noticeBar.bottomAnchor, constant: -10),
+      notice.leadingAnchor.constraint(equalTo: noticeBar.leadingAnchor, constant: 16),
+      notice.trailingAnchor.constraint(equalTo: noticeBar.trailingAnchor, constant: -16),
+
+      webView.topAnchor.constraint(equalTo: noticeBar.bottomAnchor),
       webView.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
       webView.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
       webView.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor),
@@ -280,10 +323,20 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
             var key = row && row.fbase_key;
             if (typeof key === 'string' && key.indexOf('\(authUserKeyNeedle)') === 0) {
               var v = row.value || {};
-              // Gather signs in anonymously first (to request the OTP); that record
-              // also has a refresh token. Skip it, or we'd adopt an anonymous identity
-              // instead of the user's account. Keep scanning for the real one.
+              // Gather bootstraps a throwaway session to *request* the code — and,
+              // measured against the live service 2026-10-28, it is NOT flagged
+              // `isAnonymous` (both the throwaway and the real user read false). The
+              // one field that separates them is `email`: the pre-OTP throwaway has
+              // `email: null`; the real user, once the code is verified (or any
+              // provider sign-in completes), carries the account's address. So the
+              // refresh-token-bearing record alone is not enough — harvesting it tore
+              // the webview down on the throwaway before the user ever finished the
+              // code, adopting a spaceless identity. Require an email, and keep
+              // probing until the real record lands. (`isAnonymous` kept as a cheap
+              // extra guard for any future provider that does use it.)
               if (v.isAnonymous === true) continue;
+              var email = typeof v.email === 'string' ? v.email : '';
+              if (!email) continue;
               var tm = v.stsTokenManager || {};
               if (tm.refreshToken) {
                 window.webkit.messageHandlers.\(messageName).postMessage({

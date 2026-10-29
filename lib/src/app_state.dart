@@ -1030,13 +1030,22 @@ class AppState extends ChangeNotifier {
     if (!session.isComplete) {
       return 'Signed in, but no Gather session came back. Try again.';
     }
+    // Diagnostic (issue #97): which account the harvest actually landed on, so an
+    // empty recent-spaces can be told apart from a wrong/anonymous session.
+    final harvestedUid = session.uid ?? uidFromIdToken(session.idToken);
+    _log('login: harvested session uid=$harvestedUid '
+        'hasIdToken=${session.idToken != null && session.idToken!.isNotEmpty} '
+        'hasRefresh=${session.refreshToken.isNotEmpty}');
 
     final List<GatherSpace> spaces;
     try {
       spaces = await _recentSpacesOf(session);
     } on Object catch (e) {
+      _log('login: recent-spaces lookup failed — $e');
       return 'Signed in, but could not load your spaces: $e';
     }
+    _log('login: recent-spaces returned ${spaces.length} '
+        '[${spaces.map((s) => s.name ?? s.id).take(5).join(', ')}]');
     if (spaces.isEmpty) {
       return 'Signed in, but you haven\'t opened a space in Gather recently. '
           'Open your space once in Gather, then sign in again.';
