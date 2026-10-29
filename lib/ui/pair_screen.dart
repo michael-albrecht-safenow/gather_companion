@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../src/app_state.dart';
 import '../src/pairing.dart';
 import '../theme/gather_theme.dart';
+import 'space_picker.dart';
 import 'type_code_dialog.dart';
 
 /// Pairing with the computer by looking at the square its bridge printed.
@@ -107,7 +108,14 @@ class _PairScreenState extends State<PairScreen> {
       _error = null;
     });
 
-    final failure = await widget.state.signInWithGather();
+    final failure = await widget.state.signInWithGather(
+      // Asked only after a session comes back, with the account's recent spaces.
+      // A dismissed sheet (null) is a cancel: sign-in took, but no space is adopted.
+      chooseSpace: (spaces) async {
+        if (!mounted) return null;
+        return showSpacePicker(context, spaces);
+      },
+    );
     if (!mounted) return;
 
     if (failure == null && widget.state.isConfigured) {
