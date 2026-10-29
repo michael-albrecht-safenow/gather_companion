@@ -190,9 +190,11 @@ final class GatherWebLoginChannel: NSObject, WKNavigationDelegate, WKScriptMessa
     notice.textAlignment = .center
     // Semibold on a warning-yellow strip: the grey version read as chrome and got
     // skipped, so this is meant to catch the eye before the user reaches for Google.
-    // Scaled through `UIFontMetrics` so it still honours Dynamic Type.
-    let noticeBase = UIFont.systemFont(
-      ofSize: UIFont.preferredFont(forTextStyle: .subheadline).pointSize, weight: .semibold)
+    // Scaled through `UIFontMetrics` so it still honours Dynamic Type. The base is
+    // the *unscaled* subheadline size (15pt): `preferredFont` already bakes in the
+    // user's Dynamic Type setting, so feeding its point size to `scaledFont` would
+    // scale twice and, at accessibility sizes, bloat the strip over the login form.
+    let noticeBase = UIFont.systemFont(ofSize: 15, weight: .semibold)
     notice.font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: noticeBase)
     notice.adjustsFontForContentSizeCategory = true
     // A fixed dark ink, not `.label`: on a yellow strip `.label` would turn white in

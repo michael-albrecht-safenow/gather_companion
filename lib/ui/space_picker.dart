@@ -21,6 +21,10 @@ Future<GatherSpace?> showSpacePicker(
   return showModalBottomSheet<GatherSpace>(
     context: context,
     isScrollControlled: true,
+    // A long recent-spaces list lets this scroll-controlled sheet grow to full
+    // height; without the route's safe area it would slide the grabber and heading
+    // under the status bar/notch. The inner `SafeArea` only guards the bottom.
+    useSafeArea: true,
     backgroundColor: Colors.transparent,
     builder: (context) => _SpacePickerSheet(spaces: spaces),
   );

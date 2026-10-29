@@ -66,9 +66,9 @@ void main() {
         webLogin: login,
         notifier: _SilentNotifier(),
         buildActivityFeed: (_) => _EmptyActivityFeed(),
-        recentSpacesOf: (_) async {
+        recentSpacesOf: (creds) async {
           if (spacesThrows) throw StateError('network down');
-          return spaces;
+          return (spaces: spaces, credentials: creds);
         },
         // Keep `_attach`/`_detach` off the real plugins, and record the adopted id.
         buildCollector: (auth, spaceId) {
@@ -133,6 +133,40 @@ void main() {
     expect(offered, hasLength(3));
     expect(state.isConfigured, isTrue);
     expect(adopted, 'space-b');
+    await settle();
+  });
+
+  test('a refresh-token rotation during the spaces lookup is carried to adoption',
+      () async {
+    // The recent-spaces lookup can refresh the session and get a rotated refresh
+    // token back. Adoption must save that, not the pre-lookup token, or the next
+    // refresh fails on a superseded credential (issue #97 review).
+    final login =
+        _FakeWebLogin(GatherCredentials(refreshToken: 'harvested', uid: 'u1'));
+    const rotated =
+        GatherCredentials(refreshToken: 'rotated', idToken: 'fresh', uid: 'u1');
+    String? adoptedRefresh;
+    final state = AppState(
+      webLogin: login,
+      notifier: _SilentNotifier(),
+      buildActivityFeed: (_) => _EmptyActivityFeed(),
+      recentSpacesOf: (_) async => (
+        spaces: const [GatherSpace(id: 'space-a', name: 'Alpha')],
+        credentials: rotated,
+      ),
+      buildCollector: (auth, spaceId) {
+        adoptedRefresh = auth.credentials.refreshToken;
+        return FakeCollector();
+      },
+      connectivityChanges: const Stream<List<ConnectivityResult>>.empty(),
+      connectivityNow: () async => const [ConnectivityResult.wifi],
+    );
+    addTearDown(state.dispose);
+
+    final note = await state.signInWithGather(chooseSpace: pickFirst);
+
+    expect(note, isNull);
+    expect(adoptedRefresh, 'rotated'); // not the pre-lookup 'harvested'
     await settle();
   });
 

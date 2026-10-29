@@ -201,6 +201,15 @@ String meetingTimeLabel(DateTime end, DateTime now) {
   return '+${over < 1 ? 1 : over}min over';
 }
 
+/// A recent-spaces lookup's result: the spaces, plus the credentials the lookup
+/// ended on. The second field carries any id-token refresh or refresh-token
+/// rotation the call triggered, so adoption saves the current session rather than
+/// the pre-lookup one.
+typedef RecentSpacesResult = ({
+  List<GatherSpace> spaces,
+  GatherCredentials credentials,
+});
+
 class AppState extends ChangeNotifier {
   // A named parameter cannot be a private initializing formal, so the fields are
   // assigned the long way round.
@@ -247,7 +256,7 @@ class AppState extends ChangeNotifier {
     // a space before adopting rather than handing the collector a null it cannot
     // fill from an empty `recent-spaces`. Defaulted to a throwaway [GatherAuth] over
     // the harvested credentials; a suite injects a fake list.
-    Future<List<GatherSpace>> Function(GatherCredentials)? recentSpacesOf,
+    Future<RecentSpacesResult> Function(GatherCredentials)? recentSpacesOf,
   }) : _notifier = notifier ?? Notifier(),
        _webLogin = webLogin ?? const ChannelGatherWebLogin(),
        _recentSpacesOf = recentSpacesOf ?? _realRecentSpacesOf,
@@ -278,10 +287,19 @@ class AppState extends ChangeNotifier {
 
   /// The default recent-spaces lookup: a throwaway [GatherAuth] over the harvested
   /// credentials, asked once for the spaces this account has lately opened.
-  static Future<List<GatherSpace>> _realRecentSpacesOf(
+  ///
+  /// Carries back whatever credentials the auth ends on, not the ones it started
+  /// with: the lookup may refresh the id token — and, when Google hands one back,
+  /// rotate the refresh token. Adopting the pre-lookup session would drop that
+  /// rotation (stranding the phone on a superseded refresh token) and force another
+  /// token exchange before the collector connects.
+  static Future<RecentSpacesResult> _realRecentSpacesOf(
     GatherCredentials creds,
-  ) =>
-      GatherAuth(credentials: creds).recentSpaces();
+  ) async {
+    final auth = GatherAuth(credentials: creds);
+    final spaces = await auth.recentSpaces();
+    return (spaces: spaces, credentials: auth.credentials);
+  }
 
   final Notifier _notifier;
   Notifier get notifier => _notifier;
@@ -293,7 +311,7 @@ class AppState extends ChangeNotifier {
   final CalendarMirror _calendarMirror;
   final GoogleCalendar? _googleCalendar;
   final GatherWebLogin _webLogin;
-  final Future<List<GatherSpace>> Function(GatherCredentials) _recentSpacesOf;
+  final Future<RecentSpacesResult> Function(GatherCredentials) _recentSpacesOf;
   final Collector Function(GatherAuth auth, String? spaceId) _buildCollector;
   final ActivityFeed Function(GatherAuth auth) _buildActivityFeed;
   final void Function(String) _log;
@@ -1038,8 +1056,14 @@ class AppState extends ChangeNotifier {
         'hasRefresh=${session.refreshToken.isNotEmpty}');
 
     final List<GatherSpace> spaces;
+    // The credentials the lookup ends on, not the pre-lookup `session`: it may have
+    // refreshed the id token or rotated the refresh token, and that is what must be
+    // adopted (see [_realRecentSpacesOf]).
+    final GatherCredentials resolved;
     try {
-      spaces = await _recentSpacesOf(session);
+      final result = await _recentSpacesOf(session);
+      spaces = result.spaces;
+      resolved = result.credentials;
     } on Object catch (e) {
       _log('login: recent-spaces lookup failed — $e');
       return 'Signed in, but could not load your spaces: $e';
@@ -1053,7 +1077,7 @@ class AppState extends ChangeNotifier {
 
     final chosen = await chooseSpace(spaces);
     if (chosen == null) return null; // picker dismissed — a deliberate cancel
-    await _adoptCredentials(session, spaceId: chosen.id);
+    await _adoptCredentials(resolved, spaceId: chosen.id);
     return null;
   }
 
