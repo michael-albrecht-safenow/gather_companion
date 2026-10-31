@@ -8,12 +8,14 @@ library;
 
 export 'src/activity_feed.dart';
 export 'src/avatar.dart';
+export 'src/backend_config.dart';
 export 'src/collector.dart';
 export 'src/direct_collector.dart';
 export 'src/game_protocol.dart';
 export 'src/gather_auth.dart';
 export 'src/meeting_link.dart';
 export 'src/msgpack.dart';
+export 'src/otp_login.dart';
 export 'src/party.dart';
 export 'src/profile_photos.dart';
 export 'src/presence_tracker.dart';

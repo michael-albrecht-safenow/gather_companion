@@ -1,35 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-	Debug and Profile builds.
-
-	`aps-environment` selects which APNs host the device token is minted for, and
-	the two are separate token namespaces: a sandbox token is meaningless to the
-	production gateway and vice versa. Firebase picks the host from this
-	entitlement, so getting it wrong does not fail loudly — the phone registers, the
-	bridge sends, FCM accepts, and nothing ever arrives.
-
-	Release builds use RunnerRelease.entitlements instead, wired per build
-	configuration in project.pbxproj. Xcode normally rewrites this value during
-	export, but only under automatic signing; this project signs manually and
-	explicitly (see ../ExportOptions.plist), so the two files are explicit too.
--->
 <plist version="1.0">
 <dict>
-	<key>aps-environment</key>
-	<string>development</string>
-	<!--
-		Shared with the screen-share Broadcast Upload Extension. The extension runs
-		in its own process (ReplayKit hosts it), so the only way it can hand captured
-		frames to the app's peer connection is a file in a container both sides can
-		reach — this App Group. `flutter_webrtc` reads the group id from the
-		`RTCAppGroupIdentifier` Info.plist key and opens a socket on a file inside it.
-		The identifier here, in the extension's entitlements, and in that Info.plist
-		key must match exactly.
-	-->
-	<key>com.apple.security.application-groups</key>
-	<array>
-		<string>group.com.jonasgrunau.gatherCompanion.screenshare</string>
-	</array>
 </dict>
 </plist>
