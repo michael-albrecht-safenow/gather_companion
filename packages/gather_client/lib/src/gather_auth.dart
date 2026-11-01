@@ -32,6 +32,8 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'backend_config.dart';
+
 /// Firebase web API key, from the prod bundle. Public by design for web apps.
 const gatherFirebaseKey = 'AIzaSyDPwTbXLMPbIkg6UKr49VrHWwkrOdRh__E';
 
@@ -43,8 +45,6 @@ const gatherApiBase = 'https://api.v2.gather.town/api/v2';
 /// `content-type: application/x.gather.msgpack`, so REST bodies decode with the
 /// same [msgpackDecode] the game socket uses.
 const gatherMsgpackContentType = 'application/x.gather.msgpack';
-
-const _tokenEndpoint = 'https://securetoken.googleapis.com/v1/token';
 
 /// Refresh this long before expiry, so a request never races the deadline.
 const _refreshMargin = Duration(minutes: 2);
@@ -253,6 +253,7 @@ class GatherAuth {
   GatherAuth({
     required GatherCredentials credentials,
     GatherHttp? http,
+    BackendConfig? config,
     Future<void> Function(GatherCredentials)? onRotated,
     void Function(String)? log,
     DateTime Function()? now,
@@ -261,6 +262,7 @@ class GatherAuth {
         // ignore: prefer_initializing_formals
   })  : _credentials = credentials,
         _http = http ?? const IoGatherHttp(),
+        _config = config ?? BackendConfig.gather,
         // ignore: prefer_initializing_formals
         _onRotated = onRotated,
         _log = log ?? _noop,
@@ -270,6 +272,10 @@ class GatherAuth {
 
   GatherCredentials _credentials;
   final GatherHttp _http;
+
+  /// Which backend we talk to. Defaults to Gather, so unconfigured callers behave
+  /// exactly as before.
+  final BackendConfig _config;
   final Future<void> Function(GatherCredentials)? _onRotated;
   final void Function(String) _log;
   final DateTime Function() _now;
@@ -331,7 +337,7 @@ class GatherAuth {
     final ({int status, Map<String, Object?> body}) response;
     try {
       response = await _http.postForm(
-        Uri.parse('$_tokenEndpoint?key=$gatherFirebaseKey'),
+        _config.refreshUri(),
         {'grant_type': 'refresh_token', 'refresh_token': _credentials.refreshToken},
       );
     } on Object catch (error) {
@@ -377,7 +383,7 @@ class GatherAuth {
   /// One authenticated GET against Gather's REST API.
   Future<Object?> apiGet(String path) async {
     final token = await idToken();
-    final response = await _http.getJson(Uri.parse('$gatherApiBase$path'), token);
+    final response = await _http.getJson(Uri.parse('${_config.apiBase}$path'), token);
     if (response.status == 401 || response.status == 403) {
       throw GatherAuthException(
         'Gather refused the token (${response.status})',
