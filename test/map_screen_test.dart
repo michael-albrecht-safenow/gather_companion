@@ -1161,6 +1161,26 @@ void main() {
       expect(said, ['Gather refused claimDesk: Taken']);
     });
 
+    test('a refused requestToAccess knock is swallowed, not shown as a failure', () async {
+      // Issue #100. Entry into a locked room is opened by the host's acceptance landing
+      // on the roster, never by this action's ack, so a wire refusal of the knock is a
+      // flow the app recovers from. Surfacing it contradicts the "Asked to be let in"
+      // notice and reads as a failure on a success.
+      final state = AppState();
+      addTearDown(state.dispose);
+      final said = <String>[];
+      final sub = state.notices.listen(said.add);
+      addTearDown(sub.cancel);
+
+      state.debugNoteRefusal(const ActionRefused(
+        action: 'requestToAccess',
+        message: 'Tried to call an action on a non-existent model instance MapArea',
+      ));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(said, isEmpty);
+    });
+
     test('a burst of the same refusal is one sentence, not two hundred', () async {
       // The actions most likely to be refused are the ones sent in bursts: a held
       // D-pad is seven steps a second and a go-kart twenty-one. If the server starts
