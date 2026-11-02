@@ -3898,6 +3898,15 @@ class AppState extends ChangeNotifier {
   /// the server starts refusing `move`, one sentence is the news and the next two
   /// hundred are noise.
   void _noteActionRefused(ActionRefused refusal) {
+    // `requestToAccess` is a knock the app recovers from on its own: entry is opened
+    // by the host's acceptance landing on the roster and [_tryEnterPending] walking
+    // us in, never by this action's ack. The server can still refuse the knock on the
+    // wire (issue #100 saw a "non-existent model instance" rejection), but surfacing
+    // that as an error banner contradicts the "Asked to be let in" notice already
+    // shown and reads as a failure on a flow that succeeds. Swallow it — the roster
+    // path is the one that reports the real outcome.
+    if (refusal.action == 'requestToAccess') return;
+
     final key = '${refusal.action}:${refusal.message}';
     final now = DateTime.now();
     final last = _refusedAt[key];
