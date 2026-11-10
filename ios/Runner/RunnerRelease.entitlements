@@ -1,27 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-	Release builds — TestFlight and the App Store.
-
-	The only difference from Runner.entitlements is `production`, and it is the
-	whole ballgame: a build signed with `development` gets a sandbox device token,
-	which the production APNs gateway does not know. Every layer then reports
-	success — the phone registers, the bridge sends, FCM returns 200 — and the
-	notification is simply never delivered. There is no error to find.
-
-	Kept as a second file rather than a build setting because this project signs
-	manually (see ../ExportOptions.plist), and manual signing does not get Xcode's
-	automatic export-time rewrite of this value.
--->
 <plist version="1.0">
 <dict>
-	<key>aps-environment</key>
-	<string>production</string>
-	<!-- Shared with the screen-share Broadcast Upload Extension; see the note in
-	     Runner.entitlements. The group id is the same across debug and release. -->
-	<key>com.apple.security.application-groups</key>
-	<array>
-		<string>group.com.jonasgrunau.gatherCompanion.screenshare</string>
-	</array>
 </dict>
 </plist>
