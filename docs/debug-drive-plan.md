@@ -340,21 +340,56 @@ Estimates are judgement, not measured.
 - **2.6** `sfu.debug` read-only snapshot.
 - **2.7** Optional: a periodic flow summary into `media.log` while in a call.
 
-### Phase 3: two-endpoint verification in the test space (≈ 1 d) — #106
+### Phase 3: two-endpoint verification in the test space (≈ 1.5 d) — #106
 
-The second endpoint is still to be decided; see *Open question* below.
+Endpoints (see *Second endpoint* below): **A** = iOS simulator running the
+real `lib/main.dart` (audio only); **B** = a second Gather V2 desktop
+instance with its own profile and fake media (adds video).
 
-- **3.1** Phone over USB + second endpoint, both in the test space.
-  `move.warpToPerson` → `op.result` → `media.watch 30s` → every expected
-  stream `continuous`. Save the raw JSON as evidence, and say which verdicts
-  were observed live and which were scripted.
-- **3.2** Negative checks: the peer mutes (expect `paused`/`silent`, not
-  `stalled`); the peer turns its camera off (the video stream leaves the
-  expected set); `fault.offline` → `stalled`, then recovery;
-  `fault.silentMove` → outbound `stalled`, then the send-heal recovery
-  (#67).
-- **3.3** Record what was verified, where, and what is still inferred in
-  `docs/sim_harness.md` → *Verified so far*.
+- **3.0** Set up endpoints.
+  - **3.0a** Test space + test accounts; each account visits the test space
+    once, so it becomes its most recent space. Both login paths leave
+    `spaceId=null` and `DirectCollector` takes `recentSpaces().first`
+    (`direct_collector.dart:799-806`, #97). Prefer a test account on the
+    phone too, so the user's own desktop client (#41 lock-offline, session
+    takeover) can't interfere.
+  - **3.0b** Simulator: `xcrun simctl privacy <udid> grant microphone
+    com.jonasgrunau.gatherCompanion` *before* install; Simulator Sound Input =
+    System (or a BlackHole virtual input fed by a looping file, for a
+    deterministic tone). Run `lib/main.dart` with `DRIVE_TEST_SPACE`, sign in
+    once via the in-app webview with **email + code** (Google SSO fails in
+    the webview with `disallowed_useragent`), and check the session survives
+    a relaunch. Fallback: `GATHER_PAIR=dummy:0:x:<refreshToken>`.
+  - **3.0c** Endpoint B: `open -n -a /Applications/GatherV2.app --args
+    --user-data-dir=<own dir> --remote-debugging-port=<port>
+    --use-fake-device-for-media-stream --use-fake-ui-for-media-stream`.
+    **Always a separate profile; never the user's default profile, and never
+    stop or attach to the user's own instance.** Sign in the test account
+    once (Cloudflare Turnstile needs a human) and check it persists.
+  - **3.0d** `caffeinate -d` and no screen lock during the run (endpoint B
+    auto-offlines on lock).
+- **3.1** Phone over USB + endpoint A, both under `flutter run`, both with
+  the drive. `move.warpToPerson` → `op.result` → `media.watch 30s` on
+  **both** ends. Expected `continuous`: phone inbound audio, phone outbound
+  audio + video; simulator inbound audio + video, simulator outbound audio.
+  Re-run against endpoint B to cover the **phone's inbound video**. Save
+  the raw JSON and say per verdict which endpoint produced it.
+- **3.2** Negative checks.
+  - Peer mutes: drive it from endpoint B (desktop UI over CDP), or via the
+    app's track-disable on the simulator. Don't rely on native mute on the
+    simulator: `setMicrophoneMuteMode` fails there with `adm api failed with
+    code: -1`.
+  - Peer turns its camera off: endpoint B only.
+  - `fault.offline` → `stalled`, then recovery; `fault.silentMove` →
+    outbound `stalled`, then the send-heal recovery (#67). On the phone.
+  - On the simulator endpoint, never `setCameraOn(true)`, and never toggle
+    speakerphone mid-call (flutter-webrtc #1770, intermittent simulator
+    crashes).
+- **3.3** Record what was verified in `docs/sim_harness.md` → *Verified so
+  far*. Also fix the stale comment in `lib/harness/demo_footage.dart`
+  ("getUserMedia fails" → "returns no video track"), and narrow the
+  `AGENTS.md` rule "the real entrypoint dead-ends on a simulator" to the
+  bridge-QR path, since webview sign-in works there.
 
 ### Phase 4: move the remaining widget logic down (≈ 1–2 d) — #107
 
@@ -383,12 +418,62 @@ or an `integration_test` that calls the handlers in-process). Keep `idb` +
 screenshots for what is visual by nature: layout, the Gameboy skin, and
 comparing against design mocks.
 
-## Open question: can a simulator be the second endpoint?
+## Second endpoint: can a simulator join? (investigated 2026-11-10)
 
-If an iOS simulator can run the real app and join a call as an audio-only
-participant (Mac microphone, no camera), Phase 3 runs unattended
-(phone ↔ simulator) with no second person. Investigation in progress; the
-findings go in here.
+**Yes, audio only, with caveats.** The media layer works on the simulator;
+a full Gather join from the simulator has not been observed yet (that is
+3.0b/3.1).
+
+What a spike observed (iPhone 17 Pro simulator, iOS 26.5, vendored
+flutter_webrtc 1.6.2+hotfix.3, throwaway entrypoint, not merged):
+
+- `getUserMedia({audio:true})` returns one live track; devices list
+  `audioinput:MicrophoneBuiltIn`. *Verified.*
+- In-process two-PeerConnection loopback: ICE connected, ~50 RTP packets/s
+  sent (757 packets / 47 068 B in 15 s) and all received,
+  `concealedSamples=0`. *Verified.*
+- The audio is the real Mac mic: `totalAudioEnergy` stayed flat until a sound
+  played on the Mac, then rose step-wise; `audioLevel` peaked at 0.056 on
+  both ends. *Verified* (no stimulus marker logged, so timing alignment is
+  by eye).
+- `getUserMedia({video:true})` doesn't throw; it returns **0 video tracks**
+  (`FigCaptureSourceSimulator err=-12784`). *Verified.* Video capture is
+  compiled out on the simulator (`FlutterRTCMediaStream.m:293-302`).
+  *Sourced.*
+- The plugin forces the PlatformDefault audio device module on the simulator
+  (`FlutterWebRTCPlugin.m:413-416`, upstream PR #2140), which is why the mic
+  works. A future flutter_webrtc bump may switch it back; re-run the mic
+  probe after any vendored update. *Sourced.*
+- `setMicrophoneMuteMode` fails (`adm api failed with code: -1`); the app
+  only logs it. `setAppleAudioIOMode` / `setSpeakerphoneOn` succeed.
+  *Verified.*
+- The microphone grant via `simctl privacy … grant microphone` before
+  install suppresses the dialog. *Verified.*
+- The app needs no capture to join and receive; `LiveCall` captures
+  `audio:true, video:_wantCamera` with the camera off by default
+  (`live_call.dart:151-152, :369`). *Sourced.*
+
+Alternatives, ranked:
+
+| # | Endpoint | Media | Effort | Notes |
+|---|---|---|---|---|
+| 1 | **iOS simulator, real `lib/main.dart`, test account** | audio only (Mac mic) | ≈ 0.5 d | Our app against our app; the drive runs on both ends. Can't test the phone's inbound video |
+| 2 | **Second Gather V2 desktop instance, own profile, fake media** | synthetic audio **and video** (*verified*: fake tracks with no prompt) | ≈ 1–2 h | The real client colleagues use; runs beside the user's own client because the single-instance lock is per profile. One manual login. Auto-offlines on screen lock |
+| 3 | Chrome + Playwright on the web client, fake media flags | audio + video | ≈ 0.5 d | The web build differs (`isElectron` branches, prejoin, audio starts only after a user gesture). Weaker than #2 |
+| 4 | Second physical iPhone | real audio + video | hardware + signing | Two tethered `flutter run` sessions |
+| 5 | Headless mediasoup peer (Node/Python WebRTC + the mapped SFU signalling) | synthetic | days | Feasible; must be a separate tool, never part of `bridge/` |
+| 6 | macOS build of this app | audio + Mac camera | ≈ 1–2 d | Needs a `macos/` runner scaffold |
+
+**Recommendation:** #1 as the default unattended peer (audio, plus the
+phone's outbound video measured on the simulator's inbound side), plus #2
+for the phone's inbound video. Together they cover every row of the media
+probe table without a second person.
+
+Still open: whether the webview email-code login works in the simulator's
+WKWebView and the keychain session survives relaunch; whether track-disable
+on the simulator yields `paused`/`silent` on the phone; whether endpoint B
+picks the fake devices by default when entering a call, and how long its
+session lasts.
 
 ## Risks
 
