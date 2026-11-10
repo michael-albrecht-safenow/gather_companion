@@ -116,6 +116,42 @@ class BackendConfig {
     );
   }
 
+  /// A full-fidelity round-trip for the on-device profile store.
+  ///
+  /// Distinct from [fromDescriptor], which reads a backend's *public*
+  /// `/.well-known` descriptor (a lossy subset — no Firebase key, strategies only).
+  /// This persists every field so a stored profile — the built-in [gather] included,
+  /// with its key — rebuilds exactly as it was chosen.
+  Map<String, Object?> toJson() => {
+        'name': name,
+        'apiBase': apiBase,
+        'gameSocket': gameSocket,
+        'sfuRouter': sfuRouter,
+        'tokenEndpoint': tokenEndpoint,
+        'authStrategy': authStrategy.name,
+        'firebaseKey': firebaseKey,
+        'otpRequestEndpoint': otpRequestEndpoint,
+        'otpVerifyEndpoint': otpVerifyEndpoint,
+      };
+
+  /// Rebuilds a config from [toJson]. An unknown or missing strategy falls back to
+  /// [AuthStrategy.firebase] rather than throwing — a corrupt row reads as Gather,
+  /// which is a login the user can always complete, not a crash on launch.
+  factory BackendConfig.fromJson(Map<String, Object?> json) => BackendConfig(
+        name: json['name'] as String? ?? 'Backend',
+        apiBase: json['apiBase'] as String? ?? '',
+        gameSocket: json['gameSocket'] as String? ?? '',
+        sfuRouter: json['sfuRouter'] as String? ?? '',
+        tokenEndpoint: json['tokenEndpoint'] as String? ?? '',
+        authStrategy: AuthStrategy.values.firstWhere(
+          (s) => s.name == json['authStrategy'],
+          orElse: () => AuthStrategy.firebase,
+        ),
+        firebaseKey: json['firebaseKey'] as String?,
+        otpRequestEndpoint: json['otpRequestEndpoint'] as String?,
+        otpVerifyEndpoint: json['otpVerifyEndpoint'] as String?,
+      );
+
   /// The refresh URL, with the Firebase `?key=` appended when there is one.
   Uri refreshUri() => firebaseKey != null && firebaseKey!.isNotEmpty
       ? Uri.parse('$tokenEndpoint?key=$firebaseKey')

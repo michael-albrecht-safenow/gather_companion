@@ -59,6 +59,36 @@ void main() {
       expect(b.refreshUri().toString(), 'https://office.example.com/auth/token');
     });
 
+    test('toJson/fromJson round-trips every field, Gather key included', () {
+      // The profile store persists the full config, not the lossy public descriptor,
+      // so the built-in Gather profile must survive with its Firebase key.
+      for (final original in [
+        BackendConfig.gather,
+        BackendConfig.bether(
+          name: 'Office',
+          httpBase: 'https://office.example.com',
+          wsBase: 'wss://office.example.com',
+        ),
+      ]) {
+        final back = BackendConfig.fromJson(original.toJson());
+        expect(back.name, original.name);
+        expect(back.apiBase, original.apiBase);
+        expect(back.gameSocket, original.gameSocket);
+        expect(back.sfuRouter, original.sfuRouter);
+        expect(back.tokenEndpoint, original.tokenEndpoint);
+        expect(back.authStrategy, original.authStrategy);
+        expect(back.firebaseKey, original.firebaseKey);
+        expect(back.otpRequestEndpoint, original.otpRequestEndpoint);
+        expect(back.otpVerifyEndpoint, original.otpVerifyEndpoint);
+        expect(back.refreshUri().toString(), original.refreshUri().toString());
+      }
+    });
+
+    test('fromJson with a corrupt strategy falls back to firebase, never throws', () {
+      final back = BackendConfig.fromJson({'name': 'X', 'authStrategy': 'bogus'});
+      expect(back.authStrategy, AuthStrategy.firebase);
+    });
+
     test('fromDescriptor builds a profile from /.well-known/gather-backend.json', () {
       final b = BackendConfig.fromDescriptor({
         'name': 'My Office',
