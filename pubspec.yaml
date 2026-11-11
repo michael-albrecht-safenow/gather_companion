@@ -91,6 +91,8 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
   flutter_lints: ^6.0.0
   # Declared rather than borrowed through `flutter_test`. The call tests are
   # about *when* a debounce fires, and sleeping through them in real time both
