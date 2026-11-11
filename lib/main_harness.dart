@@ -39,6 +39,7 @@ import 'harness/call_scenarios.dart';
 import 'harness/demo_footage.dart';
 import 'harness/fake_collector.dart';
 import 'harness/harness_data.dart';
+import 'harness/harness_drive.dart';
 import 'harness/scripted_call.dart';
 import 'src/app_state.dart';
 import 'src/credentials.dart';
@@ -229,17 +230,26 @@ Widget _buildApp(String scenarioName, int participants) {
     // incomplete setting and `unpair()` clears nothing real.
     bridge: _HarnessBridgeStore(),
   );
-  // The debug drive, reporting `boot: "harness"` so a scripted reading is never
-  // mistaken for the live wire. Compile-time guard, as in `main.dart`.
-  if (kDebugMode) {
-    installDebugDrive(enabled: kDebugMode, app: state, boot: 'harness');
-  }
   final driver = AppScenarioDriver(
     state: state,
     collector: fake,
     call: call,
     scenario: AppScenario.fromName(scenarioName),
   );
+  // The debug drive, reporting `boot: "harness"` so a scripted reading is never
+  // mistaken for the live wire. Compile-time guard, as in `main.dart`. The
+  // `harness.*` levers ride in as an extra feature from here and only here, so
+  // a live boot never has a fake person to place.
+  if (kDebugMode) {
+    installDebugDrive(
+      enabled: kDebugMode,
+      app: state,
+      boot: 'harness',
+      extraFeatures: [
+        harnessFeature(collector: fake, call: call, driver: driver, boot: () => 'harness'),
+      ],
+    );
+  }
   return _AppHarness(state: state, driver: driver);
 }
 
