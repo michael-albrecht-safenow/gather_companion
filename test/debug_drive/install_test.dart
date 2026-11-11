@@ -78,6 +78,11 @@ void main() {
       'ext.gc.gameboy.menu.confirm',
       'ext.gc.gameboy.menu.move',
       'ext.gc.gameboy.menu.toggle',
+      'ext.gc.plans.add',
+      'ext.gc.plans.delete',
+      'ext.gc.plans.google.status',
+      'ext.gc.plans.list',
+      'ext.gc.plans.update',
     });
     expect(reg.methods.every(DebugDrive.isValidMethod), isTrue);
   });
@@ -129,7 +134,13 @@ void main() {
           {'name': 'ext.gc.sfu.debug', 'outward': false},
           {'name': 'ext.gc.state.dump', 'outward': false},
           {'name': 'ext.gc.test.wave', 'outward': true},
-        ],
+          // Feature branches append below; the sort puts them where drive.list does.
+          {'name': 'ext.gc.plans.add', 'outward': false},
+          {'name': 'ext.gc.plans.delete', 'outward': false},
+          {'name': 'ext.gc.plans.google.status', 'outward': false},
+          {'name': 'ext.gc.plans.list', 'outward': false},
+          {'name': 'ext.gc.plans.update', 'outward': false},
+        ]..sort((a, b) => (a['name']! as String).compareTo(b['name']! as String)),
         'boot': 'live',
       },
     });
