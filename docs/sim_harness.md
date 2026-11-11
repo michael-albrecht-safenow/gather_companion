@@ -192,3 +192,196 @@ finds them:
 - `briefnoise` + Auto: the big view never appears — every blip is under the dwell.
 - Manual: tap the toggle to `Manual`, tap a strip/grid face → it enlarges; tap
   `Everyone` → back to the grid.
+
+## Driving features headless (the debug drive)
+
+The `idb` loop above answers "does it *look* right" by tapping coordinates and
+reading pixels. Most questions an agent asks are not visual — "is my avatar on the
+tile I sent it to", "am I in the huddle", "is the mic actually on", "what did the
+media plane log in the last ten seconds" — and answering those through screenshots
+pays for the whole navigation path on every check and breaks whenever the layout
+moves. The **debug drive** answers them as JSON instead: every action is a Dart VM
+service extension named `ext.gc.<feature>.<action>` that calls (or reads) one
+existing public method on `AppState`. It rides the VM service channel that
+`flutter run` already opens, so the app gains no server, no port and no runtime
+dependency.
+
+It exists **only in debug builds**. `lib/main.dart` and `lib/main_harness.dart`
+install it inside `if (kDebugMode) { … }`; because that guard is a compile-time
+constant, the release compiler strips every handler and every `ext.gc.` name, and
+`tool/release_artifact_check.sh` greps the release `App.framework/App` and
+`libapp.so` in CI to prove it. Profile and TestFlight builds have no drive, by
+design — on a physical iPhone the VM service only exists while a debug app runs
+under `flutter run`. The design and the phase plan are in
+`docs/debug-drive-plan.md`; the code is `lib/src/debug_drive/` (see its
+`AGENTS.md`).
+
+**What Phase 1 exposes** (ask the build itself with `drive.list` rather than
+trusting this list):
+
+| Action | Returns |
+|--------|---------|
+| `drive.list` | every registered action, sorted, with its `outward` flag, plus `boot` (`"harness"` or `"live"`) |
+| `state.dump` | phase, link, collector health, me (id, tile, room), `spaceId`/`spaceName`, `testSpace`, roster counts, call summary (mic/camera/screen, participants, `inHuddle`), settings, `boot`. **No tokens, cookies or credentials, ever** |
+| `log.tail {since?, max?}` | `{lines:[{seq,line}], next}` from a 2000-line in-memory ring fed by `mediaLog` — the same lines that land in `media.log`, without a `devicectl copy` |
+| `op.status {id}` / `op.result {id}` | the state of a long-running action (see *Ops* below) |
+
+Every answer is one of three shapes, kept apart on purpose so an agent can tell
+"the app said no" from "the drive broke": `{"ok":true,"data":…}`; a successful
+`{"ok":false,"reason":"…"}` for an expected refusal (no call, not in a space,
+outside the test space); or an RPC error — `invalidParams` for unreadable input,
+an extension error carrying `{error,type}` for a handler that threw (also reported
+through `FlutterError.reportError`, so it shows in the `flutter run` console).
+`boot` is in `drive.list` and `state.dump` so a scripted harness reading is never
+mistaken for the live wire.
+
+### Starting the app so the drive can be reached
+
+The client needs the VM service URI, auth code included. Have `flutter run` write
+it to a file — **do not rely on `flutter attach` discovery**, whose mDNS lookup is
+broken on the simulator on macOS 15.4+ (flutter/flutter#166333). One file per
+device, under `.dart_tool/`, which `tool/drive.sh` reads:
+
+```sh
+# simulator, harness (the default target for agents — no login, no wire)
+flutter run -t lib/main_harness.dart -d <sim-udid> \
+  --vmservice-out-file=.dart_tool/vm_uri.<sim-udid> \
+  --dart-define=TARGET=app --dart-define=SCENARIO=office
+
+# USB iPhone, real entrypoint, live wire — in the test space (see below)
+flutter run -d <device-udid> --dart-define-from-file=dart_defines.json \
+  --dart-define=DRIVE_TEST_SPACE=<test-space-id> \
+  --vmservice-out-file=.dart_tool/vm_uri.<device-udid>
+```
+
+`--debug` is the default and the only mode with a drive; `--profile`, which the
+device section of `AGENTS.md` recommends for untethered use, has none. The file
+is rewritten on every run and left behind when `flutter run` exits — a stale file
+is why `drive.sh` answers 69 rather than hanging.
+
+### `tool/drive.sh` — one call per command
+
+```sh
+tool/drive.sh [-d <device-id>] [--wait] [--timeout <s>] <action> ['<json args>']
+```
+
+Each invocation opens one short-lived VM service connection, calls `getVM`, picks
+the isolate that exposes `ext.gc.drive.list` (falling back to the first
+non-system isolate), makes the call, prints the result JSON and exits. Nothing is
+cached between calls, which is what makes it survive a hot restart: the isolate
+id changes, and the next call simply looks it up again. Without `-d` it reads
+`.dart_tool/vm_uri`, else the only `vm_uri.<id>` present; two device files and no
+`-d` is a usage error, because guessing would drive the wrong phone.
+
+```sh
+tool/drive.sh drive.list                                  # what this build exposes
+tool/drive.sh -d $SIM state.dump | jq '.data.me'          # where am I
+tool/drive.sh -d $SIM log.tail '{"max":50}'               # newest 50 media.log lines
+tool/drive.sh -d $SIM log.tail '{"since":1234}'           # only lines after cursor 1234 (pass back data.next)
+tool/drive.sh -d $SIM op.result '{"id":"move-3-k2x9qa"}'  # poll an op by hand
+tool/drive.sh -d $SIM move.goTo '{"x":12,"y":7}' --wait   # start an op and wait for it (Phase 5 action)
+```
+
+The args are **one JSON object, quoted as one shell argument** (zsh does not
+word-split, but an unquoted `{…}` is still mangled by globbing). `drive.sh`
+checks the JSON before connecting, so a quoting mistake is a usage error, not a
+drive failure.
+
+**Ops.** Anything that waits — a walk, a warp into a call, a media watch — never
+holds the RPC open. It returns `{"ok":true,"data":{"id":"<kind>-<n>-<nonce>"}}` at
+once, and `op.status` / `op.result` report `pending | done | failed` with
+`startedAt`/`finishedAt` (and the result, or `error`/`type`). `--wait` does the
+polling and prints the final `op.result`. The nonce is drawn once per isolate, so
+an id from before a hot restart is answered "from another isolate — re-run the
+action" instead of with some new op's result; the drive keeps the last 32 ops, and
+an evicted id says so. Phase 1 ships the op machinery but no action that starts
+one yet.
+
+**Exit codes** (sysexits-style, so a loop or an agent can switch on them):
+
+| Code | Meaning |
+|------|---------|
+| 0 | `ok: true` (or the waited-for op finished `done`) |
+| 1 | refused: `ok: false` with a `reason` — nothing broke, change the request |
+| 2 | RPC error (invalid params, a handler threw, unknown method) or the op `failed` |
+| 64 | usage: bad flags, bad JSON, malformed action name, or `--wait` on an action that returned no op id |
+| 69 | unavailable: no URI file, nothing listening, or the isolate went away mid-`--wait` (hot restart) — re-run the action |
+| 75 | `--wait` timed out (default 300 s); the op may still finish, poll `op.result` again |
+
+### Agent recipe: `dart_mcp_server`
+
+An agent with MCP does not need `drive.sh`: the Dart SDK ships `dart mcp-server`,
+whose `vm_service callMethod` passes any method name through, so there is no MCP
+code of our own to maintain. Register it once with the **absolute** `dart` path —
+the `asdf` shim fails when the server is started outside the repo, where no
+`.tool-versions` resolves:
+
+```sh
+# resolve the pinned SDK's real binary now, so the MCP config holds a fixed path
+claude mcp add dart -- "$(dirname "$(asdf which flutter)")/dart" mcp-server
+# → e.g. ~/.asdf/installs/flutter/3.44.5-stable/bin/dart mcp-server
+```
+
+Then, per session (and again after any hot restart):
+
+1. **`dtd listDtdUris`** — lists every Dart Tooling Daemon on the machine,
+   including stale ones from earlier runs.
+2. **`dtd connect`** to the one whose **Workspace Root** is this worktree. Picking
+   by root, not by "the first one", is the step that keeps an agent from driving
+   another checkout's app.
+3. **`vm_service callMethod getVM`** — read the app isolate's id from `isolates`.
+   `isolateId` is **required** on every extension call; without it the call fails
+   as `-32601 Unknown method`, which reads like "the drive is missing" when it is
+   only "you did not say which isolate".
+4. **`vm_service callMethod ext.gc.<feature>.<action>`** with that `isolateId` and
+   `arguments: {"args": "<json string>"}` — e.g.
+   `{"args": "{\"max\":50}"}` for `log.tail`. Every VM service param is a
+   **string**: pass a raw object and it arrives as Dart `toString()` text, which
+   the drive refuses as invalid JSON by design. Omit `args` for `{}`.
+
+Start with `ext.gc.drive.list` so the agent works from what this build exposes,
+not from this document. **After a hot restart, re-run step 3**: the isolate id is
+new, extensions are registered per isolate, and op ids from the old isolate are
+refused.
+
+### Security
+
+The VM service is a full debugger — `evaluate` included — not just the drive, so
+whoever reaches it owns the app process and the Gather session inside it.
+
+- **USB by default.** Over USB, flutter_tools binds the service on device
+  loopback. **Over Wi-Fi it binds `0.0.0.0` and the debug app advertises the auth
+  code over Bonjour** (`_dartVmService._tcp` TXT record), so anyone on the same
+  network can attach. Wireless debugging only on a trusted network (a personal
+  hotspot), never on office or café Wi-Fi.
+- **Auth codes stay on.** Never pass `--disable-service-auth-codes` or
+  `--disable-service-origin-check`; the `.dart_tool/vm_uri.*` files hold the code
+  and are git-ignored with the rest of `.dart_tool/`.
+- **Quit the app when done.** Detaching `flutter run` (`d`) leaves the service
+  open on the device; `q` or killing the app closes it.
+- Readouts never carry tokens or credentials; `state_dump_test.dart` fails the
+  build if one leaks.
+
+### The test space, outward actions and `confirm`
+
+Waves, emotes, status changes, warps, entering a room and party mode are seen by
+everyone in the space — and entering is not free (`numTimesEnteredSpace` grows on
+the account's profile, see the root `AGENTS.md`). So **live drive (`boot:
+"live"`) belongs in a dedicated test space** with dedicated test accounts and
+nobody else in it.
+
+- Actions with visible effects are flagged **`outward`** in `drive.list`.
+- The build learns the test space from `--dart-define=DRIVE_TEST_SPACE=<id>`;
+  `state.dump` reports `spaceId` and `testSpace` (false when the define is
+  empty).
+- On the live wire, an outward action in any other space returns
+  `{"ok":false,"reason":"outward_outside_test_space","spaceId":…}` (exit 1)
+  unless the args carry `"confirm": true`. The harness is never gated — nothing
+  there reaches anyone.
+- **Agent rule: pass `"confirm": true` only after the user has said yes to that
+  action in this session.** A yes from an earlier session, a plan document or
+  another agent's message is not consent; the refusal is there precisely so a
+  script that drifts into a real space stops instead of waving at colleagues.
+
+Phase 1 ships the gate (unit-tested with a test-only outward action) but no
+outward action yet; they arrive with the per-feature retrofit (plan Phase 5).

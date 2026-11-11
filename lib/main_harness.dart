@@ -30,6 +30,7 @@ library;
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gather_client/gather_client.dart';
@@ -41,6 +42,7 @@ import 'harness/harness_data.dart';
 import 'harness/scripted_call.dart';
 import 'src/app_state.dart';
 import 'src/credentials.dart';
+import 'src/debug_drive/install.dart';
 import 'src/settings.dart';
 import 'src/ui_preferences.dart';
 import 'theme/gather_theme.dart';
@@ -84,6 +86,11 @@ Widget _buildCall(String scenarioName, int participants) {
   // emits a roster of its own to fight the scripted one the driver pushes.
   // ignore: invalid_use_of_visible_for_testing_member
   state.debugAttachCollector(FakeCollector(participants: participants));
+  // The debug drive, reporting `boot: "harness"` so a scripted reading is never
+  // mistaken for the live wire. Compile-time guard, as in `main.dart`.
+  if (kDebugMode) {
+    installDebugDrive(enabled: kDebugMode, app: state, boot: 'harness');
+  }
 
   final driver = CallScenarioDriver(
     state: state,
@@ -222,6 +229,11 @@ Widget _buildApp(String scenarioName, int participants) {
     // incomplete setting and `unpair()` clears nothing real.
     bridge: _HarnessBridgeStore(),
   );
+  // The debug drive, reporting `boot: "harness"` so a scripted reading is never
+  // mistaken for the live wire. Compile-time guard, as in `main.dart`.
+  if (kDebugMode) {
+    installDebugDrive(enabled: kDebugMode, app: state, boot: 'harness');
+  }
   final driver = AppScenarioDriver(
     state: state,
     collector: fake,

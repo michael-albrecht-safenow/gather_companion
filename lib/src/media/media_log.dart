@@ -40,9 +40,8 @@
 /// with `flushSync` after every line is what makes the tail survive.
 library;
 
+import 'dart:async';
 import 'dart:io';
-
-import 'package:flutter/foundation.dart';
 
 /// The log file for this run, or `null` if the device would not give us one.
 RandomAccessFile? _raf;
@@ -56,12 +55,32 @@ const int _maxLogBytes = 5 * 1024 * 1024;
 /// Where the log is being written, for the code that wants to say so out loud.
 String? mediaLogPath;
 
-/// [debugPrint], plus a copy on disk that outlives the console.
+/// A second reader of every line the file gets, for the debug drive's
+/// `log.tail` (`lib/src/debug_drive/drive_log.dart`).
+///
+/// Null unless the drive set it (`startDriveLog` or `installDebugDrive`), and
+/// both are only ever called behind a compile-time `kDebugMode` guard — so a release build never sets it and keeps
+/// no lines in memory; the file stays the only record. Called before the file is
+/// opened, so a device that will not give us a file still feeds the drive.
+/// Swallowed like the file write: a broken reader must not break a call.
+void Function(String line)? mediaLogDebugSink;
+
+/// The console, plus a copy on disk that outlives it.
+///
+/// The console copy goes through [Zone.root]'s `print`, not `debugPrint`, and
+/// that is load-bearing: the zone in `main.dart` captures `print` and files every
+/// line it sees, so `debugPrint` here made the live boot write each line twice —
+/// once through the zone, once below — while the harness, which has no capturing
+/// zone, wrote it once. The file had carried that doubling unnoticed; the debug
+/// drive's `log.tail` made it the API's answer, halving its `max` accounting and
+/// letting a throttled `debugPrint` deliver the echo late and out of order. The
+/// root zone's print reaches the same console and never re-enters ours, so the
+/// file and the drive get exactly one copy in either boot.
 ///
 /// Every failure here is swallowed. Losing the file copy of a log should never
 /// be the reason a call does not connect.
 void mediaLog(String line) {
-  debugPrint(line);
+  Zone.root.print(line);
   mediaLogToFile(line);
 }
 
@@ -70,10 +89,19 @@ void mediaLog(String line) {
 /// The zone in `main.dart` captures `print` so that libraries which report their
 /// failures that way — mediasoup's `FlexQueue` swallows every exception and
 /// `print`s it under `kDebugMode`, which is the only account anyone gets of why
-/// a `produce` never happened — land in this file too. Routing that through
-/// [mediaLog] would call `debugPrint`, which calls `print`, which re-enters the
-/// zone: one library error and the app spins forever.
+/// a `produce` never happened — land in this file too. That handler already
+/// forwards the line to the console itself, so it wants the file half only;
+/// anything that went back through the zone's `print` from inside it would
+/// re-enter the zone, and one library error would spin the app forever.
 void mediaLogToFile(String line) {
+  final sink = mediaLogDebugSink;
+  if (sink != null) {
+    try {
+      sink(line);
+    } on Object {
+      // A debug reader failing is not worth losing the file copy over.
+    }
+  }
   if (!_tried) {
     _tried = true;
     try {
