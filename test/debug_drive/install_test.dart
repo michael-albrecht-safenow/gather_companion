@@ -116,7 +116,7 @@ void main() {
         'actions': [
           {'name': 'ext.gc.call.leave', 'outward': true},
           {'name': 'ext.gc.call.pullSessionOver', 'outward': true},
-          {'name': 'ext.gc.call.rebuild', 'outward': false},
+          {'name': 'ext.gc.call.rebuild', 'outward': true},
           {'name': 'ext.gc.call.setCamera', 'outward': true},
           {'name': 'ext.gc.call.setMic', 'outward': true},
           {'name': 'ext.gc.call.setScreen', 'outward': true},

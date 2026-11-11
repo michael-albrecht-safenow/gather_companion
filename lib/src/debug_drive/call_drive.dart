@@ -64,10 +64,13 @@
 ///    conversation sees you step out. `refused('not_in_huddle')` when there is
 ///    none to leave.
 ///  * `call.rebuild` — an op over `Call.rebuild`, the issue #41 self-heal.
-///    Not outward: it republishes exactly what was already published, so the
-///    room sees at most the blip any reconnect causes — the same one the app
-///    fires on its own after a desktop lock. Documented as a reconnect loop, per
-///    the plan's "Test space" section.
+///    **Outward**: it republishes the same tracks, but onto a fresh session —
+///    the old producers close, so every colleague's tile for you goes dark and
+///    your audio drops until the new ones are consumed. Once, that is the blip
+///    the app causes itself after a desktop lock; driven in a loop (which is
+///    what a drive is for, and what the plan's "Test space" section calls it) it
+///    is somebody's call flickering on cue, which is exactly what the gate is
+///    for.
 ///  * `call.pullSessionOver` — an op over `AppState.pullSessionOver`, the
 ///    issue #67 "Pull session over to this app" button. **Outward**: it takes
 ///    publishing back from whichever of your devices holds it, which the room
@@ -266,14 +269,18 @@ DriveFeature callControlsFeature({
       },
       outward: true,
     ),
-    DriveAction('rebuild', (args) async {
-      final handle = app().callHandle;
-      if (handle == null) return noCall();
-      return asOp('rebuild', () async {
-        await handle.rebuild();
-        return DriveResult.ok(readout());
-      });
-    }),
+    DriveAction(
+      'rebuild',
+      (args) async {
+        final handle = app().callHandle;
+        if (handle == null) return noCall();
+        return asOp('rebuild', () async {
+          await handle.rebuild();
+          return DriveResult.ok(readout());
+        });
+      },
+      outward: true,
+    ),
     DriveAction(
       'pullSessionOver',
       (args) async {

@@ -279,6 +279,7 @@ void main() {
       'switchCamera': '{}',
       'leave': '{}',
       'pullSessionOver': '{}',
+      'rebuild': '{}',
     };
 
     test('outside the test space: every outward control is refused, and nothing reached the call', () async {
@@ -289,7 +290,11 @@ void main() {
         expect(body, {'ok': false, 'reason': 'outward_outside_test_space', 'spaceId': 'space-office'}, reason: action);
       }
       expect(call.micCalls, isEmpty);
+      expect(call.cameraCalls, isEmpty);
+      expect(call.screenCalls, isEmpty);
+      expect(call.switches, 0);
       expect(call.pulls, 0);
+      expect(call.rebuilds, 0);
     });
 
     test('confirm:true lets it through', () async {
@@ -305,12 +310,11 @@ void main() {
       expect(call.micCalls, [true]);
     });
 
-    test('state, setSpeaker and rebuild are not gated', () async {
+    test('state and setSpeaker are not gated', () async {
       app.debugApplySnapshot(_inSpace('space-office'));
       drive = install(app, boot: 'live');
       expect((await run('state'))['ok'], isTrue);
       expect((await run('setSpeaker', '{"on":true}'))['ok'], isTrue);
-      expect((await run('rebuild'))['ok'], isTrue);
     });
   });
 }
