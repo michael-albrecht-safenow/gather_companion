@@ -14,6 +14,8 @@ import 'gather_auth.dart';
 
 class OtpLogin {
   OtpLogin({required BackendConfig config, GatherHttp? http})
+      // A named parameter cannot be a private initializing formal.
+      // ignore: prefer_initializing_formals
       : _config = config,
         _http = http ?? const IoGatherHttp();
 

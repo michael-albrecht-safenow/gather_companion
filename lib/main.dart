@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:gather_client/gather_client.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'src/app_state.dart';
@@ -11,7 +12,9 @@ import 'src/google_calendar.dart';
 import 'src/media/live_call.dart';
 import 'src/media/media_log.dart';
 import 'theme/gather_theme.dart';
+import 'ui/backend_picker_screen.dart';
 import 'ui/home_shell.dart';
+import 'ui/otp_login_screen.dart';
 import 'ui/pair_screen.dart';
 
 Future<void> main() async {
@@ -218,24 +221,7 @@ class _GatherCompanionAppState extends State<GatherCompanionApp> with WidgetsBin
       home: ListenableBuilder(
         listenable: _state,
         builder: (context, _) {
-          final (phase, screen) = switch (_state) {
-            AppState(isLoaded: false) => (
-              // Deliberately empty, and deliberately the same colour as the
-              // launch storyboard. Booting is a preferences read — a few frames —
-              // and a spinner that appears and disappears inside that window is
-              // pure flicker. Holding the launch screen's own surface makes the
-              // handover invisible instead.
-              _Phase.booting,
-              ColoredBox(
-                color: GatherTokens.dark.background,
-                child: const SizedBox.expand(),
-              ),
-            ),
-            AppState(isConfigured: false) => (_Phase.pairing, PairScreen(state: _state)),
-            // The tabs start here and not before: there is nothing to navigate
-            // between until there is a Gather credential to navigate with.
-            _ => (_Phase.home, HomeShell(state: _state, onUnpair: _state.unpair)),
-          };
+          final (phase, screen) = _route();
 
           // Keyed by phase, never by state identity: a ValueKey that changed on
           // every notification would restart this transition on every socket
@@ -249,6 +235,38 @@ class _GatherCompanionAppState extends State<GatherCompanionApp> with WidgetsBin
       ),
     );
   }
+
+  /// The one screen the app shows right now, as a general client.
+  ///
+  ///  * booting — a preferences read, held on the launch surface (no spinner).
+  ///  * not signed in, no backend chosen — the picker (decision §3: nothing forced).
+  ///  * not signed in, a backend chosen — that backend's login, by its strategy
+  ///    (decision §5): the OTP screen for a bether server, Gather's pairing/web-login
+  ///    for Gather. Both carry a back affordance to the picker.
+  ///  * signed in — the office.
+  (_Phase, Widget) _route() {
+    if (!_state.isLoaded) {
+      // Deliberately empty, and deliberately the same colour as the launch
+      // storyboard. Booting is a few frames; a spinner inside that window is pure
+      // flicker. Holding the launch screen's surface makes the handover invisible.
+      return (
+        _Phase.booting,
+        ColoredBox(color: GatherTokens.dark.background, child: const SizedBox.expand()),
+      );
+    }
+    if (_state.isConfigured) {
+      return (_Phase.home, HomeShell(state: _state, onUnpair: _state.unpair));
+    }
+    if (!_state.hasActiveBackend) {
+      return (_Phase.picker, BackendPickerScreen(state: _state));
+    }
+    void toPicker() => unawaited(_state.deactivateBackend());
+    return switch (_state.backend.authStrategy) {
+      AuthStrategy.otp => (_Phase.login, OtpLoginScreen(state: _state, onClose: toPicker)),
+      AuthStrategy.firebase =>
+        (_Phase.login, PairScreen(state: _state, onClose: toPicker)),
+    };
+  }
 }
 
-enum _Phase { booting, pairing, home }
+enum _Phase { booting, picker, login, home }

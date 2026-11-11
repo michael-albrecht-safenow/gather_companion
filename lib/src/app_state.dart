@@ -297,13 +297,13 @@ class AppState extends ChangeNotifier {
 
   /// Builds the collector for [_attach]: a test's injected seam when supplied,
   /// otherwise a real [DirectCollector] pointed at the *active backend's* game
-  /// socket. `late` so the closure can read [_backend] — an initializer list cannot.
+  /// socket. `late` so the closure can read [backend] — an initializer list cannot.
   late final Collector Function(GatherAuth auth, String? spaceId) _buildCollector =
       _injectedCollector ??
           (auth, spaceId) => DirectCollector(
                 auth: auth,
                 spaceId: spaceId,
-                socketUrl: _backend.gameSocket,
+                socketUrl: backend.gameSocket,
                 log: _log,
               );
 
@@ -360,12 +360,25 @@ class AppState extends ChangeNotifier {
   PushRegistration _pushReach = PushRegistration.unknown;
   GatherCredentials _credentials = GatherCredentials.empty;
 
-  /// Which backend the active profile points at — the hosts and auth the socket and
-  /// token refresh use. Defaults to Gather, so a phone with no profile selected (and
-  /// every untouched test) behaves exactly as the Gather-only app did. Set in [boot]
-  /// from the active [BackendProfile]; the UI switcher (later slices) re-points it.
-  BackendConfig _backend = BackendConfig.gather;
-  BackendConfig get backend => _backend;
+  /// The backend the app is pointed at, or null when none is chosen — a fresh
+  /// install, or a logout with no other backend known — which routes to the picker.
+  /// This is a general client: Gather is one backend among others, not a baked-in
+  /// default, so there is no fallback connection here.
+  BackendProfile? _activeProfile;
+  BackendProfile? get activeProfile => _activeProfile;
+
+  /// Whether a backend is chosen. The entry shows the picker when it is not.
+  bool get hasActiveBackend => _activeProfile != null;
+
+  /// The config the connection uses. Read only while [hasActiveBackend]; falls back
+  /// to Gather purely so the getter is never null for an unconfigured probe.
+  BackendConfig get backend => _activeProfile?.config ?? BackendConfig.gather;
+
+  /// The backends the user has added, cached from the store for synchronous routing
+  /// and the picker. Refreshed in [boot] and whenever one is added or removed. The
+  /// built-in Gather profile is offered by the picker itself, not kept here.
+  List<BackendProfile> _knownProfiles = const [];
+  List<BackendProfile> get knownProfiles => _knownProfiles;
 
   String? _spaceId;
 
@@ -958,18 +971,22 @@ class AppState extends ChangeNotifier {
     _bridgeName = await _bridgeStore.loadName();
     _credentials = await _credentialStore.load();
     _spaceId = await _credentialStore.loadSpaceId();
-    // Multi-backend: if a profile is active, point the connection at that backend and
-    // prefer its own stored session. No active profile — a fresh install, or any
-    // phone from before the picker — leaves the Gather default and the legacy Gather
-    // credential exactly as they were, so nothing changes for an already-paired user.
+    // General-client routing: the app knows a connection only if a backend was used
+    // before. A chosen profile wins; otherwise a legacy Gather session — from a phone
+    // paired before the picker existed — is migrated in as the active Gather profile,
+    // so an already-paired user stays connected and never sees the picker; otherwise
+    // nothing is active and the entry is the picker.
+    _knownProfiles = await _profileStore.profiles();
     final activeProfile = await _profileStore.active();
     if (activeProfile != null) {
-      _backend = activeProfile.config;
+      _activeProfile = activeProfile;
       final profileCreds = await _profileStore.loadCredentials(activeProfile.id);
       if (profileCreds.isComplete) {
         _credentials = profileCreds;
         _spaceId = null; // the collector resolves the space from recent-spaces
       }
+    } else if (_credentials.isComplete) {
+      _activeProfile = gatherProfile;
     }
     _gameboyMode = await _uiPrefs.loadGameboyMode();
     _gameboyTheme = GameboyThemeId.fromId(await _uiPrefs.loadGameboyThemeId());
@@ -995,6 +1012,9 @@ class AppState extends ChangeNotifier {
         _settings = BridgeSettings(host: parts[0], port: int.tryParse(parts[1]) ?? BridgeSettings.defaultPort, token: parts[2]);
         _credentials = GatherCredentials(refreshToken: parts[3]);
         _bridgeName = 'dev · ${parts[0]}';
+        // The dev shortcut is a Gather session; mark Gather active so routing goes to
+        // the office, not the picker.
+        _activeProfile ??= gatherProfile;
       }
     }
 
@@ -1087,8 +1107,54 @@ class AppState extends ChangeNotifier {
   /// profile is offered by the picker itself, not listed here (decision §3).
   Future<List<BackendProfile>> backendProfiles() => _profileStore.profiles();
 
-  /// Forgets a backend and its stored session.
-  Future<void> removeBackend(String id) => _profileStore.removeProfile(id);
+  /// Points the app at [profile] and brings its session up when one is stored;
+  /// otherwise leaves the connection down so the entry routes to that backend's
+  /// login. The picker calls this when the user chooses a known backend.
+  Future<void> activateBackend(BackendProfile profile) async {
+    _activeProfile = profile;
+    await _profileStore.setActive(profile.id);
+    final creds = await _profileStore.loadCredentials(profile.id);
+    _snapshot = PresenceSnapshot.empty;
+    _clearHeldMap();
+    if (creds.isComplete) {
+      _credentials = creds;
+      _spaceId = null;
+      notifyListeners();
+      _attach();
+    } else {
+      _credentials = GatherCredentials.empty;
+      await _detach();
+      _link = const LinkStatus(LinkState.idle);
+      notifyListeners();
+    }
+  }
+
+  /// Backs out of the chosen backend to the picker without forgetting it — the back
+  /// affordance on a login screen. The session is down already (we are on a login
+  /// screen), so there is nothing to detach.
+  Future<void> deactivateBackend() async {
+    await _profileStore.setActive(null);
+    _activeProfile = null;
+    notifyListeners();
+  }
+
+  /// Forgets a backend and its stored session. When it was the active one the
+  /// connection is torn down and the app falls back to no active backend (the
+  /// picker), since a general client has nothing else to default to.
+  Future<void> removeBackend(String id) async {
+    await _profileStore.removeProfile(id);
+    _knownProfiles = await _profileStore.profiles();
+    if (_activeProfile?.id == id) {
+      _activeProfile = null;
+      _credentials = GatherCredentials.empty;
+      _spaceId = null;
+      _snapshot = PresenceSnapshot.empty;
+      _clearHeldMap();
+      await _detach();
+      _link = const LinkStatus(LinkState.idle);
+    }
+    notifyListeners();
+  }
 
   /// Fetches a backend's `/.well-known/gather-backend.json` descriptor at [rawUrl]
   /// and adds it as a profile, ready to pick and log in to. Returns the stored
@@ -1121,7 +1187,45 @@ class AppState extends ChangeNotifier {
     }
     final profile = BackendProfile.fromConfig(config);
     await _profileStore.addProfile(profile);
+    _knownProfiles = await _profileStore.profiles();
+    notifyListeners();
     return (profile: profile, error: null);
+  }
+
+  // ---- OTP login (bether-style backends) -------------------------------------
+
+  /// Asks the active backend to email a login code to [email]. Returns null on
+  /// success or a sentence to show. Valid only while the active backend offers OTP.
+  Future<String?> requestOtpCode(String email) async {
+    final profile = _activeProfile;
+    if (profile == null) return 'Pick a backend first.';
+    try {
+      await OtpLogin(config: profile.config, http: _http).requestCode(email);
+      return null;
+    } on GatherAuthException catch (e) {
+      return e.message;
+    } on Object catch (e) {
+      return 'Could not request a code: $e';
+    }
+  }
+
+  /// Verifies an OTP [code] for [email] against the active backend and, on success,
+  /// stores the session under the active profile and connects. Returns null on
+  /// success or a sentence to show.
+  Future<String?> loginWithOtp(String email, String code) async {
+    final profile = _activeProfile;
+    if (profile == null) return 'Pick a backend first.';
+    final GatherCredentials creds;
+    try {
+      creds = await OtpLogin(config: profile.config, http: _http).verify(email, code);
+    } on GatherAuthException catch (e) {
+      return e.message;
+    } on Object catch (e) {
+      return 'Could not sign in: $e';
+    }
+    await _profileStore.saveCredentials(profile.id, creds);
+    await _adoptCredentials(creds, spaceId: null);
+    return null;
   }
 
   /// Turns whatever was scanned or typed into the descriptor URL to fetch, or null
@@ -1151,6 +1255,15 @@ class AppState extends ChangeNotifier {
     }
     _plannedMeetings = const [];
     await _calendarStore.clear();
+    // Logging out forgets this backend's session and the selection, so the entry
+    // returns to the picker. The backend stays in the known list (its credential is
+    // cleared but its profile row remains), so it is one tap to sign back in — a
+    // general client keeps the backends you added even when signed out of them.
+    if (_activeProfile != null && _activeProfile!.id != gatherProfileId) {
+      await _profileStore.clearCredentials(_activeProfile!.id);
+    }
+    await _profileStore.setActive(null);
+    _activeProfile = null;
     _settings = BridgeSettings.empty;
     _credentials = GatherCredentials.empty;
     _spaceId = null;
@@ -4038,7 +4151,7 @@ class AppState extends ChangeNotifier {
       // The active backend. Firebase (Gather) refreshes at Google's token endpoint;
       // an OTP backend refreshes at its own. Without this every backend's token
       // refresh went to Gather, so a bether session could never stay alive.
-      config: _backend,
+      config: backend,
       // Google may rotate the refresh token. Persisting the new one immediately is
       // what keeps a phone working across the rotation instead of silently holding a
       // credential that has been superseded.
