@@ -1,0 +1,14 @@
+# `e2e`: the headless contract suite against a live bether stack
+# (test/e2e/*_test.dart). Every such test skips itself unless BETHER_E2E_URL is
+# set, so a plain `dart test` stays green with no backend; `dart test -t e2e`
+# runs only these. How to bring up the stack and run them (incl. the H9 short-TTL
+# and the run-alone H10 opt-ins): the library doc of test/e2e/suite.dart and
+# bether-backend e2e/README.md (Client suite).
+tags:
+  e2e:
+    # Real sockets and a real database: give a slow docker host room. The waits
+    # inside a test (until(), stream timeouts) stay below this so they fail first,
+    # with their own reason. Files whose waits are longer by design (H10's
+    # reconnect after a restart, the bot's first compile) raise it with their own
+    # library-level @Timeout.
+    timeout: 2x
