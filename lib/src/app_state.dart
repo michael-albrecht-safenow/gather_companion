@@ -775,11 +775,13 @@ class AppState extends ChangeNotifier {
   /// call, not only once Gather has placed me.
   String? get meId => _roster?.selfId;
 
-  /// Whether Gather has sent a roster at all since this connection began.
+  /// Whether Gather has sent a roster at all since this [AppState] was built.
   ///
   /// [directory] and [peopleOnMap] are both empty before the first one, and empty
   /// again in an office with nobody else in it; this is the one bit that tells the
   /// two apart, so a readout can say "not received" rather than "nobody here".
+  /// Not reset on reconnect — nothing clears `_roster` — so after a drop it is the
+  /// last connection's roster; pair it with collector health before trusting it.
   bool get hasRoster => _roster != null;
 
   /// Where I am, in tiles, or null before the first roster. Rounded, because its

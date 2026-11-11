@@ -200,6 +200,31 @@ void main() {
       expect(_list(data, 'people'), hasLength(1));
     });
 
+    test('present people all off my floor read none_drawable, not nobody_else', () async {
+      final app = AppState()
+        ..debugApplyRoster(Roster(selfId: _me, rows: const [
+          RosterRow(id: _me, x: 5, y: 5, floorId: 'f1', connected: true, availability: 'Active'),
+          RosterRow(id: 'cat-0004', name: 'Cat', x: 1, y: 1, floorId: 'f2', connected: true, availability: 'Active'),
+        ]))
+        ..debugApplySnapshot(_snap());
+      final data = await _ok(app, 'map.people');
+      expect(data['people'], isEmpty);
+      expect(data['empty'], 'none_drawable');
+      expect(data['presentNotDrawn'], 1);
+    });
+
+    test('alone in the space is nobody_else', () async {
+      final app = AppState()
+        ..debugApplyRoster(Roster(selfId: _me, rows: const [
+          RosterRow(id: _me, x: 5, y: 5, floorId: 'f1', connected: true, availability: 'Active'),
+          RosterRow(id: 'dan-0005', name: 'Dan', x: 3, y: 3, floorId: 'f1', connected: true, availability: 'Offline'),
+        ]))
+        ..debugApplySnapshot(_snap());
+      final data = await _ok(app, 'map.people');
+      expect(data['empty'], 'nobody_else');
+      expect(data.containsKey('presentNotDrawn'), isFalse);
+    });
+
     test('the readout is the action', () async {
       final app = _populated();
       expect(await _ok(app, 'map.people'), mapPeopleReadout(app, boot: 'harness'));

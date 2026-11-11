@@ -22,8 +22,12 @@
 /// Each readout says why it is empty (the repo's honesty rule): `not_loaded`
 /// before the first snapshot, `collector_unhealthy` while connected but
 /// stateless, `no_roster` before Gather has sent one ([AppState.hasRoster]),
-/// `no_position` when I have no tile on the map, and `nobody_else` only when the
-/// roster really did arrive with nobody else in it. `followers.known` is false
+/// and `nobody_else` only when the roster really did arrive with nobody else in
+/// it. `map.people` has one more: `none_drawable` when people are present but
+/// every one of them is on another floor or carries no position — the map is
+/// empty, the office is not, and calling that `nobody_else` is the exact
+/// "nobody is here" lie the rule exists to prevent. With no tile of my own,
+/// `map.people` adds `meMissing: no_position`. `followers.known` is false
 /// whenever the empty list could be "I cannot tell".
 ///
 /// ## What is left out
@@ -179,12 +183,13 @@ Map<String, Object?> mapPeopleReadout(AppState state, {required String boot, int
     'count': people.length,
     'people': [for (final p in people.take(max)) _person(p)],
     'truncated': people.length > max,
-    if (people.isEmpty)
-      'empty': state.hasRoster
-          // With no tile of my own the floor filter cannot run, but the list is
-          // still everyone present elsewhere — so an empty one is still nobody.
-          ? 'nobody_else'
-          : (_blind(state) ?? 'no_roster'),
+    if (people.isEmpty) ...switch ((state.hasRoster, state.directory.where((c) => c.isPresent).length)) {
+      (false, _) => {'empty': _blind(state) ?? 'no_roster'},
+      (true, 0) => {'empty': 'nobody_else'},
+      // Present, but filtered out by the floor or the missing-position test
+      // [AppState.peopleOnMap] applies: the map is empty, the office is not.
+      (true, final present) => {'empty': 'none_drawable', 'presentNotDrawn': present},
+    },
     if (me == null && state.hasRoster) 'meMissing': 'no_position',
   };
 }
