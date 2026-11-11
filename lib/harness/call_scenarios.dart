@@ -267,8 +267,22 @@ class AppScenarioDriver {
   final AppState state;
   final FakeCollector collector;
   final ScriptedCall call;
-  final AppScenario scenario;
+
+  /// What the clock plays. Mutable so the debug drive's `harness.scenario` can
+  /// switch a running office between milling and still without a restart.
+  AppScenario scenario;
   final Duration period;
+
+  /// When set, exactly these people are talking — `spaceId`s, plus [kSelfId] for
+  /// me — and the rotation and the random babble stand down. The debug drive's
+  /// `harness.call.speak` holds the floor through this, because a ring lit for one
+  /// tick and then rotated away would be a flake, not a scene.
+  Set<String>? heldSpeakers;
+
+  /// When set, the media plane pushed on every tick instead of the one built from
+  /// [FakeCollector.callmates] — the debug drive's `harness.call.emit`. Held even
+  /// with nobody near, so a scripted call shape can be looked at on its own.
+  CallState? heldCall;
 
   /// A six-step loop with zero net displacement, so people mill about near where
   /// they started rather than all piling into a corner against the clamp.
@@ -338,6 +352,11 @@ class AppScenarioDriver {
       // draws mean nobody owns the floor on a rota and several can be lit at
       // once — a real babble rather than a hand-off round robin. Call-mates'
       // rings are driven below; a still office stays quiet.
+      final held = heldSpeakers;
+      if (held != null) {
+        collector.placePerson(id, speaking: held.contains(id));
+        continue;
+      }
       var left = _speakingTicksLeft[id] ?? 0;
       if (milling && left == 0 && _rng.nextDouble() < 0.18) {
         left = 2 + _rng.nextInt(5);
@@ -364,29 +383,56 @@ class AppScenarioDriver {
   /// `placePerson`) so the map ring and the call-screen ring agree; the call
   /// state carries the same people as audio-only participants.
   void _driveCall(List<CallPerson> mates) {
-    if (mates.isEmpty) {
+    final held = heldSpeakers;
+    final pinned = heldCall;
+    if (mates.isEmpty && pinned == null) {
       if (_wasInCall) {
         call.emit(const CallState());
         call.speak(false);
         _wasInCall = false;
       }
+      if (held != null) call.speak(held.contains(kSelfId));
       return;
     }
     _wasInCall = true;
 
-    // The floor passes between the people beside me and, every few turns, me —
-    // one speaker at a time, changing about every 1.2s (two 600ms ticks).
-    final turn = (_ticks ~/ 2) % (mates.length + 1);
-    final ownSpeaking = turn == mates.length;
-    for (var i = 0; i < mates.length; i++) {
-      collector.placePerson(mates[i].spaceId, speaking: !ownSpeaking && i == turn);
+    final bool ownSpeaking;
+    if (held != null) {
+      ownSpeaking = held.contains(kSelfId);
+      for (final m in mates) {
+        collector.placePerson(m.spaceId, speaking: held.contains(m.spaceId));
+      }
+    } else {
+      // The floor passes between the people beside me and, every few turns, me —
+      // one speaker at a time, changing about every 1.2s (two 600ms ticks).
+      final turn = (_ticks ~/ 2) % (mates.length + 1);
+      ownSpeaking = turn == mates.length;
+      for (var i = 0; i < mates.length; i++) {
+        collector.placePerson(mates[i].spaceId, speaking: !ownSpeaking && i == turn);
+      }
     }
     call.speak(ownSpeaking);
-    call.emit(CallState(
-      media: _selfMedia,
-      publishingAudio: true,
-      participants: participantsForPeople(mates),
-    ));
+    call.emit(pinned ??
+        CallState(
+          media: _selfMedia,
+          publishingAudio: true,
+          participants: participantsForPeople(mates),
+        ));
+  }
+
+  /// Applies the holds and the call *now*, without stepping anyone or waiting for
+  /// the next tick — what the debug drive calls after it changes the scene, so its
+  /// answer describes the scene it left rather than the one before. Nobody moves.
+  void settle() {
+    final held = heldSpeakers;
+    final mates = collector.callmates;
+    if (held != null) {
+      for (final id in collector.peopleIds) {
+        collector.placePerson(id, speaking: held.contains(id));
+      }
+    }
+    _driveCall(mates);
+    collector.publish();
   }
 
   void stop() {
