@@ -22,7 +22,11 @@
 /// sample `call.spotlight` every [_sampleEvery] — a process per sample would
 /// be slower than the dwell being measured.
 ///
-/// Exit: 0 every row passed, 1 a row failed or could not run, 64 usage.
+/// Exit: 0 every row passed, 1 a row failed or could not run, 64 usage,
+/// 130 / 143 interrupted (SIGINT / SIGTERM). An interrupt still stops the row's
+/// `flutter run` and terminates the app it launched before exiting — a ctrl-c
+/// mid-row must not leave a harness running on the simulator for the next
+/// `flutter run` (or the verifier) to trip over.
 /// A row's `flutter run` output goes to `.dart_tool/sim_plan/<row>.log`, and a
 /// row that could not launch says so and points there.
 ///
@@ -111,6 +115,8 @@ Future<void> main(List<String> argv) async {
     exit(64);
   }
 
+  _stopOnSignal(ProcessSignal.sigint, 130);
+  _stopOnSignal(ProcessSignal.sigterm, 143);
   stdout.writeln('sim plan on $device, PARTICIPANTS=$participants, rows ${rows.map((r) => r.id).join(' ')}');
   final verdicts = <RowVerdict>[];
   for (final row in rows) {
@@ -124,6 +130,26 @@ Future<void> main(List<String> argv) async {
       ? 'ALL ${verdicts.length} PASS'
       : '${verdicts.length - failed.length}/${verdicts.length} PASS; FAIL: ${failed.join(' ')}');
   exit(failed.isEmpty ? 0 : 1);
+}
+
+/// The `flutter run` of the row in progress, for the signal handler.
+_FlutterRun? _active;
+
+/// On [signal], stop the row's run (and the app) and exit [code]. Watching a
+/// signal replaces its default action, so this must exit; a second signal
+/// while stopping exits at once.
+void _stopOnSignal(ProcessSignal signal, int code) {
+  var stopping = false;
+  signal.watch().listen((_) async {
+    if (stopping) exit(code);
+    stopping = true;
+    stderr.writeln('sim_plan: $signal — stopping the app');
+    try {
+      await _active?.stop();
+    } finally {
+      exit(code);
+    }
+  });
 }
 
 Future<String?> _bootedSimulator() async {
@@ -143,19 +169,22 @@ Future<String?> _bootedSimulator() async {
 Future<RowVerdict> _runRow(PlanRow row, String device, int participants) async {
   final logDir = Directory('.dart_tool/sim_plan')..createSync(recursive: true);
   final logPath = '${logDir.path}/${row.id}.log';
-  var run = await _FlutterRun.start(row, device, participants, logPath);
+  _FlutterRun? run;
   DriveClient? client;
   try {
+    // Inside the try: a launch that throws (no `flutter` on PATH) is this row's
+    // FAIL, not an uncaught error that skips the remaining rows and the summary.
+    final first = run = await _FlutterRun.start(row, device, participants, logPath);
     try {
-      client = await run.waitForDrive();
+      client = await first.waitForDrive();
     } on _BuildFailed {
       // One retry for a build that died before the app started: Xcode's
       // package resolution ("Missing package product 'FlutterFramework'")
       // fails transiently when another flutter command touches the same
       // checkout's ephemeral package. A second failure is the row's answer.
-      await run.stop();
-      run = await _FlutterRun.start(row, device, participants, logPath, attempt: 2);
-      client = await run.waitForDrive();
+      await first.stop();
+      final second = run = await _FlutterRun.start(row, device, participants, logPath, attempt: 2);
+      client = await second.waitForDrive();
     }
     return await switch (row.id) {
       'C1' || 'C2' || 'C4' || 'C5' || 'C6' || 'C7' => _autoRow(client, row, participants),
@@ -167,8 +196,12 @@ Future<RowVerdict> _runRow(PlanRow row, String device, int participants) async {
   } catch (e) {
     return RowVerdict(row.id, evidence: {'log': logPath}, failures: ['could not run: $e']);
   } finally {
-    await client?.dispose();
-    await run.stop();
+    try {
+      await client?.dispose();
+    } catch (_) {
+      // The service is already gone; stopping the run below is what matters.
+    }
+    await run?.stop();
   }
 }
 
@@ -351,6 +384,16 @@ class _FlutterRun {
   final String logPath;
   int? _exitCode;
 
+  /// stdout and stderr both drained into [log].
+  late final Future<void> _drained;
+
+  /// Set once [log] is closed: output still arriving after a kill is dropped
+  /// rather than written to a closed sink (a `StateError` that would take the
+  /// whole runner down from inside a stream callback).
+  bool _logClosed = false;
+
+  Future<void>? _stopping;
+
   static Future<_FlutterRun> start(PlanRow row, String device, int participants, String logPath,
       {int attempt = 1}) async {
     final uriFile = File('.dart_tool/vm_uri.$device');
@@ -372,9 +415,16 @@ class _FlutterRun {
     log.writeln('> flutter ${args.join(' ')}');
     final process = await Process.start('flutter', args);
     final run = _FlutterRun._(process, device, uriFile, log, logPath);
-    process.stdout.listen(log.add);
-    process.stderr.listen(log.add);
+    void tee(List<int> bytes) {
+      if (!run._logClosed) log.add(bytes);
+    }
+
+    run._drained = Future.wait([
+      process.stdout.listen(tee).asFuture<void>(),
+      process.stderr.listen(tee).asFuture<void>(),
+    ]);
     unawaited(process.exitCode.then((c) => run._exitCode = c));
+    _active = run;
     return run;
   }
 
@@ -401,8 +451,12 @@ class _FlutterRun {
     }
   }
 
-  /// `q`, then a kill, then the app itself — every launch is stopped.
-  Future<void> stop() async {
+  /// `q`, then a kill, then the app itself — every launch is stopped. Safe to
+  /// call more than once (the row's `finally`, a retry, the signal handler all
+  /// may): every call waits on the same stop.
+  Future<void> stop() => _stopping ??= _stop();
+
+  Future<void> _stop() async {
     if (_exitCode == null) {
       try {
         process.stdin.write('q');
@@ -421,7 +475,12 @@ class _FlutterRun {
     }
     await Process.run('xcrun', ['simctl', 'terminate', device, _bundleId]);
     if (uriFile.existsSync()) uriFile.deleteSync();
+    // A child flutter left behind (xcrun, log stream) can hold the pipes open
+    // after the kill; do not wait on it forever.
+    await _drained.timeout(const Duration(seconds: 5), onTimeout: () {});
+    _logClosed = true;
     await log.flush();
     await log.close();
+    if (identical(_active, this)) _active = null;
   }
 }

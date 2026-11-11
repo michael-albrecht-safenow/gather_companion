@@ -19,16 +19,36 @@
 ///
 /// Times are the app's clock: each sample's `now` is `since + sinceMs` from the
 /// readout itself, so they line up with the transitions' `at` without trusting
-/// the round-trip of the RPC. The one tolerance, [kSampleSlack], covers a
-/// sample landing between a roster tick (250 ms in `CallScenarioDriver`) and
-/// the poll that observes it.
+/// the round-trip of the RPC. The dwell and linger judged against are the
+/// plan's gates ([kPlanDwell], [kPlanLinger]), never the readout's own
+/// `dwellMs`/`lingerMs` — a director whose dwell was shortened would otherwise
+/// be graded on its own shortened clock. The readout's values are checked
+/// *against* the gates instead.
+///
+/// Two tolerances. [kSampleSlack] trims the start of the window the dwell rule
+/// reads samples from, so a sample landing between a roster tick (250 ms in
+/// `CallScenarioDriver`) and the director's update cannot fail a correct
+/// promotion; that leaves the per-sample rule blind to a dwell short by less
+/// than about the slack. [kFlipSlack] closes that gap where it can: the flip
+/// resets the director on the same clock the flip's readout is stamped with, so
+/// a promotion sooner than `dwell - kFlipSlack` after the flip is a short dwell,
+/// whatever the samples say.
 library;
 
 import 'dart:convert';
 
-/// The dwell the auto spotlight gates on (`SpotlightDirector.dwell`). Read
-/// back from the readout's `dwellMs` when there is one; this is the fallback.
-const Duration kDefaultDwell = Duration(milliseconds: 1500);
+/// The dwell the plan gates on (`SpotlightDirector.dwell`). The checks judge
+/// against this, not against the readout's `dwellMs`.
+const Duration kPlanDwell = Duration(milliseconds: 1500);
+
+/// The linger the plan gates on (`SpotlightDirector.linger`).
+const Duration kPlanLinger = Duration(seconds: 5);
+
+/// How long after the flip's readout the director's reset may have happened
+/// before it: the two are one synchronous call on the app's clock, so this is
+/// only the millisecond truncation of `sinceMs` plus the listeners `setMode`
+/// notifies in between.
+const Duration kFlipSlack = Duration(milliseconds: 50);
 
 /// How far a sample may trail the roster tick it observed: one driver tick
 /// (250 ms) plus one poll interval (200 ms).
@@ -186,7 +206,8 @@ class SpotSample {
     required this.tiles,
     required this.selfId,
     required this.promotions,
-    this.dwell = kDefaultDwell,
+    this.dwell = kPlanDwell,
+    this.linger = kPlanLinger,
     this.transitions = const [],
   });
 
@@ -203,7 +224,8 @@ class SpotSample {
       tiles: [for (final t in data['tiles'] as List) t as String],
       selfId: data['selfId'] as String?,
       promotions: (data['promotions'] as num).toInt(),
-      dwell: Duration(milliseconds: ((data['dwellMs'] as num?) ?? kDefaultDwell.inMilliseconds).toInt()),
+      dwell: Duration(milliseconds: ((data['dwellMs'] as num?) ?? kPlanDwell.inMilliseconds).toInt()),
+      linger: Duration(milliseconds: ((data['lingerMs'] as num?) ?? kPlanLinger.inMilliseconds).toInt()),
       transitions: [
         for (final t in (data['transitions'] as List? ?? const []))
           SpotTransition.fromJson((t as Map).cast<String, Object?>()),
@@ -224,7 +246,11 @@ class SpotSample {
   final List<String> tiles;
   final String? selfId;
   final int promotions;
+
+  /// The director's own gates, as the readout reports them — checked against
+  /// [kPlanDwell] / [kPlanLinger], never judged by.
   final Duration dwell;
+  final Duration linger;
   final List<SpotTransition> transitions;
 
   List<String> get others => [for (final t in tiles) if (t != selfId) t];
@@ -268,16 +294,21 @@ class SpotRun {
   List<SpotTransition> get promotions => [for (final t in transitions) if (t.cause == 'promoted') t];
 
   int get promotionCount => last.promotions - flip.promotions;
+
+  /// How long the recording covers, flip to last reading, on the app's clock.
+  int get spanMs => last.at.difference(flip.at).inMilliseconds;
 }
 
 /// The dwell rule, judged from the inputs: every promotion to X at t must have
 /// been preceded, for the whole `(t - dwell + slack, t)`, by samples in which X
 /// was talking and the face then on screen was not — the "held the floor for
-/// the dwell" and "a talking target is sticky" halves together. Returns the
-/// failures; [judged] receives how many samples each promotion rested on.
+/// the dwell" and "a talking target is sticky" halves together — and must come
+/// at least the dwell (less [kFlipSlack]) after the flip that reset the
+/// director. Returns the failures; [judged] receives how many samples each
+/// promotion rested on.
 List<String> dwellViolations(SpotRun run, {List<int>? judged}) {
   final out = <String>[];
-  final window = run.flip.dwell - kSampleSlack;
+  final window = kPlanDwell - kSampleSlack;
   for (final p in run.promotions) {
     final to = p.to;
     if (to == null) continue;
@@ -291,7 +322,7 @@ List<String> dwellViolations(SpotRun run, {List<int>? judged}) {
       out.add('promotion to $to at ${_t(run, p.at)} has no samples in the dwell before it to judge');
       continue;
     }
-    if (p.at.difference(run.flip.at) < window) {
+    if (p.at.difference(run.flip.at) < kPlanDwell - kFlipSlack) {
       out.add('promotion to $to at ${_t(run, p.at)} came sooner than the dwell after the flip');
     }
     for (final s in inWindow) {
@@ -327,8 +358,13 @@ List<SpotTransition> _toGridAfterFirstPromotion(SpotRun run) {
 }
 
 void _commonAuto(RowVerdict v, SpotRun run) {
-  v.evidence['samples'] = run.samples.length;
+  v.evidence
+    ..['samples'] = run.samples.length
+    ..['spanMs'] = run.spanMs;
   v.check(run.flip.mode == 'auto', 'the flip answered mode ${run.flip.mode}, not auto');
+  v.check(run.flip.dwell == kPlanDwell && run.flip.linger == kPlanLinger,
+      'the director gates on dwell ${run.flip.dwell.inMilliseconds} ms / linger ${run.flip.linger.inMilliseconds} ms, '
+      'the plan on ${kPlanDwell.inMilliseconds} / ${kPlanLinger.inMilliseconds}');
   v.check(run.samples.isNotEmpty, 'no samples recorded after the flip');
   final notAuto = run.samples.where((s) => s.mode != 'auto').length;
   v.check(notAuto == 0, '$notAuto samples were not in auto');
@@ -481,7 +517,10 @@ RowVerdict checkDebate(SpotRun run, {required Duration watch}) {
       }
     }
   }
-  final cycles = (watch.inMilliseconds / 12000).ceil();
+  // Whole cycles only: in any 26 s window the alternating 7 s / 5 s gaps between
+  // the two speakers' promotions fit at most five, which is 2 × 2 + 1. Rounding
+  // the partial third cycle up would let two extra promotions — thrash — pass.
+  final cycles = watch.inMilliseconds ~/ 12000;
   final maxPromos = cycles * 2 + 1;
   final dropped = _toGridAfterFirstPromotion(run);
   final promoted = {for (final p in promos) p.to};
@@ -502,6 +541,10 @@ RowVerdict checkDebate(SpotRun run, {required Duration watch}) {
   return v;
 }
 
+/// How long C6 must have watched the grid hold for "never" to mean anything:
+/// several 1.5 s blip slots, so every blipper has had a turn at four.
+const Duration kNoiseMinSpan = Duration(seconds: 5);
+
 /// C6 `briefNoise`: blips under the dwell never promote anybody.
 RowVerdict checkBriefNoise(SpotRun run) {
   final v = RowVerdict('C6');
@@ -517,6 +560,8 @@ RowVerdict checkBriefNoise(SpotRun run) {
   v.check(run.promotionCount == 0, '${run.promotionCount} promotions off blips shorter than the dwell');
   v.check(views.length == 1 && views.single == 'grid', 'the view left the grid: $views');
   v.check(blipSamples > 0, 'no blip observed — the rejection claim went untested');
+  v.check(run.spanMs >= kNoiseMinSpan.inMilliseconds,
+      'watched only ${run.spanMs} ms, under the ${kNoiseMinSpan.inSeconds} s the claim needs');
   return v;
 }
 

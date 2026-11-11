@@ -17,7 +17,8 @@ The runner (`tool/sim_plan.dart`) does one `flutter run -t lib/main_harness.dart
 --vmservice-out-file=.dart_tool/vm_uri.<udid>` per row with that row's
 `TARGET`/`SCENARIO`/`PARTICIPANTS`, waits for `drive.list`, runs the row, prints
 `<id> PASS|FAIL` with the values judged (and one line per failure), then quits
-that run. Exit 0 all pass, 1 any fail. Per-row `flutter run` output:
+that run. Exit 0 all pass, 1 any fail, 130/143 on ctrl-c/SIGTERM — which still
+quits the row's `flutter run` and terminates the app first. Per-row `flutter run` output:
 `.dart_tool/sim_plan/<row>.log`. The judging is pure —
 `tool/sim_plan_check.dart`, unit-tested by `test/tool/sim_plan_check_test.dart`,
 which plays each scenario's speaking schedule through the real
@@ -40,6 +41,12 @@ controller's `transitions` history. Times are the app's own (`since + sinceMs`).
   in which X is in `speaking` **and** the face then on screen is not — "held the
   floor for the dwell" and "a talking target is sticky" in one check, judged
   from the inputs rather than from the director's own `candidate` countdown.
+  The 450 ms trim leaves that per-sample rule blind to a dwell short by less
+  than about half a second, so every promotion must also land ≥ dwell − 50 ms
+  after the flip (which reset the director on the same app clock).
+- **Gates:** dwell and linger are the plan's (1.5 s / 5 s), not the readout's
+  `dwellMs`/`lingerMs` — a readout reporting anything else fails the row
+  rather than being judged on its own clock.
 - **Grid flash / dropped linger:** no transition to `null` after the first
   promotion.
 
@@ -51,8 +58,8 @@ controller's `transitions` history. Times are the app's own (`since + sinceMs`).
 | C2 | `pair` | 9 s (2 cycles of 2.5 s on / 1 s off) | auto, sample | one other tile; ≥ 1 promotion, to the other, obeying the dwell rule; every sample after it `view == spotlight` and at least one of those has `speaking == []` (the gap was seen); no drop to grid. |
 | C3 | `group` | — | `call.spotlight` at rest, `call.spotlight.pick {id}` on the first other tile, `call.spotlight.overview` | rest: `mode manual`, `view grid`, `target` null, N other tiles, `speaking == []`; pick: `view spotlight`, `target == id`; overview: `view grid`, `target` null, still manual. |
 | C4 | `roundRobin` | 15 s (≥ N×3 s) | auto, sample | N others; promotions within `watch/3 − 1 … ⌈watch/3⌉ + 1` (one per turn); successive promotions ≥ 2.5 s apart (the first, anchored to the flip, excepted) — no jump mid-turn; never the same id twice running; every promotion after the first comes `from` a face, and no transition to the grid — face replaces face; the dwell rule. |
-| C5 | `debate` | 26 s (two 12 s cycles) | auto, sample | sticky: in overlap samples (`speaking` ⊇ {A,B}) after A was talking alone, `target` stays A — at least one such sample is required, so the claim cannot pass untested — and the newcomer never takes it while A talks; both speakers earn the view in turn; promotions ≤ 2 per cycle + 1 (no thrash); no drop to grid; the dwell rule (B only after holding the floor alone for the dwell). |
-| C6 | `briefNoise` | 6 s | auto, sample | `promotions` +0; every sample `view == grid`; at least one sample with a non-empty `speaking` (blips were seen). |
+| C5 | `debate` | 26 s (two 12 s cycles) | auto, sample | sticky: in overlap samples (`speaking` ⊇ {A,B}) after A was talking alone, `target` stays A — at least one such sample is required, so the claim cannot pass untested — and the newcomer never takes it while A talks; both speakers earn the view in turn; promotions ≤ 2 per whole cycle + 1, i.e. ≤ 5 in 26 s (no thrash); no drop to grid; the dwell rule (B only after holding the floor alone for the dwell). |
+| C6 | `briefNoise` | 6 s | auto, sample | `promotions` +0; every sample `view == grid` over a recording spanning ≥ 5 s; at least one sample with a non-empty `speaking` (blips were seen). |
 | C7 | `churn` | 10 s (a full 8 s leave/rejoin cycle) | auto, sample | other-tile counts span `N−2 … N` (join/leave tracked); every sample's `target` is null or one of `tiles` (no stale tile, re-floors cleanly when the holder leaves); every `speaking` id has a tile; `state.dump` still answers. Evidence includes `holderLeft`. |
 
 ## App target (`TARGET=app`) — whole-app presence

@@ -25,6 +25,8 @@ Map<String, Object?> _readout({
   required List<String> tiles,
   int promotions = 0,
   List<Map<String, Object?>> transitions = const [],
+  int dwellMs = 1500,
+  int lingerMs = 5000,
 }) =>
     {
       'ok': true,
@@ -38,8 +40,8 @@ Map<String, Object?> _readout({
         'tiles': tiles,
         'selfId': 'me',
         'promotions': promotions,
-        'dwellMs': 1500,
-        'lingerMs': 5000,
+        'dwellMs': dwellMs,
+        'lingerMs': lingerMs,
         'transitions': transitions,
       },
     };
@@ -54,15 +56,18 @@ Map<String, Object?> _transition(int atMs, String cause, String? from, String? t
 
 /// Plays [speakingAt] (ms since t0 → who is talking) through the real
 /// director, flipping to auto at [flipMs], and records the run the way the
-/// runner does. [tilesAt] defaults to [others] for the whole run.
+/// runner does. [tilesAt] defaults to [others] for the whole run. [dwell]
+/// builds a broken director whose readout still claims the plan's 1500 ms.
 SpotRun _simulate({
   required List<String> others,
   required Set<String> Function(int ms) speakingAt,
   List<String> Function(int ms)? tilesAt,
   int flipMs = 0,
   int watchMs = 10000,
+  Duration? dwell,
+  int reportedDwellMs = 1500,
 }) {
-  final director = SpotlightDirector();
+  final director = dwell == null ? SpotlightDirector() : SpotlightDirector(dwell: dwell);
   final transitions = <Map<String, Object?>>[];
   var promotions = 0;
   String? shown;
@@ -84,6 +89,7 @@ SpotRun _simulate({
         tiles: tiles(ms),
         promotions: promotions,
         transitions: List.of(transitions),
+        dwellMs: reportedDwellMs,
       );
 
   final flip = SpotSample.fromReadout(read(flipMs));
@@ -102,6 +108,18 @@ SpotRun _simulate({
   }
   return SpotRun(flip: flip, samples: samples, last: SpotSample.fromReadout(read(flipMs + watchMs)));
 }
+
+/// [s] with its view/target replaced.
+SpotSample _withTarget(SpotSample s, String? target) => SpotSample(
+      at: s.at,
+      mode: s.mode,
+      view: target == null ? 'grid' : 'spotlight',
+      target: target,
+      speaking: s.speaking,
+      tiles: s.tiles,
+      selfId: s.selfId,
+      promotions: s.promotions,
+    );
 
 /// [run] with its transitions (and the last reading's) replaced.
 SpotRun _withTransitions(SpotRun run, List<SpotTransition> transitions) => SpotRun(
@@ -197,6 +215,23 @@ void main() {
       ]);
       expect(checkPair(broken).failures, contains(startsWith('dropped to the grid 1×')));
     });
+
+    test('one grid sample after the promotion fails, whatever the history says', () {
+      final run = _simulate(others: const ['acc-a'], speakingAt: pair, flipMs: 300, watchMs: 9000);
+      final firstAt = run.promotions.first.at;
+      final i = run.samples.lastIndexWhere((s) => s.at.isAfter(firstAt));
+      final broken = SpotRun(
+        flip: run.flip,
+        samples: [...run.samples]..[i] = _withTarget(run.samples[i], null),
+        last: run.last,
+      );
+      expect(checkPair(broken).failures, contains(startsWith('the big view did not hold')));
+    });
+
+    test('a speaker who never pauses leaves the linger untested, and that fails', () {
+      final v = checkPair(_simulate(others: const ['acc-a'], speakingAt: (_) => {'acc-a'}, watchMs: 9000));
+      expect(v.failures, [contains('linger claim went untested')]);
+    });
   });
 
   group('the dwell rule', () {
@@ -226,6 +261,31 @@ void main() {
       );
       final broken = _withTransitions(run, [...run.transitions, steal]..sort((x, y) => x.at.compareTo(y.at)));
       expect(dwellViolations(broken), contains(contains('not sticky')));
+    });
+
+    test('a director with a shortened dwell is caught at the flip, though its readout claims 1500 ms', () {
+      // 1.2 s: every later promotion still has the speaker lit through the
+      // slack-trimmed window, so only the flip anchor can see it.
+      final run = _simulate(
+        others: _four,
+        speakingAt: _roundRobin,
+        dwell: const Duration(milliseconds: 1200),
+        watchMs: 15000,
+      );
+      expect(dwellViolations(run), contains(contains('sooner than the dwell after the flip')));
+    });
+
+    test("a readout whose own dwell is not the plan's fails the row instead of grading itself", () {
+      final run = _simulate(
+        others: _four,
+        speakingAt: _roundRobin,
+        dwell: const Duration(milliseconds: 1000),
+        reportedDwellMs: 1000,
+        watchMs: 15000,
+      );
+      final v = checkRoundRobin(run, participants: 4, watch: const Duration(seconds: 15));
+      expect(v.failures, contains(startsWith('the director gates on dwell 1000 ms')));
+      expect(v.failures, contains(contains('sooner than the dwell after the flip')));
     });
   });
 
@@ -284,6 +344,39 @@ void main() {
       expect(v.failures, contains(startsWith('the grid flashed')));
       expect(v.failures, contains(contains('came from the grid')));
     });
+
+    test('too few promotions for the watch fail, and so does the same face twice running', () {
+      final run = _simulate(others: _four, speakingAt: _roundRobin, watchMs: 15000);
+      final ps = run.promotions;
+      final kept = [for (final t in run.transitions) if (t != ps[1] && t != ps[2]) t];
+      expect(
+        checkRoundRobin(_withTransitions(run, kept), participants: 4, watch: const Duration(seconds: 15)).failures,
+        contains(contains('promotions in 15s, expected 4–6')),
+      );
+      final twice = [
+        for (final t in run.transitions)
+          t == ps[2] ? SpotTransition(at: t.at, mode: t.mode, cause: t.cause, from: t.from, to: ps[1].to) : t,
+      ];
+      expect(
+        checkRoundRobin(_withTransitions(run, twice), participants: 4, watch: const Duration(seconds: 15)).failures,
+        contains(contains('twice in a row')),
+      );
+    });
+
+    test('a promotion mid-turn (under 2.5 s after the last) fails as a jump', () {
+      final run = _simulate(others: _four, speakingAt: _roundRobin, watchMs: 15000);
+      final ps = run.promotions;
+      final jump = [
+        for (final t in run.transitions)
+          t == ps[3]
+              ? SpotTransition(at: ps[2].at.add(const Duration(seconds: 2)), mode: t.mode, cause: t.cause, from: t.from, to: t.to)
+              : t,
+      ];
+      expect(
+        checkRoundRobin(_withTransitions(run, jump), participants: 4, watch: const Duration(seconds: 15)).failures,
+        contains(contains('a jump mid-turn')),
+      );
+    });
   });
 
   group('C5 debate', () {
@@ -304,6 +397,32 @@ void main() {
       );
       expect(v.failures, contains(contains('sticky claim went untested')));
     });
+
+    test('B on screen in an overlap sample while A talks is a stolen floor', () {
+      final run = _simulate(others: const ['acc-a', 'acc-b'], speakingAt: _debate, flipMs: 1000, watchMs: 26000);
+      final i = run.samples.indexWhere((s) => s.speaking.length == 2 && s.target == 'acc-a');
+      final broken = SpotRun(
+        flip: run.flip,
+        samples: [...run.samples]..[i] = _withTarget(run.samples[i], 'acc-b'),
+        last: run.last,
+      );
+      expect(checkDebate(broken, watch: const Duration(seconds: 26)).failures,
+          contains(startsWith('the talking target lost the view')));
+    });
+
+    test('a sixth promotion in 26 s is thrash (two whole cycles allow five)', () {
+      final run = _simulate(others: const ['acc-a', 'acc-b'], speakingAt: _debate, flipMs: 1000, watchMs: 26000);
+      expect(run.promotions, hasLength(5));
+      final p = run.promotions[1];
+      final extra = [
+        ...run.transitions,
+        SpotTransition(at: p.at.add(const Duration(seconds: 2)), mode: 'auto', cause: 'promoted', from: 'acc-b', to: 'acc-a'),
+      ]..sort((x, y) => x.at.compareTo(y.at));
+      expect(
+        checkDebate(_withTransitions(run, extra), watch: const Duration(seconds: 26)).failures,
+        contains(contains('thrash (≤ 5)')),
+      );
+    });
   });
 
   group('C6 briefNoise', () {
@@ -318,6 +437,16 @@ void main() {
     test('a held voice is promoted, and that fails the row', () {
       final v = checkBriefNoise(_simulate(others: _four, speakingAt: (_) => {'acc-a'}, watchMs: 6000));
       expect(v.failures, contains(contains('promotions off blips')));
+    });
+
+    test('a grid held for too short a watch does not prove "never"', () {
+      final v = checkBriefNoise(_simulate(others: _four, speakingAt: blips, watchMs: 3000));
+      expect(v.failures, [startsWith('watched only 3000 ms')]);
+    });
+
+    test('a watch that saw no blip does not pass vacuously', () {
+      final v = checkBriefNoise(_simulate(others: _four, speakingAt: (_) => const {}, watchMs: 6000));
+      expect(v.failures, [contains('rejection claim went untested')]);
     });
   });
 
@@ -352,6 +481,11 @@ void main() {
       );
       final broken = SpotRun(flip: run.flip, samples: [...run.samples]..[10] = stale, last: run.last);
       expect(checkChurn(broken, participants: 4).failures, contains(startsWith('the target was not a present tile')));
+    });
+
+    test('tiles that never change do not track the churn', () {
+      final v = checkChurn(_simulate(others: _four, speakingAt: talker, watchMs: 10000), participants: 4);
+      expect(v.failures, [startsWith('tiles did not track the churn')]);
     });
   });
 

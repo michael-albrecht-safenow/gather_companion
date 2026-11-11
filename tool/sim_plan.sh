@@ -13,7 +13,8 @@
 #   tool/sim_plan.sh -d <udid> -p 4     # a given simulator / cast size
 #   tool/sim_plan.sh --list             # rows and their claims
 #
-# Exit: 0 all PASS, 1 any FAIL (or a row that could not run), 64 usage.
+# Exit: 0 all PASS, 1 any FAIL (or a row that could not run), 64 usage,
+# 130/143 interrupted (the row's flutter run and app are stopped first).
 # Per-row flutter output: .dart_tool/sim_plan/<row>.log
 set -euo pipefail
 
