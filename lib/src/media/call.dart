@@ -24,6 +24,9 @@
 library;
 
 import 'media_engine.dart';
+import 'media_flow.dart';
+
+export 'media_flow.dart' show MediaFlowSample;
 
 /// What the call is doing, on top of what the hardware is doing.
 ///
@@ -314,6 +317,23 @@ abstract class Call {
   /// takeover. Returns null on success or a sentence explaining why not, the same
   /// contract as [setMicOn].
   Future<String?> pullSessionOver();
+
+  /// One reading of whether media is actually moving: per consumer and producer
+  /// counters attributed to their own track, per-transport ICE/DTLS state, and
+  /// the streams we expect to receive (`media_flow.dart`).
+  ///
+  /// The signalling cannot answer this. A consume that never retried, a send
+  /// transport acking produces into a dead node, a stale peer-node cache — each
+  /// looked like a healthy call from every flag on [CallState]. Packet counters
+  /// are the only witness, so this reads them.
+  ///
+  /// **Never throws.** A stats call that fails or times out is a `FlowError` in
+  /// the sample and a stream reported as not measured, never an exception: the
+  /// probe exists for broken calls, and a probe that breaks on them is no use.
+  /// A call with nothing to read (no media session yet) answers an empty sample
+  /// that says why. [MediaFlowSample.source] is `live` off the SFU and
+  /// `scripted` from the harness or a test, so the two are never confused.
+  Future<MediaFlowSample> sampleFlow();
 
   Future<void> dispose();
 }

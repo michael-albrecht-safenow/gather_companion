@@ -307,8 +307,11 @@ class FakeProducer implements ms.Producer {
   /// peer connection's worth of rows, of which exactly one is the microphone.
   /// Reading the wrong row here is how a silent microphone once looked healthy —
   /// see `SfuSession._reportOutboundRtp` — so the decoys are the point.
+  /// Make [getStats] never answer, for the flow probe's per-call timeout.
+  bool statsHang = false;
+
   @override
-  Future<List<StatsReport>> getStats() async => [
+  Future<List<StatsReport>> getStats() async => statsHang ? Completer<List<StatsReport>>().future : [
         StatsReport('t', 'transport', 0, {'bytesSent': 99999}),
         StatsReport('o', 'outbound-rtp', 0, {'kind': 'video', 'bytesSent': 4242}),
         StatsReport('v', 'media-source', 0, {'kind': 'video', 'framesPerSecond': 24}),
@@ -392,6 +395,24 @@ class FakeConsumer implements ms.Consumer {
   @override
   Future<void> close() async => closed = true;
 
+  /// The transceiver mid the real handler would assign; unique per consumer.
+  @override
+  String get localId => 'mid-$id';
+
+  /// A track whose id is unique per consumer, so stats can be attributed.
+  @override
+  MediaStreamTrack get track => FakeTrack(appData['tag'] == 'audio' ? 'audio' : 'video', id: 'track-$id');
+
+  /// What [getStats] answers — shaped by the test, usually a whole peer
+  /// connection's worth of rows of which one is this consumer's.
+  List<StatsReport> stats = [];
+
+  /// Make [getStats] never answer, for the flow probe's per-call timeout.
+  bool statsHang = false;
+
+  @override
+  Future<dynamic> getStats() => statsHang ? Completer<dynamic>().future : Future<dynamic>.value(stats);
+
   @override
   dynamic noSuchMethod(Invocation invocation) => null;
 }
@@ -419,13 +440,16 @@ class FakeStream implements MediaStream {
 }
 
 class FakeTrack implements MediaStreamTrack {
-  FakeTrack(this.kind);
+  // ignore: prefer_initializing_formals
+  FakeTrack(this.kind, {String? id}) : _id = id;
 
   @override
   final String kind;
 
+  final String? _id;
+
   @override
-  String get id => 'fake-$kind';
+  String get id => _id ?? 'fake-$kind';
 
   @override
   dynamic noSuchMethod(Invocation invocation) => null;

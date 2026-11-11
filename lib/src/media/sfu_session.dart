@@ -32,6 +32,7 @@ import 'package:mediasfu_mediasoup_client/mediasfu_mediasoup_client.dart' as ms;
 // The ICE types, from our own shim rather than from the package: they are not
 // exported, and `mediasoup_ice.dart` explains why reaching past the barrel is
 // the only way to pass Gather's TURN servers at all.
+import 'media_flow.dart';
 import 'mediasoup_ice.dart';
 
 /// What Gather calls a stream on a person. `kind` is the codec's idea of the
@@ -1012,6 +1013,357 @@ class SfuSession {
       return null;
     }
     return null;
+  }
+
+  /// One reading of every stream this session holds, for the flow probe
+  /// (`media_flow.dart`): `getStats` per consumer, per producer and per
+  /// transport, attributed to tracks by `parseInboundStats` /
+  /// `parseOutboundStats`, plus the streams we *expect* — every subscribed peer's
+  /// announced tags, which is exactly what [_reconcileNow] steers towards, so a
+  /// gap between the two is a consumer that should exist and does not.
+  ///
+  /// **Never throws.** Each `getStats` gets [timeout] on its own; one that fails
+  /// or times out becomes a [FlowError] and a stream with null counters
+  /// (`not_measured`), and the rest of the reading still lands. A probe that
+  /// threw on one bad consumer would hide the other five that are fine.
+  ///
+  /// **One in flight.** A second call while one runs gets the same future — the
+  /// same discipline as `LiveCall._sampling`: `getStats` crosses a platform
+  /// channel and can outlast the interval, and queued samples answered at once
+  /// would read as a burst of identical measurements at the wrong times.
+  Future<MediaFlowSample> flowStats({Duration timeout = const Duration(seconds: 2)}) =>
+      _flowInFlight ??= _flowStats(timeout).whenComplete(() => _flowInFlight = null);
+
+  Future<MediaFlowSample>? _flowInFlight;
+
+  /// Stats scopes (`in:<key>`, `out:<tag>`, `transport:…`) whose native
+  /// `getStats` has not returned yet, timed out or not.
+  ///
+  /// `.timeout` gives up on the *future*, not on the platform call behind it. A
+  /// wedged WebRTC stats thread — the stalled-node case this probe exists for —
+  /// would otherwise collect one more pending native call per stream on every
+  /// tick of the release `media.log` timer, for the rest of the call. A scope
+  /// still pending is skipped (`not_measured`, `previous_still_pending`), so a
+  /// stuck stats thread costs at most one outstanding call per scope.
+  final Set<String> _statsPending = {};
+
+  Future<MediaFlowSample> _flowStats(Duration timeout) async {
+    final errors = <FlowError>[];
+
+    Future<({List<Map<String, Object?>>? rows, DateTime at})> read(String scope, Future<dynamic> Function() getStats) async {
+      if (_statsPending.contains(scope)) {
+        errors.add(FlowError(scope, 'previous_still_pending: the last getStats for this stream never returned'));
+        return (rows: null, at: DateTime.now());
+      }
+      try {
+        _statsPending.add(scope);
+        final raw = getStats();
+        // Handled on both arms, so a native call that fails after the timeout
+        // gave up on it is not an unhandled error.
+        unawaited(raw.then<void>((_) {}, onError: (Object _) {}).whenComplete(() => _statsPending.remove(scope)));
+        final stats = await raw.timeout(timeout);
+        final at = DateTime.now();
+        return (
+          rows: [
+            for (final report in (stats as List? ?? const []))
+              {
+                ..._map((report as dynamic).values),
+                'id': (report as dynamic).id,
+                'type': (report as dynamic).type,
+              },
+          ],
+          at: at,
+        );
+      } on TimeoutException {
+        errors.add(FlowError(scope, 'getStats timed out after ${timeout.inMilliseconds}ms'));
+      } on Object catch (error) {
+        _statsPending.remove(scope);
+        errors.add(FlowError(scope, 'getStats failed: $error'));
+      }
+      return (rows: null, at: DateTime.now());
+    }
+
+    // Each closure below catches its own failure: a malformed native value in
+    // one consumer's rows must cost that stream (`not_measured`), never the
+    // whole `Future.wait` and with it every other stream's reading.
+    final inbound = Future.wait([
+      for (final MapEntry(:key, value: consumer) in _consumers.entries)
+        () async {
+          final bar = key.indexOf('|');
+          final srcId = bar < 0 ? key : key.substring(0, bar);
+          final tag = bar < 0 ? '?' : key.substring(bar + 1);
+          final paused = _attempt(() => consumer.paused) ?? false;
+          try {
+            final keys = _keysOf(kindOfTag(tag), () => consumer.track, () => consumer.localId, () => consumer.rtpParameters);
+            final got = await read('in:$key', consumer.getStats);
+            final rows = got.rows;
+            // With nothing to attribute rows by, "no row of ours" is not
+            // evidence of no packets — it is no evidence. Null counters keep it
+            // `not_measured` instead of drifting into a stall nobody had.
+            if (rows != null && !keys.hasIdentity) {
+              errors.add(FlowError('in:$key', 'no track id, mid or ssrc to attribute rows by'));
+            }
+            final parsed = rows == null || !keys.hasIdentity ? null : parseInboundStats(rows, keys);
+            return InboundFlow(
+              srcId: srcId,
+              tag: tag,
+              paused: paused,
+              consumerId: _attempt(() => consumer.id),
+              producerId: _attempt(() => consumer.producerId),
+              counters: parsed?.counters,
+              rowFound: parsed?.rowFound ?? false,
+              measuredAt: got.at,
+            );
+          } on Object catch (error) {
+            errors.add(FlowError('in:$key', 'stats unreadable: $error'));
+            return InboundFlow(srcId: srcId, tag: tag, paused: paused, consumerId: _attempt(() => consumer.id));
+          }
+        }(),
+    ]);
+
+    final outbound = Future.wait([
+      for (final MapEntry(key: tag, value: producer) in _producers.entries)
+        () async {
+          final paused = _attempt(() => producer.paused) ?? false;
+          try {
+            final keys = _keysOf(kindOfTag(tag.wire), () => producer.track, () => producer.localId, () => producer.rtpParameters);
+            final got = await read('out:${tag.wire}', producer.getStats);
+            final rows = got.rows;
+            if (rows != null && !keys.hasIdentity) {
+              errors.add(FlowError('out:${tag.wire}', 'no track id, mid or ssrc to attribute rows by'));
+            }
+            final parsed = rows == null || !keys.hasIdentity ? null : parseOutboundStats(rows, keys);
+            return OutboundFlow(
+              tag: tag.wire,
+              paused: paused,
+              producerId: _attempt(() => producer.id),
+              counters: parsed?.counters,
+              rowFound: parsed?.rowFound ?? false,
+              measuredAt: got.at,
+            );
+          } on Object catch (error) {
+            errors.add(FlowError('out:${tag.wire}', 'stats unreadable: $error'));
+            return OutboundFlow(tag: tag.wire, paused: paused, producerId: _attempt(() => producer.id));
+          }
+        }(),
+    ]);
+
+    final transports = Future.wait([
+      if (_sendTransport case final send?) _transportFlow('send', send, _sendTransportAddr, read, errors),
+      for (final MapEntry(key: url, value: recv) in _recvTransports.entries) _transportFlow('recv', recv, url, read, errors),
+    ]);
+
+    final results = await (inbound, outbound, transports).wait;
+    return MediaFlowSample(
+      at: DateTime.now(),
+      source: 'live',
+      inbound: results.$1,
+      outbound: results.$2,
+      transports: results.$3,
+      expected: [
+        for (final srcId in _subscribed)
+          if (_announced[srcId] case final announced?)
+            for (final tag in announced.keys) ExpectedStream(srcId, tag.wire)
+          // Never announced — not "announced nothing", which is a legitimately
+          // muted peer. See [ExpectedStream].
+          else
+            ExpectedStream(srcId, SfuTag.audio.wire, why: _unannouncedWhy(srcId)),
+      ],
+      errors: [
+        ...errors,
+        for (final srcId in _subscribed)
+          if (!_announced.containsKey(srcId)) FlowError('in:$srcId|${SfuTag.audio.wire}', 'no_announcement: ${_unannouncedWhy(srcId)}'),
+      ],
+    );
+  }
+
+  /// What is known about a subscribed peer whose node never announced it.
+  String _unannouncedWhy(String srcId) => _unreachable.contains(srcId)
+      ? 'unreachable'
+      : _awaitingAddr.contains(srcId)
+          ? 'awaiting_addr'
+          : _consumeDenied.contains(srcId)
+              ? 'consume_denied'
+              : 'not_announced';
+
+  Future<TransportFlow> _transportFlow(
+    String direction,
+    ms.Transport transport,
+    String? node,
+    Future<({List<Map<String, Object?>>? rows, DateTime at})> Function(String, Future<dynamic> Function()) read,
+    List<FlowError> errors,
+  ) async {
+    final scope = 'transport:$direction@${node ?? '?'}';
+    final rows = (await read(scope, transport.getState)).rows;
+    TransportFlow parsed;
+    try {
+      parsed = rows == null ? TransportFlow(direction: direction) : parseTransportStats(rows, direction: direction);
+    } on Object catch (error) {
+      errors.add(FlowError(scope, 'stats unreadable: $error'));
+      parsed = TransportFlow(direction: direction);
+    }
+    final state = _attempt(() => transport.connectionState);
+    return parsed.withIdentity(id: _attempt(() => transport.id), node: node, connectionState: direction == 'send' ? (_sendState ?? state) : state);
+  }
+
+  /// What identifies one mediasoup track in a stats report. Each field is read
+  /// on its own and a failure leaves it out: a track that cannot say its id can
+  /// still be matched by mid or ssrc.
+  static TrackKeys _keysOf(
+    String kind,
+    MediaStreamTrack Function() track,
+    String Function() localId,
+    ms.RtpParameters Function() rtp,
+  ) {
+    final params = _attempt(rtp);
+    return TrackKeys(
+      kind: kind,
+      trackId: _attempt<String?>(() => track().id),
+      mid: _attempt<String?>(() => params?.mid) ?? _attempt<String?>(localId),
+      ssrcs: {
+        for (final e in _attempt<List<ms.RtpEncodingParameters>?>(() => params?.encodings) ?? const <ms.RtpEncodingParameters>[])
+          ?e.ssrc,
+      },
+    );
+  }
+
+  /// [read], or null if it throws. The flow probe reads a dozen fields off
+  /// native objects that can be half torn down mid-sample; one that will not
+  /// answer must cost that field, not the whole reading.
+  static T? _attempt<T>(T Function() read) {
+    try {
+      return read();
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Everything this session believes about the media plane, as JSON, for the
+  /// debug drive's `sfu.debug` (plan task 2.6). Read-only and synchronous: no
+  /// socket is asked anything, so the answer is what the session *thinks*, which
+  /// is exactly what a "connected but deaf" bug gets wrong. Set it beside
+  /// `media.snapshot` (what the packets say) and the disagreement is the bug — a
+  /// consumer keyed to a producer id the peer no longer announces (#61), a peer
+  /// cached on a node whose socket is down (#83), a send transport built on a
+  /// node we have since moved off (#67).
+  ///
+  /// **No credentials.** Tokens, the session id the router hands out and the
+  /// auth object are deliberately absent — not masked, absent. Node urls carry
+  /// no secret (they are `wss://host/ip-…`), so they are reported as they are:
+  /// which node is the question half these bugs turn on.
+  ///
+  /// Every native field goes through [_attempt]: the snapshot exists to be read
+  /// during a teardown or a half-built transport, and one getter that throws
+  /// must cost that field, not the whole answer.
+  ///
+  /// Only the debug drive calls this, behind its compile-time guard, so a
+  /// release build tree-shakes it.
+  Map<String, Object?> debugSnapshot() {
+    List<String> sorted(Iterable<String> keys) => keys.toList()..sort();
+    Map<String, Object?> transport(ms.Transport t, {required String? node}) => {
+          'id': _attempt(() => t.id),
+          'node': node,
+          'connectionState': _attempt(() => t.connectionState),
+          'closed': _attempt(() => t.closed),
+        };
+
+    return {
+      'srcId': _srcId,
+      'spaceId': _spaceId,
+      'stopped': _stopped,
+      'displaced': _displaced,
+      'deviceLoaded': _device == null ? null : _attempt(() => _device!.loaded),
+      'router': {'url': _routerUrl, 'open': _router != null},
+      // Our own node: where we publish, and the node `_node` talks to.
+      'node': _sfuAddr,
+      'nodes': [
+        for (final url in sorted(_nodes.keys))
+          {
+            'url': url,
+            'own': url == _sfuAddr,
+            'connecting': _nodeReady.containsKey(url),
+            'down': _nodeDown.contains(url),
+            'downGraceArmed': _nodeDownGrace.containsKey(url),
+            'escalations': _nodeEscalations[url] ?? 0,
+          },
+      ],
+      'peerNode': {for (final id in sorted(_peerNode.keys)) id: _peerNode[id]},
+      'transports': {
+        'send': switch (_sendTransport) {
+          final send? => {
+              ...transport(send, node: _sendTransportAddr),
+              // The state the send-heal watchdog keys on, from the last
+              // `connectionstatechange`; null if it never fired.
+              'reportedState': _sendState,
+              // A send transport built on a node we have since moved off is the
+              // stale-transport bug of #67; true here is that bug, caught.
+              'onCurrentNode': _sendTransportAddr == _sfuAddr,
+            },
+          null => null,
+        },
+        'recv': [
+          for (final url in sorted(_recvTransports.keys)) transport(_recvTransports[url]!, node: url),
+        ],
+      },
+      'producers': [
+        for (final MapEntry(key: tag, value: p) in _producers.entries)
+          {
+            'tag': tag.wire,
+            'id': _attempt(() => p.id),
+            'paused': _attempt(() => p.paused),
+            'closed': _attempt(() => p.closed),
+          },
+      ],
+      'pendingProduce': _pendingProducer != null,
+      'consumers': [
+        for (final key in sorted(_consumers.keys))
+          () {
+            final c = _consumers[key]!;
+            final [srcId, tag] = key.split('|');
+            final producerId = _attempt(() => c.producerId);
+            final announced = _announced[srcId]?.entries.where((e) => e.key.wire == tag).firstOrNull?.value;
+            return {
+              'key': key,
+              'srcId': srcId,
+              'tag': tag,
+              'id': _attempt(() => c.id),
+              'producerId': producerId,
+              // What the peer announces for this tag now. A consumer on any other
+              // producer id is receiving from a producer that no longer exists.
+              'announcedProducerId': announced,
+              'producerCurrent': announced != null && announced == producerId,
+              'paused': _attempt(() => c.paused),
+              'closed': _attempt(() => c.closed),
+            };
+          }(),
+      ],
+      'pendingConsumes': sorted(_pendingConsumers.keys),
+      'reconciling': sorted(_reconciling.keys),
+      'subscribed': sorted(_subscribed),
+      'announced': {
+        for (final id in sorted(_announced.keys)) id: {for (final e in _announced[id]!.entries) e.key.wire: e.value},
+      },
+      'allowed': sorted(_allowed),
+      'awaitingAddr': sorted(_awaitingAddr),
+      'consumeDenied': sorted(_consumeDenied),
+      'producerGone': sorted(_producerGone),
+      'unreachable': sorted(_unreachable),
+      'staleTagRetries': Map.of(_staleTagRetries),
+      'strandedRetries': Map.of(_strandedRetries),
+      'heal': {
+        'recvArmed': _recvHealTimer != null,
+        'recvHealing': _healing,
+        'recvBackoffMs': _recvHealBackoff.inMilliseconds,
+        'sendArmed': _sendHealTimer != null,
+        'sendHealing': _healingSend,
+        'sendBackoffMs': _sendHealBackoff.inMilliseconds,
+        'addrRetryArmed': _addrRetry != null,
+        'addrRetryBackoffMs': _addrRetryBackoff.inMilliseconds,
+        'ownNodeRetryArmed': _ownNodeRetry != null,
+      },
+      'clusterId': _clusterId,
+      'meetingId': _meetingId,
+    };
   }
 
   /// Whether we currently have a producer for [tag].

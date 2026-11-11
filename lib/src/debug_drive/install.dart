@@ -48,6 +48,8 @@ import 'builtin_features.dart';
 import 'debug_drive.dart';
 import 'drive_log.dart';
 import 'drive_ops.dart';
+import 'media_drive.dart';
+import 'sfu_drive.dart';
 import 'state_feature.dart';
 
 /// What the handlers read through, so a rebind is one assignment.
@@ -65,6 +67,8 @@ class DriveBinding {
   /// an empty test-space id matches no space, rather than every unnamed one.
   bool get inTestSpace => testSpaceId.isNotEmpty && spaceId == testSpaceId;
 }
+
+Future<void> _sleep(Duration d) => Future<void>.delayed(d);
 
 /// The drive this isolate registered with `dart:developer`, and its binding.
 ({DebugDrive drive, DriveBinding binding})? _isolateDrive;
@@ -102,6 +106,9 @@ void debugResetDriveLog() {
 /// [testSpaceId] are seams for tests; [extraFeatures] lets a test (or, later,
 /// the harness) add its own actions to the same all-or-nothing install.
 ///
+/// [mediaSleep] is how `media.snapshot` / `media.watch` wait between readings —
+/// a seam so a test can run a watch on a fake clock.
+///
 /// Returns the drive, or null when not enabled.
 DebugDrive? installDebugDrive({
   required bool enabled,
@@ -112,6 +119,7 @@ DebugDrive? installDebugDrive({
   DriveOps? ops,
   DriveLogBuffer? logBuffer,
   List<DriveFeature> extraFeatures = const [],
+  DriveSleep? mediaSleep,
 }) {
   if (!enabled) return null;
   if (boot != 'harness' && boot != 'live') {
@@ -122,6 +130,7 @@ DebugDrive? installDebugDrive({
   if (register == null && existing != null) {
     if (extraFeatures.isNotEmpty ||
         ops != null ||
+        mediaSleep != null ||
         logBuffer != null ||
         testSpaceId != existing.binding.testSpaceId) {
       throw StateError(
@@ -144,15 +153,19 @@ DebugDrive? installDebugDrive({
     register: register,
   );
   final buffer = logBuffer ?? _launchBuffer ?? DriveLogBuffer();
+  // One op table for every feature, so `op.result` answers a `media.watch` id.
+  final driveOps = ops ?? DriveOps();
   drive.install([
     driveFeature(drive),
-    opFeature(ops ?? DriveOps()),
+    opFeature(driveOps),
     stateFeature(
       app: () => binding.app,
       boot: () => binding.boot,
       inTestSpace: () => binding.inTestSpace,
     ),
     logFeature(buffer),
+    mediaFeature(call: () => binding.app.callHandle, ops: driveOps, sleep: mediaSleep ?? _sleep),
+    sfuFeature(call: () => binding.app.callHandle),
     ...extraFeatures,
   ]);
   // After the install succeeded, so a refused install leaves no sink behind.

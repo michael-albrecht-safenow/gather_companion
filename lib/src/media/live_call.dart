@@ -35,12 +35,14 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:gather_client/gather_client.dart';
 
 import 'call.dart';
 import 'capture_engine.dart';
 import 'media_engine.dart';
+import 'media_flow.dart';
 import 'sfu_session.dart';
 import 'voice_activity.dart';
 import 'webrtc_media_engine.dart';
@@ -54,6 +56,7 @@ class LiveCall implements Call {
     SfuSession Function()? buildSfu,
     VoiceActivity? voice,
     void Function(String)? log,
+    Duration? flowLogEvery,
   })  : _auth = auth,
         _voice = voice ?? VoiceActivity(),
         _log = log ?? _noop,
@@ -69,6 +72,9 @@ class LiveCall implements Call {
       _emit(_state.copyWith(media: media));
       _noticeScreenEnded(media);
     });
+    if (flowLogEvery != null) {
+      _flowLog = Timer.periodic(flowLogEvery, (_) => unawaited(_logFlow()));
+    }
   }
 
   /// The OS owns the "Stop" control for a system broadcast, so a share can end
@@ -846,8 +852,91 @@ class LiveCall implements Call {
     };
   }
 
+  /// The media session's own picture of itself (`SfuSession.debugSnapshot`), or
+  /// null when there is no session yet — for the debug drive's `sfu.debug`.
+  /// Concrete rather than on [Call]: a scripted call has no SFU to describe, and
+  /// putting it on the interface would make every fake invent one.
+  Map<String, Object?>? debugSfuSnapshot() => _sfu?.debugSnapshot();
+
+  /// Which flow-probe stream each `MediaStream` this call holds belongs to —
+  /// stream id → `in:<srcId>|<tag>`, and the local camera stream → `out:video` —
+  /// so the debug drive's `media.render` can check a tile against the call's own
+  /// books rather than against what the tile was told (a tile handed the wrong
+  /// stream would otherwise vouch for itself). Audio is left out: no tile renders
+  /// it. A set per id, because nothing promises a peer's video and screen
+  /// consumers never share a stream id. Debug drive only.
+  Map<String, Set<String>> debugStreamOwners() {
+    final owners = <String, Set<String>>{};
+    if (localStream case final local?) owners.putIfAbsent(local.id, () => {}).add('out:${SfuTag.video.wire}');
+    for (final MapEntry(key: srcId, value: streams) in _remoteStreams.entries) {
+      for (final MapEntry(key: tag, value: stream) in streams.entries) {
+        if (tag == SfuTag.audio) continue;
+        owners.putIfAbsent(stream.id, () => {}).add('in:$srcId|${tag.wire}');
+      }
+    }
+    return owners;
+  }
+
+  @override
+  Future<MediaFlowSample> sampleFlow() async {
+    final sfu = _sfu;
+    if (sfu == null) {
+      return MediaFlowSample.empty(at: DateTime.now(), source: 'live', why: 'no_sfu_session');
+    }
+    return sfu.flowStats();
+  }
+
+  /// The periodic flow summary in `media.log` (plan task 2.7), or null when this
+  /// call was built without one (every test, by default).
+  ///
+  /// A field report has been, every time, a person saying "I couldn't hear
+  /// Jaime" an hour later and a log that only says what the *signalling* did.
+  /// This puts one compact line per interval in the same file —
+  /// `flow: in:<srcId>|audio=flowing out:audio=silent …` — so the known classes
+  /// read straight off it: a refused or stale-node consume is `missing`, a dead
+  /// SFU node is `stalled` with the transport still connected, a send stall is
+  /// `out:… stalled` after the produce was acked.
+  ///
+  /// Product behaviour, so it ships in release, and is kept cheap for that: one
+  /// `getStats` per stream every few seconds (against the voice poll's five a
+  /// second), shared with any drive reading in flight, and nothing at all while
+  /// there is no media session or nobody to send to or hear.
+  Timer? _flowLog;
+  FlowJudge _flowJudge = FlowJudge();
+  bool _flowLogging = false;
+
+  Future<void> _logFlow() async {
+    final idle = _sfu == null ||
+        (_state.participants.isEmpty && !_state.publishingAudio && !_state.publishingVideo && !_state.publishingScreen);
+    if (idle) {
+      // A fresh judge next time, so a stale baseline from the last call can
+      // never be compared with the first reading of the next.
+      _flowJudge = FlowJudge();
+      return;
+    }
+    if (_flowLogging) return;
+    _flowLogging = true;
+    try {
+      final sample = await sampleFlow();
+      _log(flowLogLine(_flowJudge.judge(sample), errors: sample.errors));
+    } on Object catch (error) {
+      // A periodic timer in release: whatever escapes here would be an uncaught
+      // zone error every tick for the whole call. One log line instead.
+      _log('flow: probe failed: $error');
+    } finally {
+      _flowLogging = false;
+    }
+  }
+
+  /// One tick of the flow log, now — so a test asserts on the line rather than
+  /// racing a real periodic timer.
+  @visibleForTesting
+  Future<void> debugLogFlowNow() => _logFlow();
+
   @override
   Future<void> dispose() async {
+    _flowLog?.cancel();
+    _flowLog = null;
     await _engineSub?.cancel();
     _engineSub = null;
     await _detach();
