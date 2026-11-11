@@ -34,8 +34,9 @@ import '../theme/gather_theme.dart';
 ///
 /// Gather's own picker offers a menu of these. One is enough here: the common
 /// case by a distance is "for the rest of today", and a phone is not where
-/// somebody sets up a status that expires next Tuesday.
-const _clearAfter = Duration(hours: 8);
+/// somebody sets up a status that expires next Tuesday. Public so the debug drive's
+/// `status.setCustom` defaults to the same expiry rather than one no control sets.
+const statusClearAfter = Duration(hours: 8);
 
 Future<void> showStatusSheet(BuildContext context, AppState state) => showModalBottomSheet<void>(
       context: context,
@@ -123,7 +124,7 @@ class _StatusSheetState extends State<_StatusSheet> {
         : widget.state.setCustomStatus(
             text: text,
             emoji: _emoji,
-            clearAt: DateTime.now().toUtc().add(_clearAfter),
+            clearAt: DateTime.now().toUtc().add(statusClearAfter),
           ));
     if (mounted) Navigator.of(context).maybePop();
   }
