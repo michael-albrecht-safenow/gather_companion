@@ -3621,6 +3621,16 @@ class AppState extends ChangeNotifier {
   /// you were looking elsewhere.
   int get unreadActivityCount => _live.length + _fetched.where((item) => !item.isRead).length;
 
+  /// How many of [unreadActivityCount] are live waves — counted whatever their
+  /// `isRead` says, since a [WaveActivity] carries `isRead: true` (Gather has no
+  /// read cursor for waves) yet one off the socket has not been seen.
+  int get liveActivityCount => _live.length;
+
+  /// Whether [item] is one of those [unreadActivityCount] counts: a live wave, or
+  /// a fetched row Gather has not marked read. The same rule as the count, per
+  /// row, so a readout can say *which* rows make up the badge.
+  bool activityCountsAsUnread(ActivityItem item) => _live.any((live) => identical(live, item)) || !item.isRead;
+
   bool get isLoadingActivity => _loadingActivity;
 
   /// The last failure, or null. Kept so the screen can say what went wrong instead

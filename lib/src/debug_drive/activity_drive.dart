@@ -8,7 +8,11 @@
 ///
 ///  * `list {max?}` — [AppState.activity] newest first, `unread`
 ///    ([AppState.unreadActivityCount], the badge), `loading`, `fetched` and the
-///    last `error`. An empty list says why: `not_signed_in`, `no_space`,
+///    last `error`. `isRead` alone does not add up to `unread`: a live wave off
+///    the socket carries `isRead: true` (waves have no read cursor) yet the badge
+///    counts it. So each item also says `countsAsUnread`
+///    ([AppState.activityCountsAsUnread], the badge's own rule) and
+///    `unreadBreakdown {live, fetchedUnread}` sums to `unread`. An empty list says why: `not_signed_in`, `no_space`,
 ///    `not_fetched` (the tab's skeleton), `fetch_failed` or `nothing_yet` — only
 ///    the last is a checked "nothing happened".
 ///  * `refresh` — an op over [AppState.refreshActivity], the tab's
@@ -138,6 +142,10 @@ Map<String, Object?> activityReadout(AppState state, {required String boot, int 
     'error': error == null ? null : '$error',
     'count': items.length,
     'unread': state.unreadActivityCount,
+    'unreadBreakdown': {
+      'live': state.liveActivityCount,
+      'fetchedUnread': state.unreadActivityCount - state.liveActivityCount,
+    },
     'items': [for (final item in items.take(max)) _item(state, item)],
     'truncated': items.length > max,
     if (items.isEmpty)
@@ -165,6 +173,7 @@ Map<String, Object?> _item(AppState state, ActivityItem item) {
     },
     'at': item.at?.toUtc().toIso8601String(),
     'isRead': item.isRead,
+    'countsAsUnread': state.activityCountsAsUnread(item),
     'canMarkRead': item.canMarkRead,
     'actorId': actor,
     'actorName': actor == null ? null : state.nameFor(actor),

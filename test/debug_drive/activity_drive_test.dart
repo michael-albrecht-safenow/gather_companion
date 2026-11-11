@@ -112,6 +112,8 @@ const _unknown = UnknownActivity(
   payload: {'secretish': 'not echoed'},
 );
 
+FakeCollector? _lastCollector;
+
 Future<(AppState, _ScriptFeed)> _booted({String? space = 'space-a', bool collectorSpace = true}) async {
   late _ScriptFeed feed;
   final app = AppState(
@@ -122,7 +124,7 @@ Future<(AppState, _ScriptFeed)> _booted({String? space = 'space-a', bool collect
     buildCollector: (auth, spaceId) {
       final c = FakeCollector(participants: 1);
       if (!collectorSpace) c.spaceId = null;
-      return c;
+      return _lastCollector = c;
     },
     buildActivityFeed: (auth) => feed = _ScriptFeed(auth),
     connectivityNow: () async => const [ConnectivityResult.wifi],
@@ -182,6 +184,36 @@ void main() {
       expect(items[1]['canMarkRead'], isTrue);
       expect(items[3]['unknownKind'], 'Brand-new kind');
       expect('$data', isNot(contains('not echoed')));
+    });
+
+    test('unread is explained: live waves count though isRead is true', () async {
+      // The field defect: `unread: 6` over items that all said `isRead: true`,
+      // because live waves count toward the badge whatever their flag says.
+      final (app, _) = await _booted();
+      app.debugApplyActivity([_artifact('a1'), _artifact('a2', read: true)]);
+      _lastCollector!
+        ..injectWave('space-ada')
+        ..injectWave('space-bob');
+      await pumpEventQueue();
+      expect(app.unreadActivityCount, 3, reason: 'two live waves + a1');
+
+      final data = (await _call(_drive(app), 'list'))['data']! as Map<String, Object?>;
+      expect(data['unread'], 3);
+      expect(data['unreadBreakdown'], {'live': 2, 'fetchedUnread': 1});
+      final items = _items(data);
+      expect([for (final i in items) i['kind']], ['wave', 'wave', 'meetingArtifact', 'meetingArtifact']);
+      expect([for (final i in items) i['isRead']], [true, true, false, true]);
+      expect([for (final i in items) i['countsAsUnread']], [true, true, true, false]);
+      expect(items.where((i) => i['countsAsUnread'] == true).length, data['unread'],
+          reason: 'the per-item flags add up to the badge');
+    });
+
+    test('a fetched wave is read and does not count', () async {
+      final app = AppState()..debugApplyActivity([_wave]);
+      final data = (await _call(_drive(app), 'list'))['data']! as Map<String, Object?>;
+      expect(data['unread'], 0);
+      expect(data['unreadBreakdown'], {'live': 0, 'fetchedUnread': 0});
+      expect(_items(data).single['countsAsUnread'], isFalse);
     });
 
     test('max truncates and says so', () async {
