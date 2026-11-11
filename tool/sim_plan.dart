@@ -477,7 +477,7 @@ class _FlutterRun {
     if (uriFile.existsSync()) uriFile.deleteSync();
     // A child flutter left behind (xcrun, log stream) can hold the pipes open
     // after the kill; do not wait on it forever.
-    await _drained.timeout(const Duration(seconds: 5), onTimeout: () {});
+    await Future.any<void>([_drained, Future<void>.delayed(const Duration(seconds: 5))]);
     _logClosed = true;
     await log.flush();
     await log.close();
