@@ -775,6 +775,13 @@ class AppState extends ChangeNotifier {
   /// call, not only once Gather has placed me.
   String? get meId => _roster?.selfId;
 
+  /// Whether Gather has sent a roster at all since this connection began.
+  ///
+  /// [directory] and [peopleOnMap] are both empty before the first one, and empty
+  /// again in an office with nobody else in it; this is the one bit that tells the
+  /// two apart, so a readout can say "not received" rather than "nobody here".
+  bool get hasRoster => _roster != null;
+
   /// Where I am, in tiles, or null before the first roster. Rounded, because its
   /// callers ask questions about tiles — which room am I in — rather than drawing.
   ({int x, int y})? get myTile {
@@ -3631,6 +3638,17 @@ class AppState extends ChangeNotifier {
   /// Which space [_fetched] was fetched for, so a reconnect into a different space
   /// does not leave the previous one's history on screen.
   String? _fetchedFor;
+
+  /// Why [refreshActivity] and [markActivityRead] would do nothing right now, or
+  /// null when they would act: `not_signed_in` (no feed — nothing has attached a
+  /// Gather session) or `no_space` (Gather has not named a space to read the feed
+  /// for). The same two guards both methods open with; a busy refresh is
+  /// [isLoadingActivity], which only [refreshActivity] declines on.
+  String? get activityUnavailable => _activityFeed == null
+      ? 'not_signed_in'
+      : _activitySpaceId == null
+          ? 'no_space'
+          : null;
 
   Future<void> refreshActivity() async {
     final feed = _activityFeed;

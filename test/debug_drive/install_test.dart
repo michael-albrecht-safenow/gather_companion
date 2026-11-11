@@ -78,6 +78,13 @@ void main() {
       'ext.gc.gameboy.menu.confirm',
       'ext.gc.gameboy.menu.move',
       'ext.gc.gameboy.menu.toggle',
+      'ext.gc.presence.roster',
+      'ext.gc.presence.followers',
+      'ext.gc.presence.directory',
+      'ext.gc.presence.map.people',
+      'ext.gc.activity.list',
+      'ext.gc.activity.refresh',
+      'ext.gc.activity.markRead',
     });
     expect(reg.methods.every(DebugDrive.isValidMethod), isTrue);
   });
@@ -102,6 +109,9 @@ void main() {
       'ok': true,
       'data': {
         'actions': [
+          {'name': 'ext.gc.activity.list', 'outward': false},
+          {'name': 'ext.gc.activity.markRead', 'outward': false},
+          {'name': 'ext.gc.activity.refresh', 'outward': false},
           {'name': 'ext.gc.call.spotlight', 'outward': false},
           {'name': 'ext.gc.call.spotlight.mode', 'outward': false},
           {'name': 'ext.gc.call.spotlight.overview', 'outward': false},
@@ -126,6 +136,10 @@ void main() {
           {'name': 'ext.gc.op.result', 'outward': false},
           {'name': 'ext.gc.op.status', 'outward': false},
           {'name': 'ext.gc.plans.state', 'outward': false},
+          {'name': 'ext.gc.presence.directory', 'outward': false},
+          {'name': 'ext.gc.presence.followers', 'outward': false},
+          {'name': 'ext.gc.presence.map.people', 'outward': false},
+          {'name': 'ext.gc.presence.roster', 'outward': false},
           {'name': 'ext.gc.sfu.debug', 'outward': false},
           {'name': 'ext.gc.state.dump', 'outward': false},
           {'name': 'ext.gc.test.wave', 'outward': true},
