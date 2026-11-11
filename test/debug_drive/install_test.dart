@@ -115,6 +115,11 @@ void main() {
       'ext.gc.ui.party',
       'ext.gc.ui.openCall',
       'ext.gc.ui.closeCall',
+      'ext.gc.plans.add',
+      'ext.gc.plans.delete',
+      'ext.gc.plans.google.status',
+      'ext.gc.plans.list',
+      'ext.gc.plans.update',
     });
     expect(reg.methods.every(DebugDrive.isValidMethod), isTrue);
   });
@@ -183,7 +188,12 @@ void main() {
           {'name': 'ext.gc.move.warpToTile', 'outward': true},
           {'name': 'ext.gc.op.result', 'outward': false},
           {'name': 'ext.gc.op.status', 'outward': false},
+          {'name': 'ext.gc.plans.add', 'outward': false},
+          {'name': 'ext.gc.plans.delete', 'outward': false},
+          {'name': 'ext.gc.plans.google.status', 'outward': false},
+          {'name': 'ext.gc.plans.list', 'outward': false},
           {'name': 'ext.gc.plans.state', 'outward': false},
+          {'name': 'ext.gc.plans.update', 'outward': false},
           {'name': 'ext.gc.presence.directory', 'outward': false},
           {'name': 'ext.gc.presence.followers', 'outward': false},
           {'name': 'ext.gc.presence.map.people', 'outward': false},

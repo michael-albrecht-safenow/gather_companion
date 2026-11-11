@@ -2992,6 +2992,12 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The display names (lowercased) of the calendars shared to this Google account
+  /// — the names a colleague's Gather label must match for the Dial's calendar
+  /// button to appear. Empty when disconnected or nothing is shared. Names only:
+  /// the calendar ids and every credential stay private.
+  List<String> get sharedCalendarNames => [..._calendarIndex.keys]..sort();
+
   /// Seeds the shared-calendar index and marks Google connected, so the name-matching
   /// the Dial depends on can be driven without a live OAuth account.
   @visibleForTesting

@@ -1099,7 +1099,7 @@ class _MeetingEditorState extends State<_MeetingEditor> {
     final existing = widget.existing;
     final meeting = composePlannedMeeting(
       existing: existing,
-      newId: _newId(),
+      newId: newPlanId(),
       title: title,
       start: _start,
       durationMinutes: _durationMinutes,
@@ -1157,8 +1157,6 @@ class _MeetingEditorState extends State<_MeetingEditor> {
     navigator.pop();
   }
 }
-
-String _newId() => DateTime.now().microsecondsSinceEpoch.toRadixString(36);
 
 /// A labelled row in the editor: a caption over its control.
 class _Field extends StatelessWidget {
