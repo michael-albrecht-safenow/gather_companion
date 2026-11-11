@@ -6,7 +6,7 @@
 /// binary. What *can* be pinned here is the parameter that stands in for it —
 /// `enabled: false` registers nothing and sets no log sink — and that the set an
 /// enabled install registers is exactly the built-in set (Phase 1 plus the
-/// Phase 2 media probe), all valid, with the
+/// Phase 2 media probe, plus the Phase 4 device check), all valid, with the
 /// outward gate wired to the binding's space.
 library;
 
@@ -60,7 +60,24 @@ void main() {
       'ext.gc.media.render',
       'ext.gc.media.snapshot',
       'ext.gc.media.watch',
+      'ext.gc.mediaCheck.camera',
+      'ext.gc.mediaCheck.mic',
+      'ext.gc.mediaCheck.mode',
+      'ext.gc.mediaCheck.playTone',
+      'ext.gc.mediaCheck.retry',
+      'ext.gc.mediaCheck.speaker',
+      'ext.gc.mediaCheck.status',
+      'ext.gc.mediaCheck.switchCamera',
       'ext.gc.sfu.debug',
+      'ext.gc.call.spotlight',
+      'ext.gc.call.spotlight.mode',
+      'ext.gc.call.spotlight.overview',
+      'ext.gc.call.spotlight.pick',
+      'ext.gc.plans.state',
+      'ext.gc.gameboy.mapping',
+      'ext.gc.gameboy.menu.confirm',
+      'ext.gc.gameboy.menu.move',
+      'ext.gc.gameboy.menu.toggle',
     });
     expect(reg.methods.every(DebugDrive.isValidMethod), isTrue);
   });
@@ -85,13 +102,30 @@ void main() {
       'ok': true,
       'data': {
         'actions': [
+          {'name': 'ext.gc.call.spotlight', 'outward': false},
+          {'name': 'ext.gc.call.spotlight.mode', 'outward': false},
+          {'name': 'ext.gc.call.spotlight.overview', 'outward': false},
+          {'name': 'ext.gc.call.spotlight.pick', 'outward': false},
           {'name': 'ext.gc.drive.list', 'outward': false},
+          {'name': 'ext.gc.gameboy.mapping', 'outward': false},
+          {'name': 'ext.gc.gameboy.menu.confirm', 'outward': true},
+          {'name': 'ext.gc.gameboy.menu.move', 'outward': false},
+          {'name': 'ext.gc.gameboy.menu.toggle', 'outward': false},
           {'name': 'ext.gc.log.tail', 'outward': false},
           {'name': 'ext.gc.media.render', 'outward': false},
           {'name': 'ext.gc.media.snapshot', 'outward': false},
           {'name': 'ext.gc.media.watch', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.camera', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.mic', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.mode', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.playTone', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.retry', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.speaker', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.status', 'outward': false},
+          {'name': 'ext.gc.mediaCheck.switchCamera', 'outward': false},
           {'name': 'ext.gc.op.result', 'outward': false},
           {'name': 'ext.gc.op.status', 'outward': false},
+          {'name': 'ext.gc.plans.state', 'outward': false},
           {'name': 'ext.gc.sfu.debug', 'outward': false},
           {'name': 'ext.gc.state.dump', 'outward': false},
           {'name': 'ext.gc.test.wave', 'outward': true},

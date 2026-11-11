@@ -43,12 +43,17 @@ library;
 import 'package:flutter/foundation.dart';
 
 import '../app_state.dart';
+import '../media/media_check_controller.dart';
 import '../media/media_log.dart';
 import 'builtin_features.dart';
+import 'call_drive.dart';
 import 'debug_drive.dart';
 import 'drive_log.dart';
 import 'drive_ops.dart';
+import 'gameboy_drive.dart';
+import 'media_check_drive.dart';
 import 'media_drive.dart';
+import 'plans_drive.dart';
 import 'sfu_drive.dart';
 import 'state_feature.dart';
 
@@ -166,6 +171,10 @@ DebugDrive? installDebugDrive({
     logFeature(buffer),
     mediaFeature(call: () => binding.app.callHandle, ops: driveOps, sleep: mediaSleep ?? _sleep),
     sfuFeature(call: () => binding.app.callHandle),
+    mediaCheckFeature(controller: () => mediaCheckDebugActive, boot: () => binding.boot),
+    callFeature(call: () => binding.app.callHandle, boot: () => binding.boot),
+    plansFeature(app: () => binding.app, boot: () => binding.boot),
+    gameboyFeature(app: () => binding.app, boot: () => binding.boot),
     ...extraFeatures,
   ]);
   // After the install succeeded, so a refused install leaves no sink behind.

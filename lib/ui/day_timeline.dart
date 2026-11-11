@@ -16,6 +16,8 @@ library;
 import 'package:flutter/material.dart';
 
 import '../src/day_timeline_layout.dart';
+
+export '../src/day_timeline_layout.dart' show kTimelineMinSlot;
 import '../theme/gather_theme.dart';
 
 /// Vertical pixels per minute. An hour is ~56px, so a quarter-hour is a comfortable
@@ -27,11 +29,11 @@ const double _pxPerMin = 56 / 60;
 /// stays legible and tappable.
 const double _minBlockHeight = 26;
 
-/// The least time a block visually occupies, derived from [_minBlockHeight] over
-/// [_pxPerMin] (26 / 0.933 ≈ 28 min, rounded up). [layoutDay] uses it to lane-pack so
-/// two back-to-back short events land side by side instead of overlapping in one lane —
-/// the callers pass it straight through, keeping the layout maths free of pixel units.
-const Duration kTimelineMinSlot = Duration(minutes: 28);
+// [kTimelineMinSlot] — the least time a block visually occupies, derived from
+// [_minBlockHeight] over [_pxPerMin] (26 / 0.933 ≈ 28 min, rounded up) — is defined in
+// `day_timeline_layout.dart` beside [layoutDay], so the Plans day maths and the debug
+// drive's readout of it (`lib/src/plans_timeline.dart`) use the value the grid draws
+// with. Change it there together with the two constants above.
 
 /// A collapsed free band's fixed height — enough for its "3h free" label and the fade,
 /// regardless of how many hours it actually swallows.

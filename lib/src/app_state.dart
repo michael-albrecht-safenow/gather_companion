@@ -2861,6 +2861,14 @@ class AppState extends ChangeNotifier {
     return out;
   }
 
+  /// Test seam: mirrored events without a Google account, so a test can put an
+  /// all-day entry (which only Google carries) on the Plans timeline.
+  @visibleForTesting
+  set debugGoogleEvents(List<GoogleEvent> events) {
+    _googleEvents = events;
+    notifyListeners();
+  }
+
   /// Whether a Google account is connected. Drives the Plans tab's connect/disconnect
   /// action. Updated by [connectGoogle]/[disconnectGoogle] and seeded at boot.
   bool _googleConnected = false;
