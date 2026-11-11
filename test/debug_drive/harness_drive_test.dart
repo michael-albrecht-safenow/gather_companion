@@ -8,6 +8,8 @@
 /// hold the floor on them, and read the spotlight off the mounted call screen.
 library;
 
+import 'dart:io';
+
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -101,6 +103,34 @@ void main() {
   test('a default install — what lib/main.dart makes — carries no harness action', () {
     final drive = installDebugDrive(enabled: true, app: AppState(), boot: 'live', register: RecordingRegistrar().call)!;
     expect([for (final a in drive.actions) a.name].where((n) => n.startsWith('ext.gc.harness.')), isEmpty);
+  });
+
+  test('nothing lib/main.dart imports, however indirectly, reaches lib/harness/', () {
+    // The install test above only proves the *default* list is clean; this is the
+    // fence that fails when somebody imports harness_drive.dart (or any fake) into
+    // the live boot. Walks the app's own import graph from lib/main.dart.
+    final importRe = RegExp(r'''^\s*(?:import|export|part)\s+['"]([^'"]+)['"]''', multiLine: true);
+    final seen = <String>{};
+    final queue = [File('lib/main.dart').absolute.path];
+    while (queue.isNotEmpty) {
+      final path = queue.removeLast();
+      if (!seen.add(path)) continue;
+      for (final m in importRe.allMatches(File(path).readAsStringSync())) {
+        final uri = m.group(1)!;
+        final String target;
+        if (uri.startsWith('package:gather_companion/')) {
+          target = File('lib/${uri.substring('package:gather_companion/'.length)}').absolute.path;
+        } else if (!uri.contains(':')) {
+          target = File(path).parent.uri.resolve(uri).toFilePath();
+        } else {
+          continue;
+        }
+        if (File(target).existsSync()) queue.add(target);
+      }
+    }
+    expect(seen.length, greaterThan(10), reason: 'the walk actually followed imports');
+    final harnessDir = Directory('lib/harness').absolute.path;
+    expect(seen.where((p) => p.startsWith(harnessDir)), isEmpty);
   });
 
   group('placePerson', () {
