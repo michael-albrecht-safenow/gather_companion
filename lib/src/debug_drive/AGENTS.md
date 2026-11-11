@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-11-10 | Updated: 2026-11-10 -->
+<!-- Generated: 2026-11-10 | Updated: 2026-11-11 -->
 
 # debug_drive
 
@@ -14,7 +14,8 @@ the app without tapping coordinates on a simulator or reading pixels.
 
 The design, the research behind it and the phase plan are in
 `docs/debug-drive-plan.md` (epic #102). Phase 1 is the registry, the guard and
-the first readouts; the media flow probe and the per-feature actions follow.
+the first readouts; Phase 2 adds the media flow probe (`media.*`) and the
+SFU session readout (`sfu.debug`); the per-feature actions follow.
 
 ## Key Files
 
@@ -26,6 +27,9 @@ the first readouts; the media flow probe and the per-feature actions follow.
 | `drive_ops.dart` | `DriveOps` — start/poll for long actions. Ids are `<kind>-<n>-<nonce>`; the nonce is drawn once per isolate so a pre-hot-restart id is refused rather than answered with a new op's result. Keeps 32, evicting the oldest finished first. Failures are reported through `FlutterError.reportError` whether or not anyone polls. |
 | `builtin_features.dart` | `drive.list` (every action, sorted, with its `outward` flag, plus `boot`) and `op.status` / `op.result`. |
 | `state_feature.dart` | `state.dump` — phase, link, collector health, me (id, tile, room), space id/name, `testSpace`, roster counts, call summary, settings, `boot`. **No credentials of any kind.** `dumpState()` is the readout on its own. |
+| `media_drive.dart` | `media.snapshot {windowMs?}`, `media.watch` and `media.render {windowMs?, firstFrameWithinMs?}`. The snapshot is a bounded ≤3 s series held in the RPC — a verdict needs a delta and `stalled` the whole 2 s window) and `media.watch {durationMs, intervalMs, maxGapMs, stallAfterMs}` (an op) over `Call.sampleFlow` + `FlowJudge`. `summarizeWatch` builds the per-stream summary: verdict histogram, `continuous` (no `stalled`/`missing`/`not_measured` run longer than `maxGapMs`; `silent` counts as flowing because DTX; `paused` reported as `pausedMs`, never a gap), gaps backdated to where counters went flat, avg kbps / fps / loss %. `media.render` takes the same series and runs `checkRender` over `renderRegistry`. `refused('no_call')` with no `callHandle`. Read-only. |
+| `render_check.dart` | `checkRender` — the pure cross-check behind `media.render`: the tiles' reports (`../media/render_registry.dart`) against one interval's verdicts and, live only, `LiveCall.debugStreamOwners`. Findings: `flowing_without_tile`, `bound_not_present`, `bound_not_flowing`, `duplicate_tiles` (per slot — the spotlighted face big *and* in the strip is by design), `never_rendered`, `stale_binding`, `wrong_stream`, and `unverified` (counted, not a failure). `ok: null` with the call screen closed — no tiles is no evidence. |
+| `sfu_drive.dart` | `sfu.debug` — `LiveCall.debugSfuSnapshot` → `SfuSession.debugSnapshot`: own node, node pool (connecting/down/grace/escalations), `peerNode`, send/recv transports (id, node, connection state, `onCurrentNode`), producers, consumers (`producerId` vs the peer's currently announced id), pending consumes/produce, subscribed/announced/allowed/denied/producer-gone/unreachable sets, heal timers. No tokens. `refused('no_call')` with no call, `refused('no_sfu_session', {source})` for a scripted call or a live one that has not opened its session. Read-only. |
 | `drive_log.dart` | `DriveLogBuffer` (a 2000-line ring with ever-rising `seq`) and `log.tail {since?, max?}`. Fed by `mediaLogDebugSink` in `../media/media_log.dart`, which only `installDebugDrive` sets. |
 
 ## For AI Agents
@@ -37,8 +41,14 @@ the first readouts; the media flow probe and the per-feature actions follow.
   keeps every handler and every `ext.gc.` name in the release binary.
   `tool/release_artifact_check.sh` greps the release `App.framework/App` and
   `libapp.so` in CI and fails the release if one leaks. Nothing outside this
-  directory may reference it except those two call sites; the one hook elsewhere
-  (`mediaLogDebugSink`) carries no names and stays null in release.
+  directory may reference it except those two call sites. The hooks elsewhere
+  carry no names and are written only under `kDebugMode`: `mediaLogDebugSink`
+  (stays null in release) and `renderRegistry` (`../media/render_registry.dart`,
+  written by the video tiles inside `if (kDebugMode)`, so release tree-shakes
+  it). The readouts a handler calls on product classes
+  (`SfuSession.debugSnapshot`, `LiveCall.debugSfuSnapshot`,
+  `LiveCall.debugStreamOwners`) are referenced only from here, so they shake
+  out of release with the drive.
 - **One handler = one existing public method, or a read-only readout.** No second
   code path. If a handler needs to reach into a widget's `State`, the logic is in
   the wrong layer — move it down (plan Phase 4) rather than reaching.
@@ -93,7 +103,7 @@ shape with a test-only outward action.
 
 ### Internal
 
-`../app_state.dart` (read through public getters only), `../media/media_log.dart`
+`../app_state.dart` (read through public getters only), `../media/call.dart` + `../media/media_flow.dart` (the flow probe), `../media/live_call.dart` (the live-only readouts), `../media/render_registry.dart` (the tiles' reports), `../media/media_log.dart`
 (the sink hook).
 
 ### External

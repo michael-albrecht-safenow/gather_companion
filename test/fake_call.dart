@@ -115,6 +115,23 @@ class FakeCall implements Call {
     return null;
   }
 
+  /// What [sampleFlow] answers, in order; the last one repeats once the rest
+  /// are used. Empty answers an empty scripted sample that says it was not
+  /// scripted, never a bare `[]`.
+  final List<MediaFlowSample> flowSamples = [];
+
+  /// How many readings were asked for.
+  int flowSampled = 0;
+
+  @override
+  Future<MediaFlowSample> sampleFlow() async {
+    flowSampled++;
+    if (flowSamples.isEmpty) {
+      return MediaFlowSample.empty(at: DateTime.now(), source: 'scripted', why: 'not_scripted');
+    }
+    return flowSamples.length > 1 ? flowSamples.removeAt(0) : flowSamples.single;
+  }
+
   @override
   Future<void> dispose() async {
     await _states.close();

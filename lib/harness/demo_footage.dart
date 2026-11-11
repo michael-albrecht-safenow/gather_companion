@@ -12,10 +12,27 @@
 ///
 /// It is wired in only by `main_harness.dart` via [CallScreen.buildTile]; the real
 /// app never builds this, and the production tile path is untouched.
+///
+/// ## The render report
+///
+/// Each footage tile also reports itself to the debug render registry
+/// (`../src/media/render_registry.dart`) as `source: "scripted"`, the way the
+/// real `_VideoTile` reports `live`, so `ext.gc.media.render` and its wiring
+/// cross-check run in the simulator. The report describes the **stream the tile
+/// stands in for**, not the test card: the card is painted over everyone for the
+/// eye, but a peer the scripted call has no video for is reported as showing
+/// none, so the cross-check is judged against what `ScriptedCall.sampleFlow`
+/// says is on the wire rather than flagging every audio-only stand-in. There is
+/// no `MediaStream` in the harness, so the stale/wrong-stream checks (which
+/// compare stream ids) are live-only; the duplicate, presence, flowing-without-
+/// tile and first-frame checks all run here. Written only inside
+/// `if (kDebugMode)`, like the real tile's.
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../src/media/render_registry.dart';
 import '../ui/call_screen.dart';
 
 /// A [CallTileBuilder] that renders [DemoFootage] for every tile that would carry
@@ -23,12 +40,109 @@ import '../ui/call_screen.dart';
 /// "you, camera off" still reads honestly.
 Widget demoFootageTile(BuildContext context, CallTile tile) {
   final showVideo = !tile.isSelf || tile.videoLive;
-  return TileFrame(
+  final frame = TileFrame(
     tile: tile,
     video: showVideo
         ? DemoFootage(seed: tile.id, mirror: tile.isSelf, label: tile.label)
         : null,
   );
+  if (!kDebugMode) return frame;
+  return ScriptedTileReporter(tile: tile, child: frame);
+}
+
+/// Reports one harness tile to [renderRegistry] for as long as it is mounted.
+///
+/// Public so a widget test can wrap its own inert tile in the same reporter the
+/// harness uses, and assert on what `media.render` makes of it.
+class ScriptedTileReporter extends StatefulWidget {
+  const ScriptedTileReporter({
+    super.key,
+    required this.tile,
+    required this.child,
+    this.streamTag,
+    this.firstFrame = true,
+  });
+
+  final CallTile tile;
+  final Widget child;
+
+  /// Overrides the tag the report claims, for a test that wants a tile bound
+  /// to the wrong stream. Null derives it from [tile].
+  final String? streamTag;
+
+  /// Whether a first frame is reported after the first paint. A test sets false
+  /// for a tile that never renders.
+  final bool firstFrame;
+
+  @override
+  State<ScriptedTileReporter> createState() => _ScriptedTileReporterState();
+}
+
+class _ScriptedTileReporterState extends State<ScriptedTileReporter> {
+  String? _key;
+
+  /// Whether the stream this tile stands in for carries video on the scripted
+  /// wire: the self tile with its camera on, a peer with live video or a share.
+  bool get _showsVideo => widget.tile.videoLive || (!widget.tile.isSelf && widget.tile.sharingScreen);
+
+  String get _tag =>
+      widget.streamTag ?? widget.tile.streamTag ?? (!widget.tile.isSelf && widget.tile.sharingScreen ? 'screen' : 'video');
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Here rather than in initState: the slot is read from an inherited widget.
+    if (kDebugMode && _key == null) _bind();
+  }
+
+  @override
+  void didUpdateWidget(ScriptedTileReporter old) {
+    super.didUpdateWidget(old);
+    if (!kDebugMode) return;
+    // A stand-in has no renderer to re-attach, so any change of what it shows
+    // is a re-bind.
+    if (old.tile.srcId != widget.tile.srcId ||
+        old.tile.id != widget.tile.id ||
+        old.streamTag != widget.streamTag ||
+        old.tile.videoLive != widget.tile.videoLive ||
+        old.tile.sharingScreen != widget.tile.sharingScreen) {
+      _bind();
+    }
+  }
+
+  void _bind() {
+    final slot = CallTileSlot.of(context);
+    final key = _key ??= renderRegistry.nextKey('$slot:${widget.tile.id}');
+    final shows = _showsVideo;
+    final size = shows ? DemoFootage.shapeFor(widget.tile.id) : null;
+    renderRegistry.bind(
+      tileKey: key,
+      slot: slot,
+      source: 'scripted',
+      isSelf: widget.tile.isSelf,
+      tileId: widget.tile.id,
+      srcId: widget.tile.srcId,
+      tag: shows ? _tag : null,
+      showsVideo: shows,
+      videoWidth: size?.width.round(),
+      videoHeight: size?.height.round(),
+    );
+    if (shows && widget.firstFrame) {
+      // The test card paints on the next frame; that is its "first frame".
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _key != null) renderRegistry.firstFrame(_key!);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    if (kDebugMode && _key != null) renderRegistry.unbind(_key!);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// A moving test card, fit to cover its tile and wrapped for pinch-zoom — the
@@ -51,6 +165,11 @@ class DemoFootage extends StatefulWidget {
 
   /// Drawn large across the card, so a tile is identifiable even cropped hard.
   final String label;
+
+  /// The card's source size for [seed] — also what the render report gives as
+  /// the stand-in's video size.
+  static Size shapeFor(String seed) =>
+      _DemoFootageState._aspects[seed.hashCode.abs() % _DemoFootageState._aspects.length];
 
   @override
   State<DemoFootage> createState() => _DemoFootageState();
@@ -91,7 +210,7 @@ class _DemoFootageState extends State<DemoFootage>
     // A source card in this person's camera shape, scaled to cover or letterbox
     // the tile and made zoomable — the behaviours the user wants to eyeball,
     // across a mix of aspects.
-    final shape = _aspects[widget.seed.hashCode.abs() % _aspects.length];
+    final shape = DemoFootage.shapeFor(widget.seed);
     final card = SizedBox(
       width: shape.width,
       height: shape.height,

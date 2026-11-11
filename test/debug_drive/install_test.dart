@@ -5,7 +5,8 @@
 /// itself is pinned by `tool/release_artifact_check.sh` against a real release
 /// binary. What *can* be pinned here is the parameter that stands in for it —
 /// `enabled: false` registers nothing and sets no log sink — and that the set an
-/// enabled install registers is exactly the Phase 1 set, all valid, with the
+/// enabled install registers is exactly the built-in set (Phase 1 plus the
+/// Phase 2 media probe), all valid, with the
 /// outward gate wired to the binding's space.
 library;
 
@@ -47,7 +48,7 @@ void main() {
     expect(mediaLogDebugSink, isNull);
   });
 
-  test('an enabled install registers the Phase 1 set, every name valid', () {
+  test('an enabled install registers the built-in set, every name valid', () {
     final reg = RecordingRegistrar();
     installDebugDrive(enabled: true, app: AppState(), boot: 'harness', register: reg.call);
     expect(reg.methods.toSet(), {
@@ -56,6 +57,10 @@ void main() {
       'ext.gc.op.result',
       'ext.gc.state.dump',
       'ext.gc.log.tail',
+      'ext.gc.media.render',
+      'ext.gc.media.snapshot',
+      'ext.gc.media.watch',
+      'ext.gc.sfu.debug',
     });
     expect(reg.methods.every(DebugDrive.isValidMethod), isTrue);
   });
@@ -82,8 +87,12 @@ void main() {
         'actions': [
           {'name': 'ext.gc.drive.list', 'outward': false},
           {'name': 'ext.gc.log.tail', 'outward': false},
+          {'name': 'ext.gc.media.render', 'outward': false},
+          {'name': 'ext.gc.media.snapshot', 'outward': false},
+          {'name': 'ext.gc.media.watch', 'outward': false},
           {'name': 'ext.gc.op.result', 'outward': false},
           {'name': 'ext.gc.op.status', 'outward': false},
+          {'name': 'ext.gc.sfu.debug', 'outward': false},
           {'name': 'ext.gc.state.dump', 'outward': false},
           {'name': 'ext.gc.test.wave', 'outward': true},
         ],

@@ -29,12 +29,14 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../src/app_state.dart';
 import '../src/media/call.dart';
 import '../src/media/live_call.dart';
+import '../src/media/render_registry.dart';
 import '../src/media/sfu_session.dart';
 import '../src/media/spotlight_director.dart';
 import '../src/reactions.dart';
@@ -83,6 +85,8 @@ class CallTile {
     this.handPosition = 0,
     this.connecting = false,
     this.unreachable = false,
+    this.srcId,
+    this.streamTag,
   });
 
   /// `SpaceUser.id` when we could place them, otherwise the media `srcId`. Only
@@ -145,9 +149,45 @@ class CallTile {
   /// renderable whatever the camera is doing; everyone else shows video only
   /// while their camera is live.
   bool get showsVideo => stream != null && (videoLive || sharingScreen);
+
+  /// The media-plane `srcId` this tile's [stream] comes from; null for yourself
+  /// and for a roster-only row with nothing on the wire.
+  ///
+  /// Not [id]: that is the roster's id when the person is placed, and the flow
+  /// probe keys streams by `srcId`. Carried so the debug drive's render check
+  /// (`../src/media/render_registry.dart`) can ask "is this tile showing the
+  /// stream it is meant to" without re-deriving the choice [_tiles] made.
+  final String? srcId;
+
+  /// Which of the person's streams [stream] is, as an `SfuTag` wire name —
+  /// `screen` while a share is being shown, `video` otherwise; null with no
+  /// stream. Same reason as [srcId].
+  final String? streamTag;
 }
 
 typedef CallTileBuilder = Widget Function(BuildContext context, CallTile tile);
+
+/// Where in the layout a tile is being built: `big` under the spotlight's
+/// enlarged face, `tile` (the default, with no ancestor) everywhere else.
+///
+/// Exists for one reader: a tile's report to the debug render registry
+/// (`../src/media/render_registry.dart`). The spotlighted person is drawn twice
+/// on purpose — big and in the strip — so "two tiles on one stream" is only a
+/// wiring bug within one slot, and a [CallTileBuilder] has no other way to know
+/// which one it is building. An inherited widget rather than a builder
+/// parameter so the harness's stand-in builder reads it the same way the real
+/// tile does, and no builder signature changes.
+class CallTileSlot extends InheritedWidget {
+  const CallTileSlot({super.key, required this.slot, required super.child});
+
+  final String slot;
+
+  static String of(BuildContext context) =>
+      context.getInheritedWidgetOfExactType<CallTileSlot>()?.slot ?? 'tile';
+
+  @override
+  bool updateShouldNotify(CallTileSlot oldWidget) => slot != oldWidget.slot;
+}
 
 /// The call, at the size it is being drawn.
 ///
@@ -641,6 +681,7 @@ List<CallTile> _tiles(AppState state) {
       muted: !call.micOn,
       sharingScreen: false,
       stream: live?.localStream,
+      streamTag: live?.localStream == null ? null : SfuTag.video.wire,
       photoUrl: state.meId == null ? null : state.photoUrlFor(state.meId!),
       // Measured here rather than read back off the roster: Gather agrees a
       // beat later, and a beat is visible on your own face. See
@@ -657,6 +698,11 @@ List<CallTile> _tiles(AppState state) {
   for (final person in call.participants) {
     final row = state.rowForSrcId(person.srcId);
     final streams = live?.streamFor(person.srcId) ?? const {};
+    // A screen share is the thing worth looking at when there is one.
+    final shownTag = person.sharingScreen && streams.containsKey(SfuTag.screen)
+        ? SfuTag.screen
+        : SfuTag.video;
+    final shownStream = streams[shownTag];
     tiles.add(CallTile(
       id: row?.id ?? person.srcId,
       // Somebody the roster has not placed yet is still in the call and still
@@ -667,10 +713,9 @@ List<CallTile> _tiles(AppState state) {
       videoLive: person.videoLive,
       muted: person.muted,
       sharingScreen: person.sharingScreen,
-      // A screen share is the thing worth looking at when there is one.
-      stream: person.sharingScreen
-          ? streams[SfuTag.screen] ?? streams[SfuTag.video]
-          : streams[SfuTag.video],
+      stream: shownStream,
+      srcId: person.srcId,
+      streamTag: shownStream == null ? null : shownTag.wire,
       photoUrl: row == null ? null : state.photoUrlFor(row.id),
       availability: row?.availability,
       speaking: row?.speaking ?? false,
@@ -1015,7 +1060,7 @@ class _Spotlight extends StatelessWidget {
         Positioned.fill(
           child: KeyedSubtree(
             key: ValueKey('big-${big.id}'),
-            child: buildBig(context, big),
+            child: CallTileSlot(slot: 'big', child: buildBig(context, big)),
           ),
         ),
         // Back to the grid. Over the top-left of the big face, where it
@@ -1262,6 +1307,10 @@ class _VideoTileState extends State<_VideoTile> {
   final _renderer = RTCVideoRenderer();
   bool _ready = false;
 
+  /// This tile's key in the debug render registry, drawn on its first bind.
+  /// Only ever set inside `if (kDebugMode)`; see [_debugBind].
+  String? _debugKey;
+
   @override
   void initState() {
     super.initState();
@@ -1277,6 +1326,17 @@ class _VideoTileState extends State<_VideoTile> {
       return;
     }
     setState(() => _ready = true);
+    if (kDebugMode) {
+      _renderer
+        ..onFirstFrameRendered = () {
+          if (_debugKey case final key?) renderRegistry.firstFrame(key);
+        }
+        ..onResize = () {
+          if (_debugKey case final key?) {
+            renderRegistry.resize(key, width: _renderer.videoWidth, height: _renderer.videoHeight);
+          }
+        };
+    }
     _attach();
   }
 
@@ -1290,12 +1350,50 @@ class _VideoTileState extends State<_VideoTile> {
     if (old.tile.stream?.id != widget.tile.stream?.id ||
         old.tile.showsVideo != widget.tile.showsVideo) {
       _attach();
+    } else if (kDebugMode && _debugKey != null) {
+      // Not re-bound, but what the tile is *told* may still have moved — the
+      // registry keeps the claim and the binding apart so a drift shows.
+      final tile = widget.tile;
+      renderRegistry.claim(
+        _debugKey!,
+        tileId: tile.id,
+        srcId: tile.srcId,
+        tag: tile.streamTag,
+        showsVideo: tile.showsVideo,
+        tileStreamId: tile.stream?.id,
+      );
     }
   }
 
   void _attach() {
     if (!_ready) return;
     _renderer.srcObject = widget.tile.showsVideo ? widget.tile.stream : null;
+    if (kDebugMode) _debugBind();
+  }
+
+  /// Tells the debug render registry what this renderer is now bound to, for
+  /// `media.render`'s wiring check. Called only inside `if (kDebugMode)` — a
+  /// compile-time constant, so release drops the call and the registry with it.
+  /// Reads the renderer's own `srcObject` rather than the tile's stream: the two
+  /// differing is the bug the check exists for.
+  void _debugBind() {
+    final tile = widget.tile;
+    final slot = CallTileSlot.of(context);
+    final key = _debugKey ??= renderRegistry.nextKey('$slot:${tile.id}');
+    renderRegistry.bind(
+      tileKey: key,
+      slot: slot,
+      source: 'live',
+      isSelf: tile.isSelf,
+      tileId: tile.id,
+      srcId: tile.srcId,
+      tag: tile.streamTag,
+      showsVideo: tile.showsVideo,
+      tileStreamId: tile.stream?.id,
+      boundStreamId: _renderer.srcObject?.id,
+      videoWidth: _renderer.videoWidth > 0 ? _renderer.videoWidth : null,
+      videoHeight: _renderer.videoHeight > 0 ? _renderer.videoHeight : null,
+    );
   }
 
   @override
@@ -1314,6 +1412,7 @@ class _VideoTileState extends State<_VideoTile> {
     // EXC_BAD_ACCESS at `-[FlutterRTCVideoRenderer renderFrame:]`. So hand the
     // renderer off to drain and be freed once the backlog has run, rather than
     // disposing it here under the live frame path.
+    if (kDebugMode && _debugKey != null) renderRegistry.unbind(_debugKey!);
     if (_ready) {
       unawaited(retireRenderer(_renderer));
     }

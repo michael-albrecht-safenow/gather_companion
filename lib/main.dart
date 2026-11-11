@@ -123,6 +123,9 @@ class _GatherCompanionAppState extends State<GatherCompanionApp> with WidgetsBin
       spaceId: spaceId,
       srcId: srcId,
       log: mediaLog,
+      // A compact per-stream flow verdict line in media.log while in a call, so a
+      // field report has packet-level evidence and not only the signalling.
+      flowLogEvery: const Duration(seconds: 5),
     ),
     // The same sink the call uses, so the movement, socket and cluster diagnostics
     // land in `tmp/media.log` alongside the media ones — the file a standalone phone

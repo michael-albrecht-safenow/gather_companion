@@ -1,6 +1,6 @@
 # Debug drive: research and implementation plan (2026-11-10)
 
-**Status:** Phase 1 (registry, ops, `state.dump`, `log.tail`, outward gate, `tool/drive.sh`, release guard) is implemented (#104). Later phases are planned. Tracking epic: #102. Research findings are marked
+**Status:** Phase 1 (registry, ops, `state.dump`, `log.tail`, outward gate, `tool/drive.sh`, release guard) is implemented (#104). Phase 2 (`Call.sampleFlow`, `SfuSession.flowStats`, `FlowJudge`, `media.snapshot` / `media.watch` / `media.render` + `RenderRegistry`, `sfu.debug`, and the 2.7 `flow:` line in `media.log`) is implemented on branch `feat/debug-drive-phase2` (#105), verified against scripted and fake calls only — the live proof is Phase 3. Later phases are planned. Tracking epic: #102. Research findings are marked
 *sourced* (read in docs or source), *verified* (observed on this repo), or
 *to confirm* (expected, checked in Phase 0).
 

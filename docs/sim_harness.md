@@ -216,7 +216,7 @@ under `flutter run`. The design and the phase plan are in
 `docs/debug-drive-plan.md`; the code is `lib/src/debug_drive/` (see its
 `AGENTS.md`).
 
-**What Phase 1 exposes** (ask the build itself with `drive.list` rather than
+**What Phases 1–2 expose** (ask the build itself with `drive.list` rather than
 trusting this list):
 
 | Action | Returns |
@@ -225,6 +225,10 @@ trusting this list):
 | `state.dump` | phase, link, collector health, me (id, tile, room), `spaceId`/`spaceName`, `testSpace`, roster counts, call summary (mic/camera/screen, participants, `inHuddle`), settings, `boot`. **No tokens, cookies or credentials, ever** |
 | `log.tail {since?, max?}` | `{lines:[{seq,line}], next}` from a 2000-line in-memory ring fed by `mediaLog` — the same lines that land in `media.log`, without a `devicectl copy` |
 | `op.status {id}` / `op.result {id}` | the state of a long-running action (see *Ops* below) |
+| `media.snapshot {windowMs?}` | per-stream flow verdicts over a short series it takes itself (default 2000 ms, max 3000), plus the last raw sample (counters per consumer/producer, per-transport ICE/DTLS, expected streams, errors). See *Media* below |
+| `media.watch {durationMs?, intervalMs?, maxGapMs?, stallAfterMs?}` | an **op**: samples every `intervalMs` (default 1000, min 250) for `durationMs` (default 10000, max 120000) and answers a per-stream summary — `continuous`, gaps, longest gap, avg kbps / fps, loss % — plus a compact timeline |
+| `media.render {windowMs?, firstFrameWithinMs?}` | every mounted video tile (what its renderer is bound to, first frame yes/no, size, slot) and a cross-check of the tiles against the flow verdicts |
+| `sfu.debug` | the media session's own picture: own node, node pool, `peerNode` cache, send/recv transports and states, producers, consumers (`producerId` vs what the peer announces now), pending consumes, subscribed / denied / producer-gone / unreachable sets, heal timers. No tokens |
 
 Every answer is one of three shapes, kept apart on purpose so an agent can tell
 "the app said no" from "the drive broke": `{"ok":true,"data":…}`; a successful
@@ -234,6 +238,87 @@ an extension error carrying `{error,type}` for a handler that threw (also report
 through `FlutterError.reportError`, so it shows in the `flutter run` console).
 `boot` is in `drive.list` and `state.dump` so a scripted harness reading is never
 mistaken for the live wire.
+
+### Media: is the call actually flowing (Phase 2)
+
+Every call bug this app has had looked healthy from the signalling: a consume
+that never retried, a send transport acking produces into a dead node, a stale
+peer-node cache. The packet counters are the only witness, so `media.*` reads
+them (`getStats` per consumer and per producer, each row attributed to its own
+track — camera bytes never count as mic bytes) and turns each interval into one
+word per stream. Streams are keyed `in:<srcId>|<tag>` (receiving) and
+`out:<tag>` (sending), tags as the SFU spells them: `audio`, `video`, `screen`.
+
+| Verdict | Means |
+|---|---|
+| `flowing` | packets/bytes rose; video: `framesDecoded` (out: `framesEncoded`) rose; audio: energy rose |
+| `silent` | audio packets rose but `totalAudioEnergy` did not — the peer is sending silence (muted at the device, a quiet room). Opus DTX makes this normal: **not a failure** |
+| `stalled` | the consumer/producer exists and is not paused, but its counters have been flat for ≥ `stallAfterMs` (default 2 s). The grace intervals before that keep their last verdict |
+| `paused` | consumer or producer paused (wire mute); flat counters expected |
+| `missing` | expected — subscribed, and the peer announced a producer for the tag — but there is no consumer. Consume-not-allowed and a stale peer node land here |
+| `not_measured` | `getStats` threw or timed out (2 s per call), or there is no baseline yet. **Never folded into `stalled`** |
+
+In a `media.watch` summary, `continuous` means no gap longer than `maxGapMs`,
+where a gap is a run of `stalled`, `missing` or `not_measured`. `silent` counts as
+flowing for continuity (DTX); `not_measured` breaks it (continuity is a claim
+that needs evidence); `paused` is reported separately as `pausedMs` and is never
+a gap. "Healthy for 30 s" is one assertion:
+
+```sh
+# start the watch and block on its op; --wait prints the final op.result
+tool/drive.sh -d $SIM --wait --timeout 60 media.watch '{"durationMs":30000}' \
+  | jq '.data.result | {allContinuous, streams: [.streams[] | {key, continuous, longestGapMs, verdicts}]}'
+tool/drive.sh -d $SIM media.snapshot | jq '.data.verdicts[] | {key, verdict, detail}'
+tool/drive.sh -d $SIM media.render   | jq '{ok: .data.ok, findings: .data.findings}'
+tool/drive.sh -d $SIM sfu.debug      | jq '.data | {node, peerNode, producerGone, consumers}'
+```
+
+**`media.render`** checks the last hop the counters cannot see: decoded frames
+reaching the *right tile*. Each video tile reports to a debug-only
+`RenderRegistry` what its renderer is bound to and whether a first frame came out
+(written only inside `if (kDebugMode)`, so release strips it). The answer lists
+`findings`, each with a `problem`:
+
+| `problem` | Means |
+|---|---|
+| `flowing_without_tile` | a peer's video (their screen, while they share), or your camera, is `flowing` and no tile shows it |
+| `bound_not_present` | a tile shows a stream there is no consumer/producer for — a dead texture or the wrong person |
+| `bound_not_flowing` | a tile shows a stream that is `stalled`, `paused` or `missing` — a frozen frame presented as live |
+| `duplicate_tiles` | two tiles in one slot on one stream (the spotlighted face, big *and* in the strip, is by design and not flagged) |
+| `never_rendered` | a tile bound for ≥ `firstFrameWithinMs` (default 3000) with no first frame since — the black rectangle |
+| `stale_binding` | *live only* — the renderer's `srcObject` is not the stream the tile was handed (a missed re-attach) |
+| `wrong_stream` | *live only* — the bound stream belongs, by the call's own books, to another `srcId|tag` |
+| `unverified` | the tile's stream was `not_measured`; counted in `unverified`, not a failure |
+
+`ok` is true with no findings but `unverified`; with the call screen closed there
+are no tiles, and the answer is `screenOpen: false`, `ok: null` — no evidence is
+not a pass. Open the call screen first (Dial warp, or walk up to someone).
+
+**`sfu.debug`** is the pair to `media.snapshot`: the counters say what is
+happening, this says what the session *believes* — and the bug is the
+disagreement. A `missing` stream with its key in `producerGone` is the stale
+producer id (#61); one whose `peerNode` points at a node that is `down` is the
+dead-node cache (#83); `transports.send.onCurrentNode: false` is the send
+transport left on a node we moved off (#67).
+
+**Scripted vs live.** Every reading carries `source`. In the harness it is
+`"scripted"`: `ScriptedCall.sampleFlow` synthesises counters from the call state
+(each participant's announced tracks as consumers whose counters climb with the
+clock, paused when their mute says so) and can be told to misbehave per stream
+through `flowFaults` (`stall`, `silence`, `missing`, `unmeasured`), so the verdicts
+and summaries can be checked on a bare simulator. Harness tiles (the stand-in
+footage) report to the render registry as `scripted` and describe the stream they
+stand in for — a peer the script gives no video is reported as showing none, even
+though the test card is painted over them. The harness has no `MediaStream`s, so
+`stale_binding` and `wrong_stream` are live-only, and `sfu.debug` answers
+`{"ok":false,"reason":"no_sfu_session","source":"scripted"}` — there is no SFU
+to describe. A live call answers `no_sfu_session` (`source: "live"`) until the
+first thing that needs the SFU opens a session. **None of this proves the wire**:
+that takes two real endpoints in the test space (plan Phase 3).
+
+A live call also writes a compact verdict line to `media.log` every 5 s while it
+has anything to send or hear (`flow: in:<srcId>|audio=flowing out:audio=silent …`),
+so a field report carries packet-level evidence; `log.tail` shows it too.
 
 ### Starting the app so the drive can be reached
 
