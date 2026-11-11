@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'src/app_state.dart';
+import 'src/debug_drive/install.dart';
 import 'src/fonts_license.dart';
 import 'src/google_calendar.dart';
 import 'src/media/live_call.dart';
@@ -29,6 +31,13 @@ Future<void> main() async {
   // executing and going nowhere, which reads exactly like code that never ran.
   runZoned(
     () async {
+      // The debug drive's log tail, from the first line rather than from the
+      // install in initState — the boot lines below land in media.log before
+      // runApp, and the tail should agree with the file. Compile-time guard, as
+      // for the install. See `src/debug_drive/install.dart`.
+      if (kDebugMode) {
+        startDriveLog(enabled: kDebugMode);
+      }
       WidgetsFlutterBinding.ensureInitialized();
       // File the bundled fonts' licences with Flutter before the first frame, so
       // the required OFL notice ships with the app. See [registerFontLicenses].
@@ -142,6 +151,13 @@ class _GatherCompanionAppState extends State<GatherCompanionApp> with WidgetsBin
     // so the idle timer cannot lock the phone mid-conversation. Driven off the
     // same `inCall` boolean every widget already listens to.
     _state.addListener(_syncWakelock);
+    // The debug drive: a JSON API into this state over the VM service, for an
+    // agent or `tool/drive.sh`. The guard must stay the compile-time constant —
+    // it is what strips every handler from a release build. See
+    // `src/debug_drive/install.dart`.
+    if (kDebugMode) {
+      installDebugDrive(enabled: kDebugMode, app: _state, boot: 'live');
+    }
     _state.boot();
   }
 

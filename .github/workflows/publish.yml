@@ -309,13 +309,29 @@ jobs:
             -exportOptionsPlist ios/ExportOptions.plist \
             -exportPath build/ios/ipa
 
+      # Before the upload, so a build carrying the debug drive never reaches
+      # TestFlight. The drive is stripped from release only by the compile-time
+      # `if (kDebugMode)` guard at its call sites, which a runtime flag would
+      # silently defeat; this greps the compiled Dart for its `ext.gc.` method
+      # names, with a control string that must be present or the check fails as
+      # proving nothing. The archive's App.framework is the binary the export
+      # just signed into the IPA. See tool/release_artifact_check.sh.
+      - name: Check the release binary carries no debug drive
+        id: drivecheck
+        run: |
+          tool/release_artifact_check.sh \
+            build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Frameworks/App.framework/App
+
       - name: Upload to TestFlight
         run: tool/upload-testflight.sh
 
       # Kept on failure too: when App Store Connect rejects an upload, the
       # packaging log is the difference between reading why and rebuilding blind.
+      # Except when the drive check failed: that IPA is the one it just rejected
+      # for carrying the debug drive, and keeping it for a week as a downloadable
+      # artifact is shipping it by another door.
       - name: Keep the IPA and packaging logs
-        if: always()
+        if: always() && steps.drivecheck.outcome != 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: gather_companion-${{ needs.test.outputs.version }}-${{ github.run_number }}
@@ -381,6 +397,31 @@ jobs:
           flutter build apk --release --split-per-abi \
             --build-name="$VERSION" \
             --build-number="$BUILD_NUMBER"
+
+      # The same release guard as the iOS job, on the same compiled Dart: every
+      # APK's libapp.so, taken out of the APK itself so the check reads what is
+      # actually shipped. No APKs, or any one APK without a libapp.so, fails
+      # rather than passing on what the others yielded. The list is taken per APK
+      # outside the `for` word list, because a failed command substitution there
+      # does not trip `bash -e`. See tool/release_artifact_check.sh.
+      - name: Check the release binaries carry no debug drive
+        run: |
+          out="$(mktemp -d)"
+          trap 'rm -rf "$out"' EXIT
+          binaries=()
+          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+            [ -f "$apk" ] || { echo "::error::no release APKs to check"; exit 1; }
+            name="$(basename "$apk" .apk)"
+            sos="$(unzip -Z1 "$apk" 'lib/*/libapp.so')" || { echo "::error::$apk has no libapp.so"; exit 1; }
+            [ -n "$sos" ] || { echo "::error::$apk has no libapp.so"; exit 1; }
+            for so in $sos; do
+              dest="$out/$name-$(basename "$(dirname "$so")")-libapp.so"
+              unzip -p "$apk" "$so" > "$dest"
+              binaries+=("$dest")
+            done
+          done
+          [ "${#binaries[@]}" -gt 0 ] || { echo "::error::no libapp.so found in the APKs"; exit 1; }
+          tool/release_artifact_check.sh "${binaries[@]}"
 
       # Named for the person about to download one, rather than left as
       # `app-arm64-v8a-release.apk` — which says nothing about which app or which

@@ -1,6 +1,6 @@
 # Debug drive: research and implementation plan (2026-11-10)
 
-**Status:** plan only. Nothing here is built yet. Tracking epic: #102. Research findings are marked
+**Status:** Phase 1 (registry, ops, `state.dump`, `log.tail`, outward gate, `tool/drive.sh`, release guard) is implemented (#104). Later phases are planned. Tracking epic: #102. Research findings are marked
 *sourced* (read in docs or source), *verified* (observed on this repo), or
 *to confirm* (expected, checked in Phase 0).
 

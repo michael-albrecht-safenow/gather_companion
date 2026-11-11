@@ -96,6 +96,11 @@ dev_dependencies:
   # about *when* a debounce fires, and sleeping through them in real time both
   # slowed the suite and made it likelier to flake under parallel load.
   fake_async: ^1.3.1
+  # For tool/drive.dart only: the debug drive's command-line client talks to the
+  # running app over the VM service. A dev_dependency on purpose — the app
+  # itself registers its extensions through dart:developer and needs nothing.
+  # Pinned to the major the SDK already resolves transitively (15.x).
+  vm_service: ^15.0.0
 
 flutter:
   uses-material-design: true

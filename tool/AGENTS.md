@@ -19,6 +19,8 @@ or the npm package.
 | `probe-sfu-schema.mjs` | The other half of `probe-sfu.mjs`: asks the SFU what it *accepts* rather than recording what the desktop sends. Connects as the instance-B account to the throwaway space and sends each candidate shape of `transport-create`, `set-player-conversation-metadata`, `produce`, printing the ack — or its absence, which is how zod refuses on this socket. Found the `null`-is-silence bug on 2026-09-17. Creates and closes one transport and one producer; no media. |
 | `make_icons.mjs` | Draws the icon from constants and writes all fifteen asset-catalogue sizes, the launch mark on alpha, and the squircled `assets/icon.png`. Zero dependencies — the PNG encoder is `node:zlib` plus a CRC table. |
 | `upload-testflight.sh` | Uploads `build/ios/ipa/gather_companion.ipa` via `xcrun altool`. **CI runs this exact script**, so the human path and the automated path cannot drift. |
+| `drive.sh` / `drive.dart` / `drive_cli.dart` | The shell door to the debug drive (`ext.gc.*`, see `docs/debug-drive-plan.md`). One short-lived `vm_service` connection per call: URI from `.dart_tool/vm_uri.<device>` (written by `flutter run --vmservice-out-file=…`), `getVM` every time (a hot restart changes the isolate id), the isolate exposing `ext.gc.drive.list`. `--wait` polls `op.result`. Exit codes: 0 ok, 1 refused, 2 RPC error/failed op, 64 usage, 69 unavailable, 75 wait timed out. The pure half (`drive_cli.dart`) is tested by `test/tool/drive_cli_test.dart`. `vm_service` is a dev_dependency for this alone. |
+| `release_artifact_check.sh` | The release guard: fails if a compiled Dart binary (`App.framework/App`, `libapp.so`) contains `ext.gc.`, *and* if it lacks the control string (`Pair with your computer`, override `RELEASE_CHECK_CONTROL`) — a clean grep of the wrong file proves nothing. **CI runs it** in both the iOS job (before the TestFlight upload) and the Android job (on every APK's `libapp.so`). Renaming the pairing title means updating the control. |
 | `icon-preview.png` | Output of `--preview`, committed for review. |
 
 ## For AI Agents
@@ -94,7 +96,12 @@ tool/upload-testflight.sh --build
 
 ### Testing Requirements
 
-Neither script has automated tests. Verify by inspection:
+`drive_cli.dart` is covered by `test/tool/drive_cli_test.dart` (part of
+`flutter test`). `release_artifact_check.sh` is covered by
+`test/tool/release_artifact_check_test.dart`, which runs it on fake binaries —
+clean with the control (0), carrying `ext.gc.` (1), missing the control (1), a
+missing file (1), no arguments (64). Neither the icon script nor the
+uploader has automated tests. Verify by inspection:
 `node tool/make_icons.mjs --preview` and then look at `tool/icon-preview.png`;
 for the uploader, a real TestFlight build is the only test, so read it carefully
 before changing it — CI depends on it.

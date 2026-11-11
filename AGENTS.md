@@ -92,6 +92,19 @@ ships both.**
   which is why `AppState.verifyLink()` must keep declining to reconnect a healthy
   socket. The desktop client is never patched; `app.asar` is integrity-checked
   anyway.
+- **The debug drive is debug-only, and outward actions need consent.**
+  `lib/src/debug_drive/` exposes `ext.gc.*` VM service extensions in debug builds
+  (see its `AGENTS.md` and `docs/debug-drive-plan.md`). It is installed only
+  behind a compile-time `if (kDebugMode)` in `lib/main.dart` and
+  `lib/main_harness.dart`; never route it through a runtime flag. Actions flagged
+  `outward` (anything others in the space can see) are refused on the live wire
+  outside the `DRIVE_TEST_SPACE` space unless the call carries `"confirm": true`
+  — **an agent sends `confirm` only after the user said yes in this session.**
+  Live drive belongs in that test space, with test accounts; the harness is the
+  default target and is never gated. How to start the app with
+  `--vmservice-out-file`, `tool/drive.sh`, the `dart_mcp_server` call sequence and
+  the Wi-Fi exposure caveat are in `docs/sim_harness.md` → "Driving features
+  headless".
 - **Honesty over confidence.** Where the bridge does not know something it says
   so rather than guessing: `confidence: 'inferred'` vs `'observed'`, and the
   collector reports itself *unhealthy* while connected-but-stateless rather than
@@ -179,6 +192,11 @@ purely additive.
   still exists for the in-call screen in isolation (it mounts `CallScreen` directly
   on a scripted multi-party call, no office around it); `TARGET=app` is the one that
   exercises the *paths into* a call.
+- **Ask the app, don't screenshot it, when the question isn't visual.** Add
+  `--vmservice-out-file=.dart_tool/vm_uri.<udid>` to the `flutter run` above and
+  `tool/drive.sh -d <udid> state.dump` returns where you are, the call state and
+  the settings as JSON; `log.tail` reads `media.log` live. Debug builds only. See
+  `docs/sim_harness.md` → "Driving features headless".
 - **`simctl privacy grant camera` does not rescue `lib/main.dart`** — the grant
   does not reliably suppress the pairing dialog, which is why the rule above is
   "always the harness", not "grant and run the real app".

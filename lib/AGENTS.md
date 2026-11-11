@@ -1,5 +1,5 @@
 <!-- Parent: ../AGENTS.md -->
-<!-- Generated: 2026-08-05 | Updated: 2026-08-05 -->
+<!-- Generated: 2026-08-05 | Updated: 2026-11-11 -->
 
 # lib
 
@@ -77,6 +77,18 @@ and lands in the walkable Office. The full invocation, the `idb` tap loop (run `
 under system python 3.9, not `asdf`'s 3.14), and the call-path caveat are in the
 root `AGENTS.md` "Running the app on the iOS Simulator" section and
 `docs/sim_harness.md`.
+
+**To check state rather than pixels, use the debug drive.** Both entrypoints
+install `src/debug_drive/` (`ext.gc.*` VM service extensions) inside
+`if (kDebugMode)` — keep that guard a compile-time constant, it is what strips the
+drive from release, and CI checks the binaries for it. Run with
+`--vmservice-out-file=.dart_tool/vm_uri.<udid>`, then `tool/drive.sh -d <udid>
+state.dump` / `log.tail`, or the `dart_mcp_server` sequence; all of it is in
+`docs/sim_harness.md` → "Driving features headless". Two rules for agents:
+**live drive (`boot: "live"`) belongs in the `DRIVE_TEST_SPACE` test space**, and
+**pass `"confirm": true` to an outward action only after the user said yes in this
+session** — the `outward_outside_test_space` refusal is the drive stopping a
+script that has drifted into a space with real colleagues in it.
 
 `GATHER_PAIR` is a narrower seam: it skips the scanner against a *real* local bridge
 when you need the live wire (e.g. feed work), not the fakes:
