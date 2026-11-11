@@ -56,6 +56,8 @@ import 'media_drive.dart';
 import 'plans_drive.dart';
 import 'sfu_drive.dart';
 import 'state_feature.dart';
+import 'status_drive.dart';
+import 'ui_drive.dart';
 
 /// What the handlers read through, so a rebind is one assignment.
 class DriveBinding {
@@ -175,6 +177,8 @@ DebugDrive? installDebugDrive({
     callFeature(call: () => binding.app.callHandle, boot: () => binding.boot),
     plansFeature(app: () => binding.app, boot: () => binding.boot),
     gameboyFeature(app: () => binding.app, boot: () => binding.boot),
+    statusFeature(app: () => binding.app, boot: () => binding.boot),
+    uiFeature(app: () => binding.app, boot: () => binding.boot),
     ...extraFeatures,
   ]);
   // After the install succeeded, so a refused install leaves no sink behind.
