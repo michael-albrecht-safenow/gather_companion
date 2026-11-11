@@ -218,14 +218,32 @@ String? _optionalString(Map<String, Object?> args, String key) {
   throw DriveInvalidParams('"$key" must be a non-empty string');
 }
 
+/// `YYYY-MM-DD` then `T` (or a space) and `HH:MM`: a date *and* a time.
+final _dateTimeHead = RegExp(r'^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?');
+
 /// [key] as an ISO-8601 instant, in local time (what the editor's pickers make).
+///
+/// [DateTime.tryParse] alone is too forgiving to be the check: it rolls an
+/// out-of-range field over rather than failing (`2026-02-30T10:00` is March 2nd,
+/// `T25:00` is 1 am the next day) and takes a bare date as midnight. Either way a
+/// plan would be saved at a moment the caller never named, and answered `ok`. So
+/// the date and the time must both be written, and every field must be in range.
 DateTime _instant(Map<String, Object?> args, String key) {
   final value = args[key];
   if (value is! String) {
     throw DriveInvalidParams(value == null ? '"$key" is required' : '"$key" must be an ISO-8601 string');
   }
   final parsed = DateTime.tryParse(value);
-  if (parsed == null) throw DriveInvalidParams('"$key" is not an ISO-8601 date-time: $value');
+  final head = _dateTimeHead.firstMatch(value);
+  if (parsed == null || head == null) {
+    throw DriveInvalidParams('"$key" is not an ISO-8601 date-time (YYYY-MM-DDTHH:MM…): $value');
+  }
+  final [y, mo, d, h, mi] = [for (var i = 1; i <= 5; i++) int.parse(head.group(i)!)];
+  final s = int.parse(head.group(6) ?? '0');
+  final asWritten = DateTime.utc(y, mo, d, h, mi, s);
+  if (asWritten.month != mo || asWritten.day != d || h > 23 || mi > 59 || s > 59) {
+    throw DriveInvalidParams('"$key" has a field out of range: $value');
+  }
   return parsed.toLocal();
 }
 

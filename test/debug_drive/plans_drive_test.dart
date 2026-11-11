@@ -170,13 +170,27 @@ void main() {
     });
 
     test('bad args are invalidParams, naming the field', () async {
-      final drive = install(AppState());
+      final state = AppState();
+      final drive = install(state);
       expect(await invalid(drive, 'add', '{"startsAt":"$startIso"}'), contains('"title" is required'));
       expect(await invalid(drive, 'add', '{"title":"   ","startsAt":"$startIso"}'), contains('title'));
       expect(await invalid(drive, 'add', '{"title":7,"startsAt":"$startIso"}'), contains('title'));
       expect(await invalid(drive, 'add', '{"title":"X"}'), contains('"startsAt" is required'));
       expect(await invalid(drive, 'add', '{"title":"X","startsAt":"tomorrow"}'), contains('ISO-8601'));
       expect(await invalid(drive, 'add', '{"title":"X","startsAt":12}'), contains('startsAt'));
+      // DateTime.tryParse would roll these over (Mar 2nd, 1 am next day, Jan 2027)
+      // or read midnight; each would save a plan at a moment nobody named.
+      for (final bad in ['2026-02-30T10:00', '2026-11-12T25:00', '2026-13-01T10:00', '2026-11-12T10:60']) {
+        expect(await invalid(drive, 'add', '{"title":"X","startsAt":"$bad"}'), contains('out of range'), reason: bad);
+      }
+      expect(await invalid(drive, 'add', '{"title":"X","startsAt":"2026-11-12"}'), contains('ISO-8601'));
+      expect(await invalid(drive, 'update', '{"id":"p1","startsAt":"2026-02-30T10:00"}'), contains('out of range'));
+      // Offsets and Z are still read as the instant they name.
+      final utc = dataOf(await call(drive, 'add', '{"title":"Z","startsAt":"2030-01-02T03:04:00Z"}'));
+      expect(DateTime.parse((utc['plan']! as Map)['startsAt']! as String).toUtc(), DateTime.utc(2030, 1, 2, 3, 4));
+      final off = dataOf(await call(drive, 'add', '{"title":"O","startsAt":"2030-01-02T05:04:00+02:00"}'));
+      expect(DateTime.parse((off['plan']! as Map)['startsAt']! as String).toUtc(), DateTime.utc(2030, 1, 2, 3, 4));
+      expect(state.plannedMeetings, hasLength(2), reason: 'only the two well-formed instants were saved');
       expect(await invalid(drive, 'add', '{"title":"X","startsAt":"$startIso","durationMinutes":2}'), contains('>= 5'));
       expect(await invalid(drive, 'add', '{"title":"X","startsAt":"$startIso","durationMinutes":481}'), contains('<= 480'));
       expect(await invalid(drive, 'add', '{"title":"X","startsAt":"$startIso","durationMinutes":1.5}'), contains('integer'));
