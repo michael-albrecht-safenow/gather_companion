@@ -8,6 +8,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
 import 'package:gather_companion/harness/fake_collector.dart';
@@ -84,7 +85,14 @@ class _EmptyCalendarStore extends CalendarStore {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  setUp(() => SharedPreferences.setMockInitialValues({}));
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    // boot() now reads the backend-profile store (keychain). Seed an empty mock so
+    // the real store resolves to "no profile" instantly, rather than blocking on a
+    // platform channel that never answers in a test — the same reason the notifier
+    // and credential stores are faked in the reboot test below.
+    FlutterSecureStorage.setMockInitialValues({});
+  });
 
   T configure<T extends AppState>(T state) => state
     ..debugApplyLink(const LinkStatus(LinkState.live))

@@ -7,6 +7,7 @@ import 'package:gather_events/gather_events.dart';
 
 import 'calendar.dart';
 import 'calendar_mirror.dart';
+import 'backend_profiles.dart';
 import 'calendar_store.dart';
 import 'credentials.dart';
 import 'gather_link.dart';
@@ -208,6 +209,10 @@ class AppState extends ChangeNotifier {
     Notifier? notifier,
     PushRegistrar? push,
     GatherCredentialStore? credentials,
+    // The multi-backend profile store. Defaulted like the others; every read
+    // swallows keychain errors, so a test that never seeds a mock keychain reads
+    // "no profile" and the app stays on the Gather default — unchanged behaviour.
+    BackendProfileStore? profiles,
     BridgeSettingsStore? bridge,
     // Test seam: lets a suite — or the simulator harness — drive a fake Gather
     // without a network, by handing back a [Collector] that is not a socket.
@@ -252,6 +257,7 @@ class AppState extends ChangeNotifier {
        // ignore: prefer_initializing_formals
        _push = push,
        _credentialStore = credentials ?? GatherCredentialStore(),
+       _profileStore = profiles ?? BackendProfileStore(),
        _bridgeStore = bridge ?? BridgeSettingsStore(),
        _log = log ?? _noop,
        _uiPrefs = uiPreferences ?? UiPreferences(),
@@ -259,9 +265,8 @@ class AppState extends ChangeNotifier {
        _calendarMirror = calendarMirror ?? const NoopCalendarMirror(),
        // ignore: prefer_initializing_formals
        _googleCalendar = googleCalendar,
-       _buildCollector = buildCollector ??
-           ((auth, spaceId) =>
-               DirectCollector(auth: auth, spaceId: spaceId, log: log ?? _noop)),
+       // ignore: prefer_initializing_formals
+       _injectedCollector = buildCollector,
        _buildActivityFeed = buildActivityFeed ?? _realActivityFeed,
        // ignore: prefer_initializing_formals
        _buildCall = buildCall;
@@ -274,13 +279,28 @@ class AppState extends ChangeNotifier {
   Notifier get notifier => _notifier;
 
   final GatherCredentialStore _credentialStore;
+  final BackendProfileStore _profileStore;
   final BridgeSettingsStore _bridgeStore;
   final UiPreferences _uiPrefs;
   final CalendarStore _calendarStore;
   final CalendarMirror _calendarMirror;
   final GoogleCalendar? _googleCalendar;
   final GatherWebLogin _webLogin;
-  final Collector Function(GatherAuth auth, String? spaceId) _buildCollector;
+  /// The injected collector seam (a test's fake), or null to build the real one.
+  final Collector Function(GatherAuth auth, String? spaceId)? _injectedCollector;
+
+  /// Builds the collector for [_attach]: a test's injected seam when supplied,
+  /// otherwise a real [DirectCollector] pointed at the *active backend's* game
+  /// socket. `late` so the closure can read [_backend] — an initializer list cannot.
+  late final Collector Function(GatherAuth auth, String? spaceId) _buildCollector =
+      _injectedCollector ??
+          (auth, spaceId) => DirectCollector(
+                auth: auth,
+                spaceId: spaceId,
+                socketUrl: _backend.gameSocket,
+                log: _log,
+              );
+
   final ActivityFeed Function(GatherAuth auth) _buildActivityFeed;
   final void Function(String) _log;
   final Stream<List<ConnectivityResult>> _connectivityChanges;
@@ -333,6 +353,14 @@ class AppState extends ChangeNotifier {
   BridgeSettings _settings = BridgeSettings.empty;
   PushRegistration _pushReach = PushRegistration.unknown;
   GatherCredentials _credentials = GatherCredentials.empty;
+
+  /// Which backend the active profile points at — the hosts and auth the socket and
+  /// token refresh use. Defaults to Gather, so a phone with no profile selected (and
+  /// every untouched test) behaves exactly as the Gather-only app did. Set in [boot]
+  /// from the active [BackendProfile]; the UI switcher (later slices) re-points it.
+  BackendConfig _backend = BackendConfig.gather;
+  BackendConfig get backend => _backend;
+
   String? _spaceId;
 
   PresenceSnapshot _snapshot = PresenceSnapshot.empty;
@@ -924,6 +952,19 @@ class AppState extends ChangeNotifier {
     _bridgeName = await _bridgeStore.loadName();
     _credentials = await _credentialStore.load();
     _spaceId = await _credentialStore.loadSpaceId();
+    // Multi-backend: if a profile is active, point the connection at that backend and
+    // prefer its own stored session. No active profile — a fresh install, or any
+    // phone from before the picker — leaves the Gather default and the legacy Gather
+    // credential exactly as they were, so nothing changes for an already-paired user.
+    final activeProfile = await _profileStore.active();
+    if (activeProfile != null) {
+      _backend = activeProfile.config;
+      final profileCreds = await _profileStore.loadCredentials(activeProfile.id);
+      if (profileCreds.isComplete) {
+        _credentials = profileCreds;
+        _spaceId = null; // the collector resolves the space from recent-spaces
+      }
+    }
     _gameboyMode = await _uiPrefs.loadGameboyMode();
     _gameboyTheme = GameboyThemeId.fromId(await _uiPrefs.loadGameboyThemeId());
     _soundEffects = await _uiPrefs.loadSoundEffects();
@@ -3930,6 +3971,10 @@ class AppState extends ChangeNotifier {
 
     final auth = _auth = GatherAuth(
       credentials: _credentials,
+      // The active backend. Firebase (Gather) refreshes at Google's token endpoint;
+      // an OTP backend refreshes at its own. Without this every backend's token
+      // refresh went to Gather, so a bether session could never stay alive.
+      config: _backend,
       // Google may rotate the refresh token. Persisting the new one immediately is
       // what keeps a phone working across the rotation instead of silently holding a
       // credential that has been superseded.
