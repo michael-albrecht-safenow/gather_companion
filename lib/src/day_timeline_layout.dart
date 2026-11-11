@@ -11,6 +11,14 @@
 /// pumping a widget, and the same output drives both views unchanged.
 library;
 
+/// The least time a block visually occupies on the timeline grid: its 26 px minimum
+/// height over 56 px per hour (≈ 28 min, rounded up; the pixel constants live in
+/// `lib/ui/day_timeline.dart`). [layoutDay] lane-packs with it so two back-to-back short
+/// events land side by side instead of overlapping in one lane — the callers pass it
+/// straight through, keeping the layout maths free of pixel units. Here rather than in
+/// the widget so the Plans day maths (`plans_timeline.dart`) need no widget import.
+const Duration kTimelineMinSlot = Duration(minutes: 28);
+
 /// One thing on a single day's timeline, reduced to the four facts layout needs: when
 /// it runs, whether it is an all-day banner (which never enters the grid), and an
 /// opaque [key] the caller maps back to its own event to build the block.

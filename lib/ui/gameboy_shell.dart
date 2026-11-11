@@ -39,15 +39,25 @@
 /// menu can be worked by thumb or by the hardware — the D-pad moves the highlight,
 /// A chooses, Start backs out — because a handheld whose menu needs a touchscreen
 /// is only half a handheld.
+///
+/// ## The key table lives below the widget
+///
+/// Which action each key fires in which situation — and the Select menu's cursor —
+/// is `../src/gameboy_controls.dart`'s (`gameboyButtons`, `GameboyMenu`, `decideBTap`),
+/// so the table is unit-tested row by row and the debug drive's `gameboy.mapping`
+/// reads what the keys are wired from. This file keeps the presentation: haptics,
+/// blips, the LCD toast and its timer, the scroll-into-view, and B's double-tap window.
 library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gather_client/gather_client.dart' show settableAvailabilities;
 
 import '../src/app_state.dart';
+import '../src/gameboy_controls.dart';
 import '../src/media/gameboy_sfx.dart';
 import '../theme/gather_theme.dart' show availabilityColor, availabilityLabel, GatherThemeContext;
 import 'call_screen.dart' show callBannerTextFor, openCallScreen;
@@ -108,25 +118,24 @@ BoxShadow _hardShadow(GbHardware hw) =>
 /// looking, which is the point of a control used while watching the screen above it.
 const double _dpadSize = 135;
 
-/// Gather's eight, same codepoints and order as the dock's tray — the variation
-/// selectors matter, so this list is copied rather than trimmed. See
-/// `control_bar.dart`.
-const _emotes = ['👋', '❤️', '🎉', '👍️', '🤣', '👏', '💯', '🔥'];
+/// Gather's eight, in the dock's order — owned by `gameboy_controls.dart`, which
+/// the menu's cursor clamps against.
+const _emotes = gbEmotes;
 
 /// The Select menu's rows, in D-pad order top to bottom. Two of them — the
 /// status choices and the emote strip — are rows the D-pad walks left/right
 /// inside; the other five are single targets, one per tab the menu can leave to
-/// (Dial, Activity, Plans, Settings) plus the camera toggle. Kept as a count so the
-/// cursor can clamp without the menu and the router disagreeing about how many rows
-/// there are.
-const int _menuRowStatus = 0;
-const int _menuRowCamera = 1;
-const int _menuRowEmotes = 2;
-const int _menuRowDial = 3;
-const int _menuRowActivity = 4;
-const int _menuRowPlans = 5;
-const int _menuRowSettings = 6;
-const int _menuRowCount = 7;
+/// (Dial, Activity, Plans, Settings) plus the camera toggle. The cursor and what A
+/// chooses on each row are [GameboyMenu]'s (`lib/src/gameboy_controls.dart`); these
+/// aliases are what the menu's layout keys its rows by.
+const int _menuRowStatus = GameboyMenu.rowStatus;
+const int _menuRowCamera = GameboyMenu.rowCamera;
+const int _menuRowEmotes = GameboyMenu.rowEmotes;
+const int _menuRowDial = GameboyMenu.rowDial;
+const int _menuRowActivity = GameboyMenu.rowActivity;
+const int _menuRowPlans = GameboyMenu.rowPlans;
+const int _menuRowSettings = GameboyMenu.rowSettings;
+const int _menuRowCount = GameboyMenu.rowCount;
 
 /// Wraps [child] (the office) in the handheld. [onOpenDial]/[onOpenActivity]/
 /// [onOpenSettings] are how the Select menu leaves for another tab — the shell
@@ -162,16 +171,32 @@ class GameboyShell extends StatefulWidget {
 }
 
 class _GameboyShellState extends State<GameboyShell> {
-  /// Whether the Select menu is open in the LCD. While true the control deck
-  /// reroutes the hardware: the D-pad drives the cursor, A chooses, Start closes.
-  bool _menuOpen = false;
+  /// The Select menu's cursor: whether it is open in the LCD (while it is, the
+  /// control deck reroutes the hardware — the D-pad drives the cursor, A chooses,
+  /// Start closes), which row is lit, and which status and emote within their rows.
+  /// The decisions are [GameboyMenu]'s; this State wraps each in `setState`.
+  final GameboyMenu _menu = GameboyMenu();
+  bool get _menuOpen => _menu.isOpen;
+  int get _row => _menu.row;
 
-  /// Which menu row the cursor is on (`_menuRow*`), and the sub-position within
-  /// the two rows that have one: which status choice, and which emote. Both
-  /// survive leaving and re-entering their strip, which is what a thumb expects.
-  int _row = _menuRowStatus;
-  int _status = 0;
-  int _emote = 0;
+  /// The drive's window onto this shell (debug builds only).
+  GameboyShellDebug? _debug;
+
+  @override
+  void initState() {
+    super.initState();
+    if (kDebugMode) {
+      _debug = GameboyShellDebug(
+        menu: _menu,
+        buttons: () => gameboyButtonsFor(widget.state, menuOpen: _menuOpen),
+        toggleMenu: _toggleMenu,
+        moveMenu: _move,
+        confirmMenu: _confirm,
+        onScreen: () => mounted && TickerMode.valuesOf(context).enabled,
+      );
+      gameboyDebugActive = _debug;
+    }
+  }
 
   /// One key per menu row (`_menuRow*`). The LCD is short enough that Settings can
   /// sit below the fold, so a D-pad move has to scroll the lit row back into the
@@ -225,22 +250,19 @@ class _GameboyShellState extends State<GameboyShell> {
   @override
   void dispose() {
     _toastTimer?.cancel();
+    if (kDebugMode && identical(gameboyDebugActive, _debug)) gameboyDebugActive = null;
     super.dispose();
   }
 
   void _toggleMenu() {
     HapticFeedback.selectionClick();
     setState(() {
-      _menuOpen = !_menuOpen;
-      if (_menuOpen) {
+      // Opens on the status row with its cursor already on the status you are
+      // (see [GameboyMenu.toggle]).
+      if (_menu.toggle(widget.state.myAvailability)) {
         // Fresh keys for this instance, so a reopen while the previous menu is
         // still fading out never mounts the same GlobalKeys twice.
         _rowKeys = List.generate(_menuRowCount, (_) => GlobalKey());
-        // Open on the status row with its cursor already on the status you are,
-        // so the first thing the menu offers is a one-press change away from it.
-        _row = _menuRowStatus;
-        final at = settableAvailabilities.indexOf(widget.state.myAvailability ?? 'Active');
-        _status = at < 0 ? 0 : at;
       }
     });
     // The menu coming up climbs, backing out of it falls.
@@ -250,7 +272,7 @@ class _GameboyShellState extends State<GameboyShell> {
   void _closeMenu({bool silent = false}) {
     if (!_menuOpen) return;
     HapticFeedback.selectionClick();
-    setState(() => _menuOpen = false);
+    setState(_menu.close);
     // The A-button confirm path closes silently: its own `confirm` cue is the
     // sound for that press, and the serial player would cut it off if `back`
     // were queued right behind it.
@@ -262,20 +284,7 @@ class _GameboyShellState extends State<GameboyShell> {
   /// clamp-at-the-ends feel the office's walk has when it meets a wall.
   void _move(String direction) {
     setState(() {
-      switch (direction) {
-        case 'Up':
-          _row = (_row - 1).clamp(0, _menuRowCount - 1);
-          _revealRow();
-        case 'Down':
-          _row = (_row + 1).clamp(0, _menuRowCount - 1);
-          _revealRow();
-        case 'Left':
-          if (_row == _menuRowStatus) _status = (_status - 1).clamp(0, settableAvailabilities.length - 1);
-          if (_row == _menuRowEmotes) _emote = (_emote - 1).clamp(0, _emotes.length - 1);
-        case 'Right':
-          if (_row == _menuRowStatus) _status = (_status + 1).clamp(0, settableAvailabilities.length - 1);
-          if (_row == _menuRowEmotes) _emote = (_emote + 1).clamp(0, _emotes.length - 1);
-      }
+      if (_menu.move(direction)) _revealRow();
     });
     HapticFeedback.selectionClick();
     _sfx(GbSound.cursor);
@@ -360,20 +369,20 @@ class _GameboyShellState extends State<GameboyShell> {
     // and the serial player cannot cut the confirm cue off.
     _closeMenu(silent: true);
     _sfx(GbSound.confirm);
-    switch (_row) {
-      case _menuRowStatus:
-        _doStatus(settableAvailabilities[_status]);
-      case _menuRowCamera:
+    switch (_menu.choice) {
+      case GbChooseStatus(:final availability):
+        _doStatus(availability);
+      case GbChooseCamera():
         _doCamera();
-      case _menuRowEmotes:
-        _doReact(_emotes[_emote]);
-      case _menuRowDial:
+      case GbChooseEmote(:final emote):
+        _doReact(emote);
+      case GbChooseTab(tab: GbTab.dial):
         _doDial();
-      case _menuRowActivity:
+      case GbChooseTab(tab: GbTab.activity):
         _doActivity();
-      case _menuRowPlans:
+      case GbChooseTab(tab: GbTab.plans):
         _doPlans();
-      case _menuRowSettings:
+      case GbChooseTab(tab: GbTab.settings):
         _doSettings();
     }
   }
@@ -424,8 +433,8 @@ class _GameboyShellState extends State<GameboyShell> {
                         state: widget.state,
                         rowKeys: _rowKeys,
                         focusedRow: _row,
-                        focusedStatus: _status,
-                        focusedEmote: _emote,
+                        focusedStatus: _menu.status,
+                        focusedEmote: _menu.emote,
                         onStatus: _doStatus,
                         onCamera: _doCamera,
                         onReact: _doReact,
@@ -1248,58 +1257,50 @@ class _ControlsDeckState extends State<_ControlsDeck> {
   /// - **Wave available, mic off** (a tap would *unmute*, the dangerous direction):
   ///   the unmute is deferred behind the window; a second tap cancels it and waves,
   ///   so you stay muted. Nobody is ever opened up by accident.
+  ///
+  /// Which of those a tap is, is [decideBTap]'s (`lib/src/gameboy_controls.dart`,
+  /// with the table); this method owns only the window — the timestamp, the timer —
+  /// and carries the step out.
   void _tapB() {
-    final waveReady = state.huddleRows.isNotEmpty;
-
-    if (!waveReady) {
-      _bDefer?.cancel();
-      _bDefer = null;
-      _bMuteTapAt = null;
-      _toggleMic(state.call.micOn);
-      return;
-    }
-
-    // The second tap of a mute-then-wave, decided before the current mic state is
-    // read. The first tap mutes *asynchronously* and emits a new call state, so by
-    // now `micOn` can already read false; branching on it first would route a
-    // perfectly normal second tap into the mic-off path, clear this pending tap,
-    // and schedule an unmute instead of waving. The pending timestamp is the
-    // intent, and it is the only reliable witness that the first tap was a mute.
     final mutedAt = _bMuteTapAt;
-    if (mutedAt != null && DateTime.now().difference(mutedAt) < _bDoubleTapWindow) {
-      // Put the mic back silently (the wave's blip is the feedback) and wave. Net:
-      // mic unchanged, wave sent.
-      _bMuteTapAt = null;
-      _run(() => state.setMicOn(true));
-      widget.onWave();
-      return;
-    }
+    final step = decideBTap(
+      waveReady: state.huddleRows.isNotEmpty,
+      // Whether the previous tap was a mute inside the window. Read before the mic
+      // state: see [decideBTap] for why the order matters.
+      muteArmed: mutedAt != null && DateTime.now().difference(mutedAt) < _bDoubleTapWindow,
+      micOn: state.call.micOn,
+      unmutePending: _bDefer != null,
+    );
 
-    if (state.call.micOn) {
-      // First tap while live: muting is the safe direction, so do it now and open
-      // the window for a second tap to turn the pair into a wave.
-      _bMuteTapAt = DateTime.now();
-      _sfx(GbSound.toggleOff);
-      _run(() => state.setMicOn(false));
-      return;
+    switch (step) {
+      case GbBStep.toggleMic:
+        _bDefer?.cancel();
+        _bDefer = null;
+        _bMuteTapAt = null;
+        _toggleMic(state.call.micOn);
+      case GbBStep.restoreMicAndWave:
+        // Put the mic back silently (the wave's blip is the feedback) and wave.
+        _bMuteTapAt = null;
+        _run(() => state.setMicOn(true));
+        widget.onWave();
+      case GbBStep.muteAndArm:
+        _bMuteTapAt = DateTime.now();
+        _sfx(GbSound.toggleOff);
+        _run(() => state.setMicOn(false));
+      case GbBStep.cancelUnmuteAndWave:
+        _bMuteTapAt = null;
+        _bDefer!.cancel();
+        _bDefer = null;
+        widget.onWave();
+      case GbBStep.deferUnmute:
+        _bMuteTapAt = null;
+        _bDefer = Timer(_bDoubleTapWindow, () {
+          _bDefer = null;
+          if (!mounted) return;
+          _sfx(GbSound.toggleOn);
+          _run(() => state.setMicOn(true));
+        });
     }
-
-    // Mic already off: a tap would *unmute*, the dangerous direction, so defer it
-    // behind the window where a second tap can cancel it and wave instead.
-    _bMuteTapAt = null;
-    if (_bDefer != null) {
-      // Second tap before the deferred unmute fired: the wave was the intent.
-      _bDefer!.cancel();
-      _bDefer = null;
-      widget.onWave();
-      return;
-    }
-    _bDefer = Timer(_bDoubleTapWindow, () {
-      _bDefer = null;
-      if (!mounted) return;
-      _sfx(GbSound.toggleOn);
-      _run(() => state.setMicOn(true));
-    });
   }
 
   /// A plain mute toggle with its blip — B's job whenever there is no wave to steal
@@ -1329,10 +1330,11 @@ class _ControlsDeckState extends State<_ControlsDeck> {
   /// do — the dock's door, transcribed. See `control_bar.dart`'s `_leave`.
   Future<void> _goHome() async {
     _sfx(GbSound.back);
-    if (state.inHuddle) {
+    if (gameboyHomeSteps(state).leaveHuddle) {
       await _run(state.leaveHuddle);
     }
-    if (state.myDesk != null && !state.atMyDesk) {
+    // Asked again: leaving the huddle can change where you are.
+    if (gameboyHomeSteps(state).toDesk) {
       if (!mounted) return;
       await _run(state.goToMyDesk);
     }
@@ -1340,21 +1342,29 @@ class _ControlsDeckState extends State<_ControlsDeck> {
 
   /// The D-pad, walking the office or driving the menu cursor. Its own listener on
   /// [AppState.positions] so it dims exactly when there is nowhere to walk.
+  /// What every key means right now — [gameboyButtons], the table the drive's
+  /// `gameboy.mapping` reads, so the readout and the wiring cannot disagree.
+  GbButtonMap get _keys => gameboyButtonsFor(state, menuOpen: menuOpen);
+
   Widget _dpad() => ListenableBuilder(
         listenable: state.positions,
-        builder: (context, _) => _GbDpad(
-          key: const Key('gb-dpad'),
-          enabled: menuOpen || state.canWalk,
-          // The menu drives the cursor, the office walks — name the gesture for
-          // whichever the pad is doing right now.
-          moveVerb: menuOpen ? 'Move' : 'Walk',
-          onPress: menuOpen ? onMenuMove : state.walk,
-          // Always stop walking on release. It is idempotent, and the case that
-          // matters is opening the menu with the pad still held: a no-op release
-          // there would let the walk timer outlive the lift and step the avatar
-          // forever. See [Walk.release].
-          onRelease: state.stopWalking,
-        ),
+        builder: (context, _) {
+          final keys = _keys;
+          final cursor = keys.dpad == GbDpadAction.cursor;
+          return _GbDpad(
+            key: const Key('gb-dpad'),
+            enabled: keys.dpadEnabled,
+            // The menu drives the cursor, the office walks — name the gesture for
+            // whichever the pad is doing right now.
+            moveVerb: cursor ? 'Move' : 'Walk',
+            onPress: cursor ? onMenuMove : state.walk,
+            // Always stop walking on release. It is idempotent, and the case that
+            // matters is opening the menu with the pad still held: a no-op release
+            // there would let the walk timer outlive the lift and step the avatar
+            // forever. See [Walk.release].
+            onRelease: state.stopWalking,
+          );
+        },
       );
 
   /// A: the cart, or — in the menu — the choose key, or — during a call — the way
@@ -1368,16 +1378,16 @@ class _ControlsDeckState extends State<_ControlsDeck> {
         // it opens the call — both actions, so the glow there is not an "on" state
         // the reader should announce.
         toggled: (menuOpen || state.inCall) ? null : state.boost,
-        onTap: menuOpen
-            ? onMenuConfirm
-            : state.inCall
-                ? () => openCallScreen(context, state)
-                : () {
-                    HapticFeedback.selectionClick();
-                    state.boost = !state.boost;
-                    // Up for latched on, down for released.
-                    _sfx(state.boost ? GbSound.toggleOn : GbSound.toggleOff);
-                  },
+        onTap: switch (_keys.a) {
+          GbAAction.confirm => onMenuConfirm,
+          GbAAction.openCall => () => openCallScreen(context, state),
+          GbAAction.boost => () {
+              HapticFeedback.selectionClick();
+              state.boost = !state.boost;
+              // Up for latched on, down for released.
+              _sfx(state.boost ? GbSound.toggleOn : GbSound.toggleOff);
+            },
+        },
       );
 
   /// B: mute, and — double-tapped while somebody is in call distance — a wave. Lit
@@ -1387,20 +1397,25 @@ class _ControlsDeckState extends State<_ControlsDeck> {
         size: 64,
         lit: !menuOpen && state.call.micOn,
         toggled: menuOpen ? null : state.call.micOn,
-        onTap: menuOpen ? null : _tapB,
+        onTap: _keys.b == GbBAction.inert ? null : _tapB,
       );
 
   /// Select opens/closes the menu; Start goes home in the office and backs out of
   /// the menu while it is up. Upright, the pair are the DMG's flat pills side by
   /// side on the chin; in landscape they become the GBA's round knobs, each with
   /// its name printed to the left, stacked START-over-SELECT down the left thumb.
+  VoidCallback get _start => switch (_keys.start) {
+        GbStartAction.closeMenu => onMenuClose,
+        GbStartAction.goHome => _goHome,
+      };
+
   Widget _selectStart({bool vertical = false}) {
     if (vertical) {
       return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          _GbRoundKey(label: 'START', onTap: menuOpen ? onMenuClose : _goHome),
+          _GbRoundKey(label: 'START', onTap: _start),
           const SizedBox(height: 16),
           _GbRoundKey(label: 'SELECT', onTap: onMenuToggle),
         ],
@@ -1411,7 +1426,7 @@ class _ControlsDeckState extends State<_ControlsDeck> {
       children: [
         _GbPill(label: 'SELECT', onTap: onMenuToggle),
         const SizedBox(width: 22),
-        _GbPill(label: 'START', onTap: menuOpen ? onMenuClose : _goHome),
+        _GbPill(label: 'START', onTap: _start),
       ],
     );
   }

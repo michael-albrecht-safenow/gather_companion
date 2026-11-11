@@ -12,6 +12,12 @@
 /// Modelled on the Activity tab: a day-headed list under a plain app bar, read
 /// above the `Scaffold` so the last row clears the floating rail. Unlike Activity,
 /// this list is *writable* — the `+` opens a sheet, and each row edits.
+///
+/// What the tab *decides* — upcoming vs past, which days get a section and what each
+/// holds, what the editor opens on, what a save keeps — is `../src/plans_timeline.dart`'s,
+/// so it is unit-tested without a pump and the debug drive's `plans.state` reads the
+/// same days drawn here. This file keeps the drawing, the minute ticker, the busy
+/// spinners, the snackbars and the pickers.
 library;
 
 import 'dart:async';
@@ -21,8 +27,8 @@ import 'package:gather_client/gather_client.dart';
 
 import '../src/app_state.dart';
 import '../src/calendar.dart';
-import '../src/day_timeline_layout.dart';
 import '../src/google_calendar.dart';
+import '../src/plans_timeline.dart';
 import '../theme/gather_theme.dart';
 import 'day_timeline.dart';
 
@@ -109,18 +115,8 @@ class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObse
         listenable: state,
         builder: (context, _) {
           final now = (widget.clock ?? DateTime.now)();
-          // One timeline, two sources: plans this phone owns and read-only Google
-          // events it only mirrors. Merged and sorted together so a 10am standup from
-          // Google and an 11am plan made here sit in one day in the right order.
-          final entries = <_Entry>[
-            for (final m in state.plannedMeetings) _Entry.plan(state, m),
-            for (final e in state.googleEvents) _Entry.google(state, e),
-          ];
-          final upcoming = [for (final e in entries) if (!e.endsAt.isBefore(now)) e]
-            ..sort((a, b) => a.startsAt.compareTo(b.startsAt));
-          // Past descending: the most recent is the one worth seeing first.
-          final past = [for (final e in entries) if (e.endsAt.isBefore(now)) e]
-            ..sort((a, b) => b.startsAt.compareTo(a.startsAt));
+          // One timeline, two sources, split at now — see [splitPlans].
+          final (all: entries, :upcoming, :past) = splitPlans(state.plannedMeetings, state.googleEvents, now);
 
           // Offered whenever a Google account could be connected but is not — above
           // the list so it reads as the next thing to do, not buried under it. The
@@ -142,10 +138,10 @@ class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObse
             padding: EdgeInsets.only(top: 8, bottom: bottomInset + 96),
             children: [
               if (showConnect) _ConnectGoogleBanner(state: state),
-              ..._timelineSections(context, upcoming, now),
+              ..._timelineSections(state, upcoming, now),
               if (past.isNotEmpty) ...[
                 const _SectionHeader('EARLIER'),
-                for (final e in past) e.build(context, past: true),
+                for (final e in past) _card(state, e, past: true),
               ],
             ],
           );
@@ -156,96 +152,30 @@ class _CalendarScreenState extends State<CalendarScreen> with WidgetsBindingObse
 }
 
 /// Upcoming entries as one day-headed [DayTimeline] per day — the whole point of the
-/// redesign. Every day from today to the last day an event touches gets a section, so a
-/// clear day shows up as "Free for the day" rather than silently vanishing; a lone
-/// event weeks out would otherwise paint a fortnight of empty days, so the horizon is
-/// capped and the far event just sits at the end of it.
-List<Widget> _timelineSections(BuildContext context, List<_Entry> upcoming, DateTime now) {
-  if (upcoming.isEmpty) return const [];
-  final today = DateTime(now.year, now.month, now.day);
-  final horizon = DateTime(today.year, today.month, today.day + 14);
+/// redesign. Which days get a section, and what each one holds, is [planDays]'s; this
+/// only draws them.
+List<Widget> _timelineSections(AppState state, List<PlanEntry> upcoming, DateTime now) => [
+      for (final day in planDays(upcoming, now)) ...[
+        _SectionHeader(_dayLabel(day.day, now: now)),
+        DayTimeline(
+          bands: day.bands,
+          allDay: day.allDay,
+          blockBuilder: (ctx, item) => _block(state, upcoming[item.key as int]),
+        ),
+      ],
+    ];
 
-  // Dense days from today to the horizon, so a clear day shows as "Free for the day"
-  // rather than a silent gap — plus every day a real event actually touches beyond the
-  // horizon. Capping the empty-day fill keeps a lone far-future meeting from painting a
-  // fortnight of blank days, while still giving it its own section so it stays visible
-  // and editable (the only way to reach its edit/delete is its block). Stepping by civil
-  // date, not +24h, keeps the headers right across a daylight-saving change.
-  final days = <DateTime>{};
-  for (var day = today; !day.isAfter(horizon); day = DateTime(day.year, day.month, day.day + 1)) {
-    days.add(day);
-  }
-  for (final e in upcoming) {
-    var day = DateTime(e.startsAt.year, e.startsAt.month, e.startsAt.day);
-    final last = DateTime(e.endsAt.year, e.endsAt.month, e.endsAt.day);
-    while (!day.isAfter(last)) {
-      if (day.isAfter(horizon)) days.add(day);
-      day = DateTime(day.year, day.month, day.day + 1);
-    }
-  }
-  final ordered = days.toList()..sort();
+/// The compact block for [entry] on the timeline grid.
+Widget _block(AppState state, PlanEntry entry) => switch (entry) {
+      OwnPlanEntry(:final meeting) => _TimelineBlock.plan(state, meeting),
+      GoogleEntry(:final event) => _TimelineBlock.google(state, event),
+    };
 
-  final out = <Widget>[];
-  for (final day in ordered) {
-    final dayStart = day;
-    final dayEnd = DateTime(day.year, day.month, day.day + 1);
-    // Every entry that touches this day, clipped to it — a meeting across midnight or a
-    // multi-day all-day event appears on each day it covers, bounded to the day's edges.
-    final timed = <TimelineItem>[];
-    final allDay = <TimelineItem>[];
-    for (var i = 0; i < upcoming.length; i++) {
-      final e = upcoming[i];
-      if (!e.startsAt.isBefore(dayEnd) || !e.endsAt.isAfter(dayStart)) continue;
-      final item = TimelineItem(
-        start: e.startsAt.isBefore(dayStart) ? dayStart : e.startsAt,
-        end: e.endsAt.isAfter(dayEnd) ? dayEnd : e.endsAt,
-        allDay: e.allDay,
-        key: i,
-      );
-      (e.allDay ? allDay : timed).add(item);
-    }
-    out.add(_SectionHeader(_dayLabel(day, now: now)));
-    out.add(DayTimeline(
-      bands: layoutDay(timed, minItemDuration: kTimelineMinSlot),
-      allDay: allDay,
-      blockBuilder: (ctx, item) => upcoming[item.key as int].block(ctx),
-    ));
-  }
-  return out;
-}
-
-/// One entry in the merged Plans timeline: either a [PlannedMeeting] this phone owns or
-/// a read-only [GoogleEvent] it mirrors. Carries a start, an end, whether it is all-day,
-/// a compact [block] for the timeline grid, and the full [build] card still used by the
-/// dimmed "EARLIER" past list.
-class _Entry {
-  _Entry._(this.startsAt, this.endsAt, this.allDay, this._block, this._card);
-
-  factory _Entry.plan(AppState state, PlannedMeeting m) => _Entry._(
-        m.startsAt,
-        m.endsAt,
-        false,
-        (context) => _TimelineBlock.plan(state, m),
-        (context, {required past}) => _MeetingCard(state: state, meeting: m, past: past),
-      );
-
-  factory _Entry.google(AppState state, GoogleEvent e) => _Entry._(
-        e.startsAt,
-        e.endsAt,
-        e.allDay,
-        (context) => _TimelineBlock.google(state, e),
-        (context, {required past}) => _GoogleEventCard(state: state, event: e, past: past),
-      );
-
-  final DateTime startsAt;
-  final DateTime endsAt;
-  final bool allDay;
-  final Widget Function(BuildContext context) _block;
-  final Widget Function(BuildContext context, {required bool past}) _card;
-
-  Widget block(BuildContext context) => _block(context);
-  Widget build(BuildContext context, {required bool past}) => _card(context, past: past);
-}
+/// The full card for [entry], still used by the dimmed "EARLIER" past list.
+Widget _card(AppState state, PlanEntry entry, {required bool past}) => switch (entry) {
+      OwnPlanEntry(:final meeting) => _MeetingCard(state: state, meeting: meeting, past: past),
+      GoogleEntry(:final event) => _GoogleEventCard(state: state, event: event, past: past),
+    };
 
 /// The compact block a timeline lane draws: a title, its time, a place when pinned, and
 /// a brand ring while it is live. Filled brand for a plan this phone owns, muted for a
@@ -267,7 +197,7 @@ class _TimelineBlock extends StatelessWidget {
       title: m.title,
       time: _timeRange(m),
       place: (m.roomName?.isNotEmpty ?? false) ? m.roomName : null,
-      live: !m.startsAt.isAfter(now) && m.endsAt.isAfter(now),
+      live: isLiveAt(m.startsAt, m.endsAt, now),
       owned: true,
       onTap: (context) => _openEditor(context, state, m),
     );
@@ -275,7 +205,7 @@ class _TimelineBlock extends StatelessWidget {
 
   factory _TimelineBlock.google(AppState state, GoogleEvent e) {
     final now = DateTime.now();
-    final live = !e.startsAt.isAfter(now) && e.endsAt.isAfter(now);
+    final live = isLiveAt(e.startsAt, e.endsAt, now);
     return _TimelineBlock._(
       title: e.title,
       time: e.allDay ? 'All day' : _googleTimeRange(e),
@@ -452,9 +382,7 @@ class _GoogleEventCard extends StatelessWidget {
     // naming a room in this space — the approved "else do nothing". A past or future
     // event, or a link to somewhere a single walk cannot reach, carries no button.
     final now = DateTime.now();
-    final isLive = !past &&
-        !event.startsAt.isAfter(now) &&
-        event.endsAt.isAfter(now);
+    final isLive = !past && isLiveAt(event.startsAt, event.endsAt, now);
     final canWarp = isLive && state.canGoToMeeting(event);
 
     return Opacity(
@@ -1002,23 +930,11 @@ class _MeetingEditor extends StatefulWidget {
 class _MeetingEditorState extends State<_MeetingEditor> {
   late final TextEditingController _title =
       TextEditingController(text: widget.existing?.title ?? '');
-  late DateTime _start = widget.existing?.startsAt ?? _defaultStart();
-  late int _durationMinutes = widget.existing == null
-      ? 30
-      : widget.existing!.endsAt.difference(widget.existing!.startsAt).inMinutes.clamp(5, 480);
+  late DateTime _start = widget.existing?.startsAt ?? defaultPlanStart(DateTime.now());
+  late int _durationMinutes = initialPlanMinutes(widget.existing);
   late String? _roomStableId = widget.existing?.roomStableId;
   late int _remindMinutes = widget.existing?.remindMinutesBefore ?? 5;
   bool _saving = false;
-
-  /// The next round half-hour: the overwhelmingly common thing to want, so it is
-  /// what the pickers open on.
-  static DateTime _defaultStart() {
-    final now = DateTime.now();
-    final rounded = DateTime(now.year, now.month, now.day, now.hour).add(
-      Duration(minutes: now.minute < 30 ? 30 : 60),
-    );
-    return rounded;
-  }
 
   @override
   void dispose() {
@@ -1146,18 +1062,14 @@ class _MeetingEditorState extends State<_MeetingEditor> {
   }
 
   Future<void> _pickWhen() async {
-    // The usual range is yesterday to a year out, but a meeting being edited can sit
-    // outside it — an old one from before yesterday, or (in theory) one beyond the
-    // year. showDatePicker asserts initialDate is within [firstDate, lastDate], so
-    // the window is widened to take in the existing value rather than crash on it.
-    final now = DateTime.now();
-    final low = now.subtract(const Duration(days: 1));
-    final high = now.add(const Duration(days: 365));
+    // Yesterday to a year out, widened to take in an edited meeting outside it —
+    // see [planDateWindow].
+    final window = planDateWindow(_start, DateTime.now());
     final date = await showDatePicker(
       context: context,
       initialDate: _start,
-      firstDate: _start.isBefore(low) ? _start : low,
-      lastDate: _start.isAfter(high) ? _start : high,
+      firstDate: window.first,
+      lastDate: window.last,
     );
     if (date == null || !mounted) return;
     final time = await showTimePicker(
@@ -1181,36 +1093,20 @@ class _MeetingEditorState extends State<_MeetingEditor> {
     }
     setState(() => _saving = true);
 
-    // Resolve the chosen room off the live map so its label and floor travel with
-    // the plan — the map may be gone by the time the meeting is walked to.
-    final room = _resolveRoom(_roomStableId);
+    // Resolve the chosen room off the live map so its label and floor travel with the
+    // plan; an unresolvable room keeps what an edited meeting had — see
+    // [composePlannedMeeting] for the rule.
     final existing = widget.existing;
-
-    // A chosen room the live map cannot resolve right now (the map is gone, or the
-    // room is on a floor not loaded) must not silently wipe the place an edited
-    // meeting already carried. Clearing the location is reserved for the user
-    // explicitly picking "No place" — which is `_roomStableId == null`. So when the
-    // picker still names the same id the meeting was saved with but it will not
-    // resolve, keep the stored room, floor and fallback coordinates untouched.
-    final keepSaved = room == null &&
-        _roomStableId != null &&
-        existing != null &&
-        existing.roomStableId == _roomStableId;
-
-    final meeting = PlannedMeeting(
-      id: existing?.id ?? _newId(),
+    final meeting = composePlannedMeeting(
+      existing: existing,
+      newId: _newId(),
       title: title,
-      startsAt: _start,
-      endsAt: _start.add(Duration(minutes: _durationMinutes)),
-      roomStableId: keepSaved ? existing.roomStableId : room?.stableId,
-      roomName: keepSaved ? existing.roomName : room?.name,
-      floorId: keepSaved
-          ? existing.floorId
-          : (room == null ? null : widget.state.map?.floorId),
-      x: keepSaved ? existing.x : null,
-      y: keepSaved ? existing.y : null,
-      remindMinutesBefore: _remindMinutes,
-      deviceEventId: existing?.deviceEventId,
+      start: _start,
+      durationMinutes: _durationMinutes,
+      roomStableId: _roomStableId,
+      room: resolvePlanRoom(widget.state.plannableRooms, _roomStableId),
+      liveFloorId: widget.state.map?.floorId,
+      remindMinutes: _remindMinutes,
     );
 
     final error = existing == null
@@ -1223,14 +1119,6 @@ class _MeetingEditorState extends State<_MeetingEditor> {
       return;
     }
     navigator.pop();
-  }
-
-  SpaceRoom? _resolveRoom(String? stableId) {
-    if (stableId == null) return null;
-    for (final room in widget.state.plannableRooms) {
-      if (room.stableId == stableId) return room;
-    }
-    return null;
   }
 
   /// Walks to the meeting being edited, then closes the sheet — the same hop the list

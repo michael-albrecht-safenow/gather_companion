@@ -59,6 +59,16 @@ class SpotlightDirector {
 
   String? get target => _target;
 
+  /// Who is counting towards the floor, and since when — null when nobody is.
+  /// Read-only, for `SpotlightController`'s readout; the decision never reads
+  /// them from outside.
+  String? get candidate => _candidate;
+  DateTime? get candidateSince => _candidateSince;
+
+  /// When a big view went silent and started its [linger] countdown, or null.
+  /// Read-only, for the same readout.
+  DateTime? get silentSince => _silentSince;
+
   /// Feeds in who is speaking right now. Returns the id to enlarge — or null for
   /// the overview grid — and whether that was a *fresh* promotion, which is the
   /// signal the caller uses to drop a manual pin.

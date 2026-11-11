@@ -38,19 +38,17 @@ import '../src/media/call.dart';
 import '../src/media/live_call.dart';
 import '../src/media/render_registry.dart';
 import '../src/media/sfu_session.dart';
+import '../src/media/spotlight_controller.dart';
 import '../src/media/spotlight_director.dart';
 import '../src/reactions.dart';
 import '../theme/gather_theme.dart';
 import 'control_bar.dart';
 import 'person_avatar.dart';
 
-/// Who the call screen enlarges, and who decides.
-///
-/// In [manual] the person looking picks: tap a face to enlarge it, the return
-/// button to go back. In [auto] the view follows whoever is talking, and a tap
-/// on a face leaves auto for manual to watch that person. The toggle in the
-/// header flips between the two, over and over.
-enum SpotlightMode { manual, auto }
+export '../src/media/spotlight_controller.dart' show SpotlightMode;
+
+// `SpotlightMode` moved to the controller with the rest of the decision;
+// re-exported so every importer of this screen still sees it.
 
 /// Opens the faces. One place, because two things open them — the call banner and,
 /// while nobody else is in the call, the control bar's own camera button.
@@ -222,8 +220,8 @@ class CallScreen extends StatefulWidget {
 
   /// The clock the auto machine reads. Injected under test alongside a real
   /// (non-zero) [director] so a widget test can drive the dwell timer: advance
-  /// this clock and `tester.pump` the pending [_dwellTimer] to fire a real
-  /// promotion. Defaults to the wall clock in production.
+  /// this clock and `tester.pump` the [SpotlightController]'s pending timer to
+  /// fire a real promotion. Defaults to the wall clock in production.
   @visibleForTesting
   final DateTime Function()? now;
 
@@ -235,17 +233,6 @@ class _CallScreenState extends State<CallScreen> {
   List<String> _watching = const [];
   VideoQuality _quality = VideoQuality.thumbnail;
 
-  /// How the spotlight is chosen, and the state each side of the toggle keeps.
-  ///
-  /// [_manualId] is the face the person tapped in manual mode. [_autoPinned] is
-  /// the big view carried across when the toggle flips to auto — a temporary pin
-  /// that the next promoted speaker overrides without the mode changing. (A tap
-  /// in auto no longer pins; it switches to manual.) Only one is live at a time,
-  /// decided by [_mode].
-  SpotlightMode _mode = SpotlightMode.manual;
-  String? _manualId;
-  String? _autoPinned;
-
   /// The big view's crop override and the tile it applies to. Null id means no
   /// override is live, so every big face falls back to its type's default (see
   /// [_cropBig]). Pinned to an id so the choice stays with the face it was made
@@ -253,20 +240,25 @@ class _CallScreenState extends State<CallScreen> {
   String? _cropForId;
   bool _cropOverride = false;
 
-  late final SpotlightDirector _director = widget.director ?? SpotlightDirector();
+  /// Whose face is enlarged, in which mode, and the dwell timer behind it. The
+  /// decision lives in the controller (`../src/media/spotlight_controller.dart`)
+  /// so the debug drive can read it; this screen subscribes and renders.
+  late final SpotlightController _spotlight = SpotlightController(
+    tiles: () => _spotlightTiles(_tiles(widget.state)),
+    director: widget.director,
+    now: widget.now,
+  );
 
-  /// The clock the auto machine reads, injectable so a widget test can drive the
-  /// dwell timer with a controllable time.
-  late final DateTime Function() _now = widget.now ?? DateTime.now;
-
-  /// Fires when a pending speaker has held the floor long enough to promote, so
-  /// the view moves even when no further speaking change arrives to re-ask.
-  Timer? _dwellTimer;
+  static List<SpotlightTile> _spotlightTiles(List<CallTile> tiles) => [
+        for (final tile in tiles) (id: tile.id, isSelf: tile.isSelf, speaking: tile.speaking),
+      ];
 
   @override
   void initState() {
     super.initState();
     widget.state.addListener(_onState);
+    _spotlight.addListener(_onSpotlight);
+    if (kDebugMode) spotlightRegistry.attach(_spotlight);
     // Not [_onState]: that would drive the auto machine, and driving it calls
     // `setState`, which is illegal before the first build. The mode starts
     // manual, so there is nothing to drive yet — only the SFU to tell who is on
@@ -277,7 +269,10 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void dispose() {
     widget.state.removeListener(_onState);
-    _dwellTimer?.cancel();
+    if (kDebugMode) spotlightRegistry.detach(_spotlight);
+    _spotlight
+      ..removeListener(_onSpotlight)
+      ..dispose();
     // Nobody is looking any more. Said on the way out rather than left to a
     // timeout, because until it is said every peer keeps encoding a layer for a
     // screen that has gone — their battery, spent on our behalf.
@@ -292,64 +287,25 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   /// The roster or call changed. Move the auto spotlight if it should, then tell
-  /// the SFU what the screen now needs.
+  /// the SFU what the screen now needs — once: in auto the controller notifies
+  /// and [_onSpotlight] does the sync; in manual it does not, so it is done here.
   void _onState() {
-    _driveAuto();
+    final notifies = _spotlight.mode == SpotlightMode.auto;
+    _spotlight.roomChanged();
+    if (!notifies) _syncWatching();
+  }
+
+  /// The spotlight decided something — a toggle, a tap, a promotion, a dwell or
+  /// linger deadline landing. Redraw, and tell the SFU who is now big.
+  void _onSpotlight() {
+    if (!mounted) return;
+    setState(() {});
     _syncWatching();
   }
 
-  /// Advances the automatic spotlight from who is talking. A no-op in manual
-  /// mode, so the machine runs only when it is in charge.
-  void _driveAuto() {
-    if (_mode != SpotlightMode.auto) return;
-    final now = _now();
-    final speaking = {
-      for (final tile in _tiles(widget.state))
-        if (tile.speaking && !tile.isSelf) tile.id,
-    };
-    final result = _director.update(speaking, now);
-    // A fresh promotion is the moment a manual pin gives way to the room.
-    if (result.promoted) _autoPinned = null;
-
-    _dwellTimer?.cancel();
-    _dwellTimer = null;
-    // A pending promotion (somebody counting towards the floor) or a pending
-    // fallback (a silent big view counting down to the grid) — either one needs
-    // the view re-asked when its deadline lands, since no speaking change will.
-    final left = _director.timeToPromote(now) ?? _director.timeToFallback(now);
-    if (left != null) {
-      _dwellTimer = Timer(left, () {
-        if (!mounted) return;
-        _driveAuto();
-        _syncWatching();
-      });
-    }
-    if (mounted) setState(() {});
-  }
-
   /// The face being enlarged right now, or null for the overview grid.
-  ///
-  /// Resolved against the live tile list every time: a pinned or promoted id that
-  /// has since left the call, or that resolves to yourself, falls back to the
-  /// overview rather than enlarging nothing.
-  String? _effectiveSpotlight(List<CallTile> tiles) {
-    String? present(String? id, {required bool allowSelf}) {
-      if (id == null) return null;
-      for (final tile in tiles) {
-        if (tile.id != id) continue;
-        if (tile.isSelf && !allowSelf) return null;
-        return id;
-      }
-      return null;
-    }
-
-    return switch (_mode) {
-      SpotlightMode.manual => present(_manualId, allowSelf: true),
-      SpotlightMode.auto =>
-        present(_autoPinned, allowSelf: false) ??
-            present(_director.target, allowSelf: false),
-    };
-  }
+  String? _effectiveSpotlight(List<CallTile> tiles) =>
+      _spotlight.effectiveIn(_spotlightTiles(tiles));
 
   /// The media-plane `srcId` behind a tile, for [setWatching]. Null for the self
   /// tile and for a roster-only row with nothing on the wire — neither of which
@@ -429,68 +385,15 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   /// Flips the toggle, carrying the current big view across so it does not jump.
-  void _setMode(SpotlightMode mode) {
-    if (mode == _mode) return;
-    setState(() {
-      if (mode == SpotlightMode.auto) {
-        // Carry the manually enlarged face across as auto's temporary pin, so
-        // the big view holds until the next speaker holds the floor — rather than
-        // dropping to the grid for the length of a dwell. A self enlargement has
-        // no place in auto and is dropped; [_effectiveSpotlight] refuses it too.
-        _autoPinned = _manualId;
-        _manualId = null;
-        _director.reset();
-      } else {
-        // Keep whoever is big now, so turning auto off freezes the view rather
-        // than dropping it back to the grid.
-        _manualId = _autoPinned ?? _director.target;
-        _autoPinned = null;
-        _director.reset();
-        _dwellTimer?.cancel();
-        _dwellTimer = null;
-      }
-      _mode = mode;
-    });
-    if (mode == SpotlightMode.auto) _driveAuto();
-    _syncWatching();
-  }
+  /// The controller notifies, and [_onSpotlight] redraws and re-syncs.
+  void _setMode(SpotlightMode mode) => _spotlight.setMode(mode);
 
   /// A tap on a face: enlarge it, and leave auto for manual if that is where the
-  /// tap came from. Never yourself in auto — the room does not need to watch you
-  /// watch it, and tapping yourself there is a no-op rather than a mode switch.
-  void _onTapTile(CallTile tile) {
-    if (_mode == SpotlightMode.auto && tile.isSelf) return;
-    setState(() {
-      _manualId = tile.id;
-      if (_mode == SpotlightMode.auto) {
-        // Tapping a face is a request to watch that person: leave the automatic
-        // follow and pin them, so the toggle reflects the manual view the tap
-        // produced. The next speaker no longer overrides it.
-        _mode = SpotlightMode.manual;
-        _autoPinned = null;
-        _dwellTimer?.cancel();
-        _dwellTimer = null;
-      }
-    });
-    _syncWatching();
-  }
+  /// tap came from. Never yourself in auto (the controller's no-op).
+  void _onTapTile(CallTile tile) => _spotlight.tap(tile.id, isSelf: tile.isSelf);
 
-  /// Back to the overview grid. In auto the machine starts counting afresh, so
-  /// the next speaker to hold the floor brings the big view back on its own.
-  void _returnToOverview() {
-    setState(() {
-      if (_mode == SpotlightMode.manual) {
-        _manualId = null;
-      } else {
-        _autoPinned = null;
-        _director.reset();
-        _dwellTimer?.cancel();
-        _dwellTimer = null;
-      }
-    });
-    if (_mode == SpotlightMode.auto) _driveAuto();
-    _syncWatching();
-  }
+  /// Back to the overview grid. In auto the machine starts counting afresh.
+  void _returnToOverview() => _spotlight.returnToOverview();
 
   @override
   Widget build(BuildContext context) {
@@ -526,7 +429,7 @@ class _CallScreenState extends State<CallScreen> {
                     children: [
                       _Header(
                         count: tiles.where((tile) => !tile.isSelf).length,
-                        mode: _mode,
+                        mode: _spotlight.mode,
                         onMode: _setMode,
                         sharing: widget.state.call.screenOn,
                         onToggleShare: _toggleShare,
