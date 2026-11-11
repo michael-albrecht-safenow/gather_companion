@@ -248,7 +248,12 @@ class AppState extends ChangeNotifier {
     // The in-app Gather login (embedded webview + token harvest). Defaulted to the
     // real method channel; a suite injects a fake that returns canned credentials.
     GatherWebLogin? webLogin,
+    // HTTP seam for the one network call AppState makes itself: fetching a backend's
+    // /.well-known descriptor when a user adds it. Production is IoGatherHttp; a
+    // suite injects a fake so the descriptor flow is testable offline.
+    GatherHttp? http,
   }) : _notifier = notifier ?? Notifier(),
+       _http = http ?? const IoGatherHttp(),
        _webLogin = webLogin ?? const ChannelGatherWebLogin(),
        _connectivityChanges =
            connectivityChanges ?? Connectivity().onConnectivityChanged,
@@ -280,6 +285,7 @@ class AppState extends ChangeNotifier {
 
   final GatherCredentialStore _credentialStore;
   final BackendProfileStore _profileStore;
+  final GatherHttp _http;
   final BridgeSettingsStore _bridgeStore;
   final UiPreferences _uiPrefs;
   final CalendarStore _calendarStore;
@@ -1073,6 +1079,64 @@ class AppState extends ChangeNotifier {
     _clearHeldMap();
     notifyListeners();
     _attach();
+  }
+
+  // ---- adding backends (multi-backend) ---------------------------------------
+
+  /// The backends the user has added, for the settings picker. The built-in Gather
+  /// profile is offered by the picker itself, not listed here (decision §3).
+  Future<List<BackendProfile>> backendProfiles() => _profileStore.profiles();
+
+  /// Forgets a backend and its stored session.
+  Future<void> removeBackend(String id) => _profileStore.removeProfile(id);
+
+  /// Fetches a backend's `/.well-known/gather-backend.json` descriptor at [rawUrl]
+  /// and adds it as a profile, ready to pick and log in to. Returns the stored
+  /// profile, or a sentence to show the user. It does *not* switch to the backend:
+  /// choosing one and logging in is a later, explicit step (decisions §2, §5).
+  ///
+  /// [rawUrl] may be a bare host (`office.example.com`), an origin, or a full
+  /// descriptor URL; all resolve to the same well-known path on that origin.
+  Future<({BackendProfile? profile, String? error})> addBackendFromUrl(String rawUrl) async {
+    final descriptorUri = _descriptorUri(rawUrl);
+    if (descriptorUri == null) {
+      return (profile: null, error: 'That does not look like a backend address.');
+    }
+    final Object? body;
+    try {
+      final res = await _http.getJson(descriptorUri, '');
+      if (res.status != 200) {
+        return (profile: null, error: 'The backend answered ${res.status} for its descriptor.');
+      }
+      body = res.body;
+    } on Object catch (e) {
+      return (profile: null, error: 'Could not reach that backend: $e');
+    }
+    if (body is! Map) {
+      return (profile: null, error: 'That backend did not return a valid descriptor.');
+    }
+    final config = BackendConfig.fromDescriptor(body.cast<String, Object?>());
+    if (config.apiBase.isEmpty || config.gameSocket.isEmpty) {
+      return (profile: null, error: "That backend's descriptor is missing its endpoints.");
+    }
+    final profile = BackendProfile.fromConfig(config);
+    await _profileStore.addProfile(profile);
+    return (profile: profile, error: null);
+  }
+
+  /// Turns whatever was scanned or typed into the descriptor URL to fetch, or null
+  /// when it cannot be read as one. A bare host becomes https (an explicit scheme is
+  /// kept, so a dev `http://` backend still works); a URL already pointing at the
+  /// well-known file is left alone, otherwise the well-known path replaces whatever
+  /// path it carried, since the descriptor lives at the origin root.
+  static Uri? _descriptorUri(String rawUrl) {
+    var text = rawUrl.trim();
+    if (text.isEmpty) return null;
+    if (!text.contains('://')) text = 'https://$text';
+    final uri = Uri.tryParse(text);
+    if (uri == null || uri.host.isEmpty) return null;
+    if (uri.path.endsWith('gather-backend.json')) return uri;
+    return uri.replace(path: '/.well-known/gather-backend.json', query: null, fragment: null);
   }
 
   Future<void> unpair() async {
