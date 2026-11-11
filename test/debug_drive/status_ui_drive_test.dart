@@ -201,7 +201,11 @@ void main() {
       expect((dataOf(body)['asked']! as Map)['text'], 'heads down');
 
       await call(drive, 'status.setCustom', '{"text":"lunch"}');
-      expect(collector.customs.last.clearAt, isNull, reason: 'no clearAfterMinutes means no expiry');
+      final defaulted = collector.customs.last.clearAt!;
+      final fromNow = defaulted.difference(DateTime.now().toUtc());
+      expect(fromNow, greaterThan(const Duration(hours: 7, minutes: 59)),
+          reason: 'no clearAfterMinutes means the sheet\'s 8 h, not no expiry');
+      expect(fromNow, lessThanOrEqualTo(const Duration(hours: 8)));
 
       expect((await call(drive, 'status.clearCustom'))['ok'], isTrue);
       expect(collector.clears, 1);
@@ -279,6 +283,7 @@ void main() {
       await expectInvalid(drive, 'status.setAvailability', '{}', 'availability');
       await expectInvalid(drive, 'status.setAvailability', '{"availability":"Focused"}', 'Active, Busy, Away');
       await expectInvalid(drive, 'status.setCustom', '{}', 'text');
+      await expectInvalid(drive, 'status.setCustom', '{"text":"   "}', 'clearCustom');
       await expectInvalid(drive, 'status.setCustom', '{"text":"x","emoji":3}', 'emoji');
       await expectInvalid(drive, 'status.setCustom', '{"text":"x","clearAfterMinutes":0}', 'clearAfterMinutes');
       await expectInvalid(drive, 'status.emote', '{"emote":"🦄"}', 'emote');
@@ -297,7 +302,8 @@ void main() {
       expect(body['gameboyTheme'], 'safenow');
       expect(app.gameboyMode, isTrue);
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getKeys(), isNotEmpty);
+      expect(prefs.getBool('ui.gameboyMode'), isTrue);
+      expect(prefs.getString('ui.gameboyTheme'), 'safenow');
 
       final off = dataOf(await call(drive, 'ui.gameboy', '{"on":false}'));
       expect(off['gameboyMode'], isFalse);
@@ -352,12 +358,13 @@ void main() {
       ('status.clearCustom', '{}'),
       ('status.emote', '{"emote":"🔥"}'),
       ('status.hand', '{"raised":false}'),
-      ('ui.party', '{"on":false}'),
+      ('ui.party', '{"on":true}'),
     ];
 
     test('holds every outward action outside the test space, before it reaches the app', () async {
       final collector = _Recording();
-      final drive = install(await booted(collector), boot: 'live');
+      final app = await booted(collector);
+      final drive = install(app, boot: 'live');
       for (final (method, args) in outward) {
         final body = await call(drive, method, args);
         expect(body['ok'], isFalse, reason: method);
@@ -368,6 +375,7 @@ void main() {
       expect(collector.clears, 0);
       expect(collector.emotes, isEmpty);
       expect(collector.hands, isEmpty);
+      expect(app.partyMode, isFalse);
     });
 
     test('lets them through with confirm:true', () async {

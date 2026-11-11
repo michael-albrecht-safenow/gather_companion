@@ -177,7 +177,8 @@ DebugDrive? installDebugDrive({
     callFeature(call: () => binding.app.callHandle, boot: () => binding.boot),
     plansFeature(app: () => binding.app, boot: () => binding.boot),
     gameboyFeature(app: () => binding.app, boot: () => binding.boot),
-    statusFeature(app: () => binding.app, boot: () => binding.boot), uiFeature(app: () => binding.app, boot: () => binding.boot),
+    statusFeature(app: () => binding.app, boot: () => binding.boot),
+    uiFeature(app: () => binding.app, boot: () => binding.boot),
     ...extraFeatures,
   ]);
   // After the install succeeded, so a refused install leaves no sink behind.

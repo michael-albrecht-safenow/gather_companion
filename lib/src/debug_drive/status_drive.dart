@@ -33,6 +33,12 @@
 ///    exists only in a call, and the app lowers a hand left up outside one on
 ///    the next roster, so a raise there would be undone before anyone saw it.
 ///
+/// `setCustom` without `clearAfterMinutes` expires after the status sheet's own
+/// [statusClearAfter] (8 h), never "no expiry": the sheet always sends one, so a
+/// status that stands forever on a colleague-visible row is nothing a tap could
+/// leave behind — and a forgotten drive run should not either. Blank `text` is
+/// `invalidParams` rather than a silent clear.
+///
 /// An emote is one of the picker's eight ([gbEmotes], the same list the control
 /// bar offers) — anything else is `invalidParams`, since no control could send
 /// it. A trailing U+FE0F is ignored when matching, because `👍️` carries one and
@@ -43,6 +49,7 @@ library;
 
 import 'package:gather_client/gather_client.dart' show settableAvailabilities;
 
+import '../../ui/status_sheet.dart' show statusClearAfter;
 import '../app_state.dart';
 import '../gameboy_controls.dart' show gbEmotes;
 import 'debug_drive.dart';
@@ -106,15 +113,18 @@ DriveFeature statusFeature({
     DriveAction(
       'setCustom',
       (args) async {
-        final text = args.requireString('text');
+        final text = args.requireString('text').trim();
+        // AppState turns a blank line into a clear; answering that as a set
+        // would report `asked: ""` for something that was never asked.
+        if (text.isEmpty) throw const DriveInvalidParams('"text" is blank — use status.clearCustom to clear');
         final emoji = _optionalString(args, 'emoji');
-        final minutes = args.optionalInt('clearAfterMinutes', min: 1, max: 60 * 24 * 7);
-        final clearAt = minutes == null ? null : clock().toUtc().add(Duration(minutes: minutes));
+        final minutes = args.optionalInt('clearAfterMinutes', min: 1, max: 60 * 24 * 7) ?? statusClearAfter.inMinutes;
+        final clearAt = clock().toUtc().add(Duration(minutes: minutes));
         return write(
           (s) => s.setCustomStatus(text: text, emoji: emoji, clearAt: clearAt),
           () => {
-            'asked': {'text': text.trim(), 'emoji': emoji, 'clearAt': clearAt?.toIso8601String()},
-            'pending': app().customStatus?.text != text.trim(),
+            'asked': {'text': text, 'emoji': emoji, 'clearAt': clearAt.toIso8601String()},
+            'pending': app().customStatus?.text != text,
           },
         );
       },
