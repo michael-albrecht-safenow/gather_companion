@@ -105,6 +105,18 @@ ships both.**
   `--vmservice-out-file`, `tool/drive.sh`, the `dart_mcp_server` call sequence and
   the Wi-Fi exposure caveat are in `docs/sim_harness.md` → "Driving features
   headless".
+- **A PR that adds or changes a feature ships its drive action and a handler
+  test** (#108). If an agent cannot ask the app whether the feature works, the
+  only check left is a screenshot taken at the right moment, which catches a
+  state machine with a clock (a dwell, a linger, a walk) only by luck. The action calls the feature's own
+  public `AppState` method (or reads it) — never a second code path — and the
+  handler test drives it in-process through `installDebugDrive(…,
+  register: RecordingRegistrar().call)`; the shapes are in
+  `lib/src/debug_drive/AGENTS.md`. Only what is visual by nature (layout, the
+  Gameboy skin, a design-mock comparison) is exempt. The simulator plan itself
+  runs on the drive: `tool/sim_plan.sh` (`docs/sim_test_plan.md`) launches the
+  harness per row and exits non-zero on any FAIL; a feature with a scripted
+  scene earns a row there.
 - **Honesty over confidence.** Where the bridge does not know something it says
   so rather than guessing: `confidence: 'inferred'` vs `'observed'`, and the
   collector reports itself *unhealthy* while connected-but-stateless rather than
@@ -196,7 +208,8 @@ purely additive.
   `--vmservice-out-file=.dart_tool/vm_uri.<udid>` to the `flutter run` above and
   `tool/drive.sh -d <udid> state.dump` returns where you are, the call state and
   the settings as JSON; `log.tail` reads `media.log` live. Debug builds only. See
-  `docs/sim_harness.md` → "Driving features headless".
+  `docs/sim_harness.md` → "Driving features headless". The whole simulator test
+  plan is one command: `tool/sim_plan.sh [-d <udid>] [--only C4,A1]`.
 - **`simctl privacy grant camera` does not rescue `lib/main.dart`** — the grant
   does not reliably suppress the pairing dialog, which is why the rule above is
   "always the harness", not "grant and run the real app".

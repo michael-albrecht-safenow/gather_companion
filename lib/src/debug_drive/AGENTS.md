@@ -99,8 +99,17 @@ Handlers are tested in-process through the registry
 (`installDebugDrive(..., register: RecordingRegistrar().call)` then
 `drive.invoke('ext.gc.state.dump', '{"…":…}')`), driving the real `AppState`
 through its `debugApply*` seams. **A PR that adds or changes a drive action ships
-a handler test.** Outward actions need a gate test; `install_test.dart` shows the
-shape with a test-only outward action.
+a handler test** — and, the other way round (#108, root `AGENTS.md`), **a PR that
+adds or changes a feature ships its drive action and a handler test.** Outward
+actions need a gate test; `install_test.dart` shows the shape with a test-only
+outward action.
+
+End to end, `tool/sim_plan.sh` runs `docs/sim_test_plan.md` on a simulator with
+these actions only (`call.spotlight*`, `activity.list`, `presence.map.people`,
+`move.goTo`, `state.dump`); its judging is `tool/sim_plan_check.dart`. Changing a
+readout's shape that a row reads (`since`/`sinceMs`, `speaking`, `tiles`,
+`transitions`, `promotions`, activity `items[].id`, people `x`/`y`) means
+updating that file and `test/tool/sim_plan_check_test.dart` with it.
 
 ### Common Patterns
 
