@@ -40,13 +40,16 @@
 /// for its D-pad and legend to lift above it.
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../src/app_state.dart';
+import '../src/call_screen_debug.dart';
 import '../theme/gather_theme.dart';
 import 'activity_screen.dart';
 import 'calendar_screen.dart';
+import 'call_screen.dart' show closeCallScreen, openCallScreen;
 import 'dial_screen.dart';
 import 'control_bar.dart';
 import 'gameboy_shell.dart';
@@ -122,6 +125,30 @@ class _HomeShellState extends State<HomeShell> {
   /// the map's `ListenableBuilder` a new object each frame and make it
   /// unsubscribe and resubscribe on every socket notification.
   late final Listenable _mapTick = Listenable.merge([widget.state, widget.state.positions]);
+
+  /// The drive's door to the call screen (`ext.gc.ui.openCall` / `closeCall`):
+  /// the banner's own `openCallScreen`, from this shell's context, which sits
+  /// under the app's navigator for as long as any banner can. Only ever built
+  /// and published under `kDebugMode`; see `../src/call_screen_debug.dart`.
+  CallScreenDebug? _callDebug;
+
+  @override
+  void initState() {
+    super.initState();
+    if (kDebugMode) {
+      _callDebug = CallScreenDebug(
+        open: () => openCallScreen(context, widget.state),
+        close: () => closeCallScreen(context),
+      );
+      callScreenDebugActive = _callDebug;
+    }
+  }
+
+  @override
+  void dispose() {
+    if (kDebugMode && identical(callScreenDebugActive, _callDebug)) callScreenDebugActive = null;
+    super.dispose();
+  }
 
   void _select(_Tab tab) {
     if (tab == _tab) return;

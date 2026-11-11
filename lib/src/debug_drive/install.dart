@@ -45,17 +45,23 @@ import 'package:flutter/foundation.dart';
 import '../app_state.dart';
 import '../media/media_check_controller.dart';
 import '../media/media_log.dart';
+import 'activity_drive.dart';
 import 'builtin_features.dart';
 import 'call_drive.dart';
 import 'debug_drive.dart';
 import 'drive_log.dart';
 import 'drive_ops.dart';
+import 'fault_drive.dart';
 import 'gameboy_drive.dart';
 import 'media_check_drive.dart';
 import 'media_drive.dart';
+import 'move_drive.dart';
 import 'plans_drive.dart';
+import 'presence_drive.dart';
 import 'sfu_drive.dart';
 import 'state_feature.dart';
+import 'status_drive.dart';
+import 'ui_drive.dart';
 
 /// What the handlers read through, so a rebind is one assignment.
 class DriveBinding {
@@ -175,6 +181,13 @@ DebugDrive? installDebugDrive({
     callFeature(call: () => binding.app.callHandle, boot: () => binding.boot),
     plansFeature(app: () => binding.app, boot: () => binding.boot),
     gameboyFeature(app: () => binding.app, boot: () => binding.boot),
+    presenceFeature(app: () => binding.app, boot: () => binding.boot),
+    activityFeature(app: () => binding.app, boot: () => binding.boot, ops: driveOps),
+    moveFeature(app: () => binding.app, boot: () => binding.boot, ops: driveOps),
+    callControlsFeature(app: () => binding.app, boot: () => binding.boot, ops: driveOps),
+    faultFeature(app: () => binding.app, boot: () => binding.boot, ops: driveOps),
+    statusFeature(app: () => binding.app, boot: () => binding.boot),
+    uiFeature(app: () => binding.app, boot: () => binding.boot),
     ...extraFeatures,
   ]);
   // After the install succeeded, so a refused install leaves no sink behind.

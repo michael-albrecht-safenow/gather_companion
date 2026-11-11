@@ -418,6 +418,11 @@ or an `integration_test` that calls the handlers in-process). Keep `idb` +
 screenshots for what is visual by nature: layout, the Gameboy skin, and
 comparing against design mocks.
 
+*Done:* `tool/sim_plan.sh` (`sim_plan.dart` launches and records,
+`sim_plan_check.dart` judges, `test/tool/sim_plan_check_test.dart` pins the
+judging against the real `SpotlightDirector`). Every C and A row is drive-only;
+what stays on `idb` is listed in the plan's "Visual by nature" section.
+
 ## Second endpoint: can a simulator join? (investigated 2026-11-10)
 
 **Yes, audio only, with caveats.** The media layer works on the simulator;

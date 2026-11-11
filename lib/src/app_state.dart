@@ -775,6 +775,15 @@ class AppState extends ChangeNotifier {
   /// call, not only once Gather has placed me.
   String? get meId => _roster?.selfId;
 
+  /// Whether Gather has sent a roster at all since this [AppState] was built.
+  ///
+  /// [directory] and [peopleOnMap] are both empty before the first one, and empty
+  /// again in an office with nobody else in it; this is the one bit that tells the
+  /// two apart, so a readout can say "not received" rather than "nobody here".
+  /// Not reset on reconnect — nothing clears `_roster` — so after a drop it is the
+  /// last connection's roster; pair it with collector health before trusting it.
+  bool get hasRoster => _roster != null;
+
   /// Where I am, in tiles, or null before the first roster. Rounded, because its
   /// callers ask questions about tiles — which room am I in — rather than drawing.
   ({int x, int y})? get myTile {
@@ -1166,6 +1175,13 @@ class AppState extends ChangeNotifier {
   /// Read back off the roster rather than remembered, so the desktop client
   /// changing it is reflected here without this app being told.
   String? get myAvailability => _myRow()?.availability;
+
+  /// Whether a game socket is attached at all — the condition every "being a
+  /// person in the room" write below checks first and answers *Not connected to
+  /// Gather.* without. Public so a caller can say that before it acts rather
+  /// than parse the sentence after; [setHandRaised] in particular is local-first
+  /// and drops the wire half silently when this is false.
+  bool get collectorAttached => _collector != null;
 
   /// Who I am in a conversation with — Gather's `clusterId`, which is how it
   /// remembers who is talking to whom.
@@ -2976,6 +2992,12 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The display names (lowercased) of the calendars shared to this Google account
+  /// — the names a colleague's Gather label must match for the Dial's calendar
+  /// button to appear. Empty when disconnected or nothing is shared. Names only:
+  /// the calendar ids and every credential stay private.
+  List<String> get sharedCalendarNames => [..._calendarIndex.keys]..sort();
+
   /// Seeds the shared-calendar index and marks Google connected, so the name-matching
   /// the Dial depends on can be driven without a live OAuth account.
   @visibleForTesting
@@ -3612,6 +3634,16 @@ class AppState extends ChangeNotifier {
   /// you were looking elsewhere.
   int get unreadActivityCount => _live.length + _fetched.where((item) => !item.isRead).length;
 
+  /// How many of [unreadActivityCount] are live waves — counted whatever their
+  /// `isRead` says, since a [WaveActivity] carries `isRead: true` (Gather has no
+  /// read cursor for waves) yet one off the socket has not been seen.
+  int get liveActivityCount => _live.length;
+
+  /// Whether [item] is one of those [unreadActivityCount] counts: a live wave, or
+  /// a fetched row Gather has not marked read. The same rule as the count, per
+  /// row, so a readout can say *which* rows make up the badge.
+  bool activityCountsAsUnread(ActivityItem item) => _live.any((live) => identical(live, item)) || !item.isRead;
+
   bool get isLoadingActivity => _loadingActivity;
 
   /// The last failure, or null. Kept so the screen can say what went wrong instead
@@ -3631,6 +3663,17 @@ class AppState extends ChangeNotifier {
   /// Which space [_fetched] was fetched for, so a reconnect into a different space
   /// does not leave the previous one's history on screen.
   String? _fetchedFor;
+
+  /// Why [refreshActivity] and [markActivityRead] would do nothing right now, or
+  /// null when they would act: `not_signed_in` (no feed — nothing has attached a
+  /// Gather session) or `no_space` (Gather has not named a space to read the feed
+  /// for). The same two guards both methods open with; a busy refresh is
+  /// [isLoadingActivity], which only [refreshActivity] declines on.
+  String? get activityUnavailable => _activityFeed == null
+      ? 'not_signed_in'
+      : _activitySpaceId == null
+          ? 'no_space'
+          : null;
 
   Future<void> refreshActivity() async {
     final feed = _activityFeed;

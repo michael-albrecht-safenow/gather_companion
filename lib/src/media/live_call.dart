@@ -858,6 +858,21 @@ class LiveCall implements Call {
   /// putting it on the interface would make every fake invent one.
   Map<String, Object?>? debugSfuSnapshot() => _sfu?.debugSnapshot();
 
+  /// The debug drive's `fault.silentMove`: [SfuSession.debugSilentMove] on this
+  /// call's session — repoint the own node at [addr] and leave the send transport
+  /// where it was (issue #67). False when no session has opened yet, so the drive
+  /// can say there was nothing to move rather than report a move that never
+  /// happened. Referenced only from `lib/src/debug_drive/`, so it shakes out of
+  /// release with the drive.
+  Future<bool> debugSilentMove(String addr) async {
+    final sfu = _sfu;
+    if (sfu == null) return false;
+    // The issue #67 test seam, reached on purpose: this is its one non-test caller.
+    // ignore: invalid_use_of_visible_for_testing_member
+    await sfu.debugSilentMove(addr);
+    return true;
+  }
+
   /// Which flow-probe stream each `MediaStream` this call holds belongs to —
   /// stream id → `in:<srcId>|<tag>`, and the local camera stream → `out:video` —
   /// so the debug drive's `media.render` can check a tile against the call's own
