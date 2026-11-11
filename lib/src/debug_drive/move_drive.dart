@@ -45,10 +45,26 @@
 ///    teleport fallback `goTo` uses when there is no path, or already standing
 ///    there), `route_ended` (a route ran and stopped by itself — normally arrival,
 ///    but a wall or a roster that moved us ends one too, so read `at`), `stopped`
-///    (`move.stop` was called during it) or `timeout` (still walking after
-///    `timeoutMs`, default 60 s; the walk is *not* cancelled). With `at`,
-///    `requested` and `atRequested`, because `goTo` relocates a blocked or occupied
-///    tile to the nearest free one — "it ended somewhere else" is often correct.
+///    (`move.stop` was called during it), `superseded` (another `move.*` walk or hop
+///    started before this one ended — without it the first op would sit pending
+///    until the *second* route ended and then claim it as its own arrival) or
+///    `timeout` (still walking after `timeoutMs`, default 60 s; the walk is *not*
+///    cancelled). With `at`, `requested` and `atRequested`, because `goTo` relocates
+///    a blocked or occupied tile to the nearest free one — "it ended somewhere else"
+///    is often correct. A walk the user cancels on the map's own Stop pill is not
+///    seen as a stop here; it reads `route_ended`, short of the goal.
+///
+/// ## Hops, and why `at` is not enough after one
+///
+/// After a walk `at` is [AppState.myTile], the walk's own tile. After a hop it is
+/// not: the hop releases the walk, so `myTile` falls through to the roster, and on
+/// a live socket the roster that carries the new tile arrives up to a quarter of a
+/// second *after* the method returns. Reading `at` alone would answer the old tile
+/// and `atRequested: false` for a warp that worked. So when the method hopped, the
+/// readout also carries `hop` — the tile the teleport was sent to, from
+/// [AppState.lastTeleport], i.e. what was asked of Gather, not what it confirmed —
+/// and `atRequested` is judged on `hop`. `hopConfirmed` says whether `at` has caught
+/// up yet. In the harness the fake confirms synchronously, so the two agree there.
 ///
 /// ## Resolving a name to a thing
 ///
@@ -83,6 +99,59 @@ DriveFeature moveFeature({
 }) {
   // Bumped by `move.stop`, so a walk op can tell "stopped" from "ended".
   var stops = 0;
+  // Bumped by every walk or hop this feature starts, so an op whose route was
+  // replaced by a later one settles as "superseded" rather than inheriting its end.
+  var moves = 0;
+  // The pending walk ops' checks, re-run after every movement this feature makes:
+  // a hop on `goTo`'s no-route branch only ticks positions and need not notify
+  // AppState's listeners, so a listener alone could miss being superseded.
+  final waiting = <void Function()>{};
+
+  // Movements under way through this feature. A later movement releases the
+  // running route *inside* its AppState call, before it has answered: while one is
+  // in flight a pending op cannot yet tell "superseded" from "ended", so it waits.
+  var inFlight = 0;
+
+  void recheck() {
+    for (final check in [...waiting]) {
+      check();
+    }
+  }
+
+  /// Runs an AppState movement; on success bumps [moves]. Answers the method's
+  /// refusal (or null) and the movement's generation.
+  Future<({String? failed, int mine})> begin(Future<String?> Function() start) async {
+    inFlight++;
+    String? failed;
+    try {
+      failed = await start();
+    } finally {
+      inFlight--;
+    }
+    if (failed == null) moves++;
+    recheck();
+    return (failed: failed, mine: moves);
+  }
+
+  /// The hop a movement sent, if it sent one since [seqBefore].
+  ({int x, int y})? hopSince(int? seqBefore) {
+    final hop = app().lastTeleport;
+    if (hop == null || hop.seq == seqBefore) return null;
+    return (x: hop.x.round(), y: hop.y.round());
+  }
+
+  /// `at` / `hop` / `atRequested` / `hopConfirmed`, per "Hops" above.
+  Map<String, Object?> arrival(({int x, int y})? requested, ({int x, int y})? hop) {
+    final at = app().myTile;
+    final landed = hop ?? at;
+    return {
+      if (hop != null) 'hop': _tile(hop),
+      if (hop != null) 'hopConfirmed': at != null && at.x == hop.x && at.y == hop.y,
+      if (requested != null) 'requested': _tile(requested),
+      if (requested != null)
+        'atRequested': landed != null && landed.x == requested.x && landed.y == requested.y,
+    };
+  }
 
   Map<String, Object?> where() {
     final state = app();
@@ -106,8 +175,10 @@ DriveFeature moveFeature({
   }) async {
     final state = app();
     final stopsBefore = stops;
-    final failed = await start();
+    final seqBefore = state.lastTeleport?.seq;
+    final (:failed, :mine) = await begin(start);
     if (failed != null) return _refusal(failed, {'boot': boot(), ...extra});
+    final hop = hopSince(seqBefore);
 
     String settled;
     if (!state.onRoute) {
@@ -115,11 +186,16 @@ DriveFeature moveFeature({
     } else {
       final done = Completer<String>();
       void check() {
-        if (done.isCompleted || state.onRoute) return;
-        done.complete(stops != stopsBefore ? 'stopped' : 'route_ended');
+        if (done.isCompleted || inFlight > 0) return;
+        if (moves != mine) {
+          done.complete('superseded');
+        } else if (!state.onRoute) {
+          done.complete(stops != stopsBefore ? 'stopped' : 'route_ended');
+        }
       }
 
       state.addListener(check);
+      waiting.add(check);
       final timer = Timer(Duration(milliseconds: timeoutMs), () {
         if (!done.isCompleted) done.complete('timeout');
       });
@@ -128,15 +204,14 @@ DriveFeature moveFeature({
       } finally {
         timer.cancel();
         state.removeListener(check);
+        waiting.remove(check);
       }
     }
 
-    final at = state.myTile;
     return DriveResult.ok({
       'settled': settled,
       ...extra,
-      if (requested != null) 'requested': _tile(requested),
-      if (requested != null) 'atRequested': at != null && at.x == requested.x && at.y == requested.y,
+      ...arrival(requested, hop),
       ...where(),
     });
   }
@@ -164,14 +239,10 @@ DriveFeature moveFeature({
       (args) async {
         final x = _requireInt(args, 'x');
         final y = _requireInt(args, 'y');
-        final failed = await app().warpToTile(x, y);
+        final seqBefore = app().lastTeleport?.seq;
+        final (:failed, mine: _) = await begin(() => app().warpToTile(x, y));
         if (failed != null) return _refusal(failed, {'boot': boot()});
-        final at = app().myTile;
-        return DriveResult.ok({
-          'requested': {'x': x, 'y': y},
-          'atRequested': at != null && at.x == x && at.y == y,
-          ...where(),
-        });
+        return DriveResult.ok({...arrival((x: x, y: y), hopSince(seqBefore)), ...where()});
       },
       outward: true,
     ),

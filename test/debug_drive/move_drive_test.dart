@@ -2,11 +2,16 @@
 /// is the harness's [FakeCollector] — so `Walk` is the real one, each step is a
 /// real `move` the fake confirms with a roster, and a walk op settles when the
 /// route actually ends. Covers every action's success, each refusal it names, bad
-/// args, and the outward gate on a live boot (with `stop` the one action it lets
-/// through).
+/// args, a hop whose roster has not caught up, a walk superseded by another, and
+/// the outward gate on a live boot (with `stop` the one action it lets through).
+///
+/// Every test runs on a fake clock ([_vtest]). The walk steps on a periodic timer,
+/// ops time out on a timer and the poll waits between reads; on the wall clock that
+/// is a suite whose "100 ms timeout" case is a race a loaded CI box can lose.
 library;
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
 import 'package:gather_companion/harness/fake_collector.dart';
@@ -68,6 +73,35 @@ class _SilentFeed extends ActivityFeed {
   Future<ActivityFeedPage> fetch(String spaceId) async => ActivityFeedPage.empty;
 }
 
+/// A collector whose teleports reach "the server" but whose roster never says so —
+/// the live socket's quarter-second lag, held open.
+class _LaggingFake extends FakeCollector {
+  @override
+  ({bool ok, String? detail}) teleport({required num x, required num y, String direction = 'Down'}) {
+    teleports.add((x: x, y: y));
+    return (ok: true, detail: null);
+  }
+}
+
+/// [test], with [body] on a fake clock that is advanced until it finishes.
+void _vtest(String name, Future<void> Function() body) => test(name, () {
+      fakeAsync((async) {
+        Object? error;
+        StackTrace? stack;
+        var done = false;
+        body().then((_) => done = true, onError: (Object e, StackTrace s) {
+          error = e;
+          stack = s;
+          done = true;
+        });
+        for (var i = 0; !done && i < 60000; i++) {
+          async.elapse(const Duration(milliseconds: 10));
+        }
+        if (error != null) Error.throwWithStackTrace(error!, stack!);
+        if (!done) fail('did not finish in ten virtual minutes');
+      });
+    });
+
 PresenceSnapshot _inSpace(String id) => PresenceSnapshot(
       self: SelfState(spaceId: id),
       players: const [],
@@ -85,8 +119,8 @@ void main() {
 
   /// A booted app on the schematic office, me at (10, 7), the cast where
   /// `kCastStartTiles` puts them.
-  Future<({AppState app, FakeCollector fake})> booted({int participants = 4}) async {
-    final fake = FakeCollector(participants: participants);
+  Future<({AppState app, FakeCollector fake})> booted({int participants = 4, FakeCollector? collector}) async {
+    final fake = collector ?? FakeCollector(participants: participants);
     final app = AppState(
       notifier: _SilentNotifier(),
       credentials: _Credentials(),
@@ -136,7 +170,7 @@ void main() {
   }
 
   group('move.goTo', () {
-    test('walks a real route and settles on arrival, at the requested tile', () async {
+    _vtest('walks a real route and settles on arrival, at the requested tile', () async {
       final (:app, :fake) = await booted();
       final drive = install(app);
       final started = await call(drive, 'goTo', '{"x":12,"y":7}');
@@ -153,7 +187,7 @@ void main() {
       expect(fake.teleports, isEmpty, reason: 'and did not hop');
     });
 
-    test('move.stop during the walk settles it as stopped, short of the goal', () async {
+    _vtest('move.stop during the walk settles it as stopped, short of the goal', () async {
       final (:app, :fake) = await booted();
       final drive = install(app);
       final started = await call(drive, 'goTo', '{"x":19,"y":14}');
@@ -167,7 +201,26 @@ void main() {
       expect(result['atRequested'], isFalse);
     });
 
-    test('a walk still going after timeoutMs answers timeout and is left running', () async {
+    _vtest('a second walk supersedes the first op instead of lending it its arrival', () async {
+      final (:app, :fake) = await booted();
+      final drive = install(app);
+      final first = await call(drive, 'goTo', '{"x":19,"y":14}');
+      final second = await call(drive, 'goTo', '{"x":15,"y":12}');
+      expect(dataOf(await settled(drive, first))['settled'], 'superseded');
+      final result = dataOf(await settled(drive, second));
+      expect(result['settled'], 'route_ended');
+      expect(result['at'], {'x': 15, 'y': 12});
+    });
+
+    _vtest('a hop during the walk supersedes it too', () async {
+      final (:app, :fake) = await booted();
+      final drive = install(app);
+      final walk = await call(drive, 'goTo', '{"x":19,"y":14}');
+      expect(dataOf(await call(drive, 'warpToTile', '{"x":15,"y":12}'))['at'], {'x': 15, 'y': 12});
+      expect(dataOf(await settled(drive, walk))['settled'], 'superseded');
+    });
+
+    _vtest('a walk still going after timeoutMs answers timeout and is left running', () async {
       final (:app, :fake) = await booted();
       final drive = install(app);
       final result = dataOf(await settled(drive, await call(drive, 'goTo', '{"x":0,"y":0,"timeoutMs":100}')));
@@ -176,7 +229,7 @@ void main() {
       app.stopWalking();
     });
 
-    test("the AppState's own refusals settle the op as refusals with a stable reason", () async {
+    _vtest("the AppState's own refusals settle the op as refusals with a stable reason", () async {
       final bare = install(AppState());
       final noMap = await settled(bare, await call(bare, 'goTo', '{"x":1,"y":1}'));
       expect(noMap['ok'], isFalse);
@@ -189,7 +242,7 @@ void main() {
       expect(notConnected['reason'], 'not_connected');
     });
 
-    test('bad coordinates are invalidParams, not refusals', () async {
+    _vtest('bad coordinates are invalidParams, not refusals', () async {
       final drive = install(AppState());
       for (final args in ['{}', '{"x":1}', '{"x":"a","y":1}', '{"x":1.5,"y":1}', '{"x":-1,"y":1}', '{"x":1,"y":1,"timeoutMs":5}']) {
         expect(errorOf(await drive.invoke('ext.gc.move.goTo', args)).code, -32602, reason: args);
@@ -198,17 +251,28 @@ void main() {
   });
 
   group('move.warpToTile', () {
-    test('hops at once, with no op, to the tile asked', () async {
+    _vtest('hops at once, with no op, to the tile asked', () async {
       final (:app, :fake) = await booted();
       final data = dataOf(await call(install(app), 'warpToTile', '{"x":15,"y":12}'));
       expect(data['at'], {'x': 15, 'y': 12});
       expect(data['atRequested'], isTrue);
+      expect(data['hop'], {'x': 15, 'y': 12});
+      expect(data['hopConfirmed'], isTrue, reason: 'the fake confirms at once');
       expect(data.containsKey('id'), isFalse);
       expect(fake.teleports.single, (x: 15, y: 12));
       expect(fake.moves, isEmpty);
     });
 
-    test('refuses with the method’s reason, and reads its args strictly', () async {
+    _vtest('before the roster confirms the hop: at is still the old tile, and says so', () async {
+      final (:app, :fake) = await booted(collector: _LaggingFake());
+      final data = dataOf(await call(install(app), 'warpToTile', '{"x":15,"y":12}'));
+      expect(data['at'], {'x': 10, 'y': 7}, reason: 'the roster has not moved me yet');
+      expect(data['hop'], {'x': 15, 'y': 12});
+      expect(data['hopConfirmed'], isFalse);
+      expect(data['atRequested'], isTrue, reason: 'judged on the hop sent, not a lagging roster');
+    });
+
+    _vtest('refuses with the method’s reason, and reads its args strictly', () async {
       final drive = install(AppState());
       final body = await call(drive, 'warpToTile', '{"x":1,"y":1}');
       expect(body['ok'], isFalse);
@@ -218,7 +282,7 @@ void main() {
   });
 
   group('move.warpToPerson', () {
-    test('by name, case-insensitive: lands beside them, as an op', () async {
+    _vtest('by name, case-insensitive: lands beside them, as an op', () async {
       final (:app, :fake) = await booted();
       final drive = install(app);
       final started = await call(drive, 'warpToPerson', '{"name":"ada"}');
@@ -230,7 +294,7 @@ void main() {
       expect((hop.x - 4).abs() <= 1 && (hop.y - 3).abs() <= 1, isTrue, reason: 'next to Ada at (4,3): $hop');
     });
 
-    test('by id', () async {
+    _vtest('by id', () async {
       final (:app, :fake) = await booted();
       final drive = install(app);
       final result = dataOf(await settled(drive, await call(drive, 'warpToPerson', '{"id":"space-grace"}')));
@@ -238,7 +302,7 @@ void main() {
       expect(fake.teleports, hasLength(1));
     });
 
-    test('an unknown person, an ambiguous name, and an absent one are refused', () async {
+    _vtest('an unknown person, an ambiguous name, and an absent one are refused', () async {
       final (:app, :fake) = await booted(participants: 8);
       final drive = install(app);
       expect((await call(drive, 'warpToPerson', '{"id":"nobody"}'))['reason'], 'no_such_person');
@@ -259,14 +323,14 @@ void main() {
       expect(result['message'], 'Bob is not in the office right now.');
     });
 
-    test('neither id nor name is invalidParams', () async {
+    _vtest('neither id nor name is invalidParams', () async {
       expect(errorOf(await install(AppState()).invoke('ext.gc.move.warpToPerson', '{}')).code, -32602);
       expect(errorOf(await install(AppState()).invoke('ext.gc.move.warpToPerson', '{"name":""}')).code, -32602);
     });
   });
 
   group('move.goToRoom', () {
-    test('by name walks in and settles inside the room', () async {
+    _vtest('by name walks in and settles inside the room', () async {
       final (:app, :fake) = await booted();
       final drive = install(app);
       final started = await call(drive, 'goToRoom', '{"name":"lounge"}');
@@ -277,7 +341,7 @@ void main() {
       expect(fake.moves, isNotEmpty);
     });
 
-    test('no floor plan, an unknown room and a locked one are refused before walking', () async {
+    _vtest('no floor plan, an unknown room and a locked one are refused before walking', () async {
       expect((await call(install(AppState()), 'goToRoom', '{"name":"Lounge"}'))['reason'], 'no_map');
 
       final (:app, :fake) = await booted();
@@ -302,13 +366,13 @@ void main() {
       expect(body['room'], {'id': 'r1', 'stableId': 's1', 'name': 'Vault'});
     });
 
-    test('no selector is invalidParams', () async {
+    _vtest('no selector is invalidParams', () async {
       expect(errorOf(await install(AppState()).invoke('ext.gc.move.goToRoom', '{}')).code, -32602);
     });
   });
 
   group('move.goToMyDesk', () {
-    test('with no desk the op settles as no_desk', () async {
+    _vtest('with no desk the op settles as no_desk', () async {
       final (:app, :fake) = await booted();
       final drive = install(app);
       final result = await settled(drive, await call(drive, 'goToMyDesk'));
@@ -316,7 +380,7 @@ void main() {
       expect(fake.moves, isEmpty);
     });
 
-    test('with a desk it walks there', () async {
+    _vtest('with a desk it walks there', () async {
       final (:app, :fake) = await booted();
       // The schematic office has no desks: give it one two tiles east of me, and
       // give me that desk on the roster. Walk keeps its own tile from the fake.
@@ -342,7 +406,7 @@ void main() {
     });
   });
 
-  test('move.stop with nothing running is a harmless ok', () async {
+  _vtest('move.stop with nothing running is a harmless ok', () async {
     final data = dataOf(await call(install(AppState()), 'stop'));
     expect(data['wasOnRoute'], isFalse);
     expect(data['at'], isNull);
@@ -357,7 +421,7 @@ void main() {
       'goToMyDesk': '{}',
     };
 
-    test('every movement is refused outside the test space; stop is not', () async {
+    _vtest('every movement is refused outside the test space; stop is not', () async {
       final (:app, :fake) = await booted();
       final drive = install(app, boot: 'live', testSpaceId: 'the-test-space');
       for (final MapEntry(key: action, value: args) in outward.entries) {
@@ -369,7 +433,7 @@ void main() {
       expect((await call(drive, 'stop'))['ok'], isTrue, reason: 'calling off a walk is never gated');
     });
 
-    test('confirm:true, or being in the test space, lets them through', () async {
+    _vtest('confirm:true, or being in the test space, lets them through', () async {
       final (:app, :fake) = await booted();
       final confirmed = install(app, boot: 'live', testSpaceId: 'the-test-space');
       final hop = await call(confirmed, 'warpToTile', '{"x":15,"y":12,"confirm":true}');
