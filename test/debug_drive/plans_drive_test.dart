@@ -363,7 +363,7 @@ void main() {
       final drive = install(state, boot: 'live');
 
       final refused = await call(drive, 'add', '{"id":"p1","title":"X","startsAt":"$startIso"}');
-      expect(refused, {'mirrorCalendarId': 'work', 'ok': false, 'reason': 'calendar_mirror_on'});
+      expect(refused, {'boot': 'live', 'mirrorCalendarId': 'work', 'ok': false, 'reason': 'calendar_mirror_on'});
       expect(mirror.created, isEmpty);
       expect(state.plannedMeetings, isEmpty);
 

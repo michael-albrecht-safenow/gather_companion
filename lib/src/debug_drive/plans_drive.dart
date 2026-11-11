@@ -65,7 +65,7 @@
 /// Google/Outlook account colleagues see. This build wires only the no-op mirror
 /// and no UI chooses a calendar, so that road is closed today — but should it open,
 /// `add`/`update`/`delete` on `boot: "live"` with mirroring on are
-/// `refused('calendar_mirror_on', {mirrorCalendarId})` unless the args carry
+/// `refused('calendar_mirror_on', {boot, mirrorCalendarId})` unless the args carry
 /// `"confirm": true`, the same consent rule as the registry's outward gate (the
 /// test space does not lift it: a calendar is not in a space).
 ///
@@ -268,7 +268,7 @@ DriveResult _noSuchRoom(AppState state, String stableId) => DriveResult.refused(
 DriveResult? _mirrorRefusal(AppState state, String boot, Map<String, Object?> args) {
   final calendarId = state.mirrorCalendarId;
   if (calendarId == null || boot != 'live' || args['confirm'] == true) return null;
-  return DriveResult.refused('calendar_mirror_on', {'mirrorCalendarId': calendarId});
+  return DriveResult.refused('calendar_mirror_on', {'boot': boot, 'mirrorCalendarId': calendarId});
 }
 
 Map<String, Object?> _written(AppState state, String boot, String id) => {
