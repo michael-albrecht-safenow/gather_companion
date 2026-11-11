@@ -106,7 +106,20 @@ class FakeCollector implements Collector {
   // ---- lifecycle -------------------------------------------------------------
 
   @override
-  void start() {
+  void start() => _reconnected();
+
+  /// Plays the tail of a real reconnect: the state dump lands, and the collector
+  /// says so.
+  ///
+  /// `DirectCollector` reports recovery one way only — `_setHealth(true, …)` once a
+  /// fresh connection's state dump arrives — and `AppState` turns that status, and
+  /// nothing else, back into a live link. A fake that re-publishes the roster but
+  /// never says "healthy" leaves the link parked on `retrying` (and so `canWalk`
+  /// false) after any resync, forever, which no real collector does. The transient
+  /// `handshake sent; waiting for state` status in between is skipped: there is no
+  /// handshake here to wait on, and emitting it would suspend online activity for a
+  /// moment that a script cannot observe anyway.
+  void _reconnected() {
     if (!_statuses.isClosed) {
       _statuses.add(const CollectorStatus(healthy: true, detail: 'simulator'));
     }
@@ -345,17 +358,36 @@ class FakeCollector implements Collector {
   @override
   Future<({bool ok, String detail})> resync() async {
     resyncs++;
-    publish();
+    // A real resync with no transport cannot reconnect, and stays unhealthy until
+    // [setReachable] lifts the suspend — which then reconnects on its own.
+    if (_reachable) _reconnected();
     return (ok: true, detail: 'simulator; a fresh roster follows');
   }
 
   /// Reachability flags we were told, in order — so a test can assert AppState's
-  /// connectivity signal reached the collector (issue #8). A no-op otherwise: the
-  /// simulator has no socket to suspend.
+  /// connectivity signal reached the collector (issue #8).
   final List<bool> reachablesSet = [];
+  bool _reachable = true;
 
+  /// Mirrors `DirectCollector.setReachable` on its edges: losing the transport
+  /// reports the same unhealthy `offline — waiting for a network` status, and its
+  /// return reconnects and reports healthy (the real one's retry timer fires at the
+  /// backoff floor and the state dump follows). Repeats are no-ops, as there.
   @override
-  void setReachable(bool reachable) => reachablesSet.add(reachable);
+  void setReachable(bool reachable) {
+    reachablesSet.add(reachable);
+    if (reachable == _reachable) return;
+    _reachable = reachable;
+    if (!reachable) {
+      if (!_statuses.isClosed) {
+        _statuses.add(
+          const CollectorStatus(healthy: false, detail: 'offline — waiting for a network'),
+        );
+      }
+      return;
+    }
+    _reconnected();
+  }
 
   /// How many times the resume path poked the deaf-socket watchdog, and whether that
   /// poke should report it acted — the simulator has no socket, so a test sets this to

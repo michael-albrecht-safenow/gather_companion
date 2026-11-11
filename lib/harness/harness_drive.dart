@@ -14,10 +14,16 @@
 /// harness.scenario  {"name":"still"}           # nobody wanders off
 /// harness.placePerson {"id":"ada","dx":2}      # seat Ada two tiles to my right
 /// state.dump                                   # → inHuddle, a call (after ~1.5 s)
+/// ui.openCall                                  # the spotlight lives on the call screen
 /// call.spotlight.mode {"mode":"auto"}
 /// harness.call.speak {"id":"ada"}              # hold the floor on Ada
 /// call.spotlight                               # → target space-ada after the dwell
 /// ```
+///
+/// The place → speak → `call.spotlight` flow needs the call screen open: the
+/// spotlight controller is the call screen's, so with only the office showing
+/// there is nothing to promote anyone. Open the call screen with `ui.openCall`,
+/// or tap the in-call banner, before `call.spotlight.mode`.
 ///
 /// ## Why this file lives in `lib/harness/`, and never in a live boot
 ///

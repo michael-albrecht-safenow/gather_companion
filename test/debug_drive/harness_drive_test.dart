@@ -11,6 +11,7 @@ library;
 import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gather_client/gather_client.dart';
@@ -419,6 +420,45 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     app.dispose();
     await tester.pump(const Duration(seconds: 15));
+  });
+
+  test('offline on → off: the harness link returns to live and canWalk reopens, with no status pushed by hand', () {
+    fakeAsync((async) {
+      final fake = FakeCollector(participants: 3);
+      // Built the way lib/main_harness.dart builds TARGET=app.
+      final app = AppState(
+        notifier: _SilentNotifier(),
+        credentials: _HarnessCredentials(),
+        bridge: _EmptyBridge(),
+        calendarStore: _EmptyCalendarStore(),
+        buildCollector: (auth, spaceId) => fake,
+        buildCall: (auth, spaceId, srcId) => ScriptedCall(),
+        buildActivityFeed: _SilentFeed.new,
+        connectivityNow: () async => const [ConnectivityResult.wifi],
+        connectivityChanges: const Stream<List<ConnectivityResult>>.empty(),
+      );
+      app.boot();
+      async.flushMicrotasks();
+      expect(app.link.isLive, isTrue, reason: 'booted live: ${app.link.state}');
+      expect(app.canWalk, isTrue);
+
+      // What the drive's `fault.offline {"on":true}` does.
+      app.debugNoteConnectivity(const []);
+      async.flushMicrotasks();
+      expect(app.link.isOffline, isTrue);
+      expect(app.canWalk, isFalse);
+
+      // …and `{"on":false}`: the transport returns, AppState resyncs, and the fake
+      // must report the reconnect the way DirectCollector does — a healthy status.
+      app.debugNoteConnectivity(const [ConnectivityResult.wifi]);
+      async.flushMicrotasks();
+      expect(fake.resyncs, greaterThan(0), reason: 'the returning transport resyncs');
+      expect(app.link.isLive, isTrue, reason: 'stuck at ${app.link.state}: ${app.link.detail}');
+      expect(app.canWalk, isTrue);
+
+      app.dispose();
+      async.elapse(const Duration(seconds: 15));
+    });
   });
 }
 
