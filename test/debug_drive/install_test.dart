@@ -85,6 +85,12 @@ void main() {
       'ext.gc.activity.list',
       'ext.gc.activity.refresh',
       'ext.gc.activity.markRead',
+      'ext.gc.move.goTo',
+      'ext.gc.move.warpToTile',
+      'ext.gc.move.warpToPerson',
+      'ext.gc.move.goToRoom',
+      'ext.gc.move.goToMyDesk',
+      'ext.gc.move.stop',
     });
     expect(reg.methods.every(DebugDrive.isValidMethod), isTrue);
   });
@@ -133,6 +139,12 @@ void main() {
           {'name': 'ext.gc.mediaCheck.speaker', 'outward': false},
           {'name': 'ext.gc.mediaCheck.status', 'outward': false},
           {'name': 'ext.gc.mediaCheck.switchCamera', 'outward': false},
+          {'name': 'ext.gc.move.goTo', 'outward': true},
+          {'name': 'ext.gc.move.goToMyDesk', 'outward': true},
+          {'name': 'ext.gc.move.goToRoom', 'outward': true},
+          {'name': 'ext.gc.move.stop', 'outward': false},
+          {'name': 'ext.gc.move.warpToPerson', 'outward': true},
+          {'name': 'ext.gc.move.warpToTile', 'outward': true},
           {'name': 'ext.gc.op.result', 'outward': false},
           {'name': 'ext.gc.op.status', 'outward': false},
           {'name': 'ext.gc.plans.state', 'outward': false},

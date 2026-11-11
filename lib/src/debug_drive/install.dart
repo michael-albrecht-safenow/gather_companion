@@ -54,6 +54,7 @@ import 'drive_ops.dart';
 import 'gameboy_drive.dart';
 import 'media_check_drive.dart';
 import 'media_drive.dart';
+import 'move_drive.dart';
 import 'plans_drive.dart';
 import 'presence_drive.dart';
 import 'sfu_drive.dart';
@@ -179,6 +180,7 @@ DebugDrive? installDebugDrive({
     gameboyFeature(app: () => binding.app, boot: () => binding.boot),
     presenceFeature(app: () => binding.app, boot: () => binding.boot),
     activityFeature(app: () => binding.app, boot: () => binding.boot, ops: driveOps),
+    moveFeature(app: () => binding.app, boot: () => binding.boot, ops: driveOps),
     ...extraFeatures,
   ]);
   // After the install succeeded, so a refused install leaves no sink behind.
