@@ -1167,6 +1167,13 @@ class AppState extends ChangeNotifier {
   /// changing it is reflected here without this app being told.
   String? get myAvailability => _myRow()?.availability;
 
+  /// Whether a game socket is attached at all — the condition every "being a
+  /// person in the room" write below checks first and answers *Not connected to
+  /// Gather.* without. Public so a caller can say that before it acts rather
+  /// than parse the sentence after; [setHandRaised] in particular is local-first
+  /// and drops the wire half silently when this is false.
+  bool get collectorAttached => _collector != null;
+
   /// Who I am in a conversation with — Gather's `clusterId`, which is how it
   /// remembers who is talking to whom.
   ///
