@@ -155,6 +155,18 @@ class FakeCollector implements Collector {
   /// Everyone currently on the floor, by `spaceId`.
   Iterable<String> get peopleIds => _people.keys;
 
+  /// The tile I am standing on, as the last roster put me.
+  ({int x, int y}) get selfTile => _me;
+
+  /// Where [spaceId] stands and what their row says, or null when that person
+  /// is not seated — read-only, for the debug drive's `harness.*` readout.
+  ({CallPerson person, int x, int y, String direction, bool speaking})? standing(String spaceId) {
+    final s = _people[spaceId];
+    return s == null
+        ? null
+        : (person: s.person, x: s.x, y: s.y, direction: s.direction, speaking: s.speaking);
+  }
+
   /// How close a colleague must stand to be in a call with me, in tiles. A
   /// conversation's cluster is tighter than Gather's `inRange` circle (12) on
   /// purpose: on this small schematic floor, "near enough to talk" is a couple
