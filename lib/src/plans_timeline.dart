@@ -199,6 +199,11 @@ int initialPlanMinutes(PlannedMeeting? existing) =>
   return (first: start.isBefore(low) ? start : low, last: start.isAfter(high) ? start : high);
 }
 
+/// A fresh local id for a new plan — the editor's and the debug drive's
+/// `plans.add`'s, one scheme so a drive-made plan is indistinguishable from a
+/// typed one.
+String newPlanId() => DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+
 /// The room in [rooms] with [stableId], or null for none chosen or none that
 /// resolves.
 SpaceRoom? resolvePlanRoom(List<SpaceRoom> rooms, String? stableId) {
