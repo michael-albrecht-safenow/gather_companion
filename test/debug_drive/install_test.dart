@@ -88,6 +88,8 @@ void main() {
       'ext.gc.ui.gameboy',
       'ext.gc.ui.sfx',
       'ext.gc.ui.party',
+      'ext.gc.ui.openCall',
+      'ext.gc.ui.closeCall',
     });
     expect(reg.methods.every(DebugDrive.isValidMethod), isTrue);
   });
@@ -145,7 +147,9 @@ void main() {
           {'name': 'ext.gc.status.setCustom', 'outward': true},
           {'name': 'ext.gc.status.state', 'outward': false},
           {'name': 'ext.gc.test.wave', 'outward': true},
+          {'name': 'ext.gc.ui.closeCall', 'outward': false},
           {'name': 'ext.gc.ui.gameboy', 'outward': false},
+          {'name': 'ext.gc.ui.openCall', 'outward': false},
           {'name': 'ext.gc.ui.party', 'outward': true},
           {'name': 'ext.gc.ui.sfx', 'outward': false},
           {'name': 'ext.gc.ui.state', 'outward': false},

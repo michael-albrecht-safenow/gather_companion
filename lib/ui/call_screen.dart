@@ -55,9 +55,31 @@ export '../src/media/spotlight_controller.dart' show SpotlightMode;
 Future<void> openCallScreen(BuildContext context, AppState state) =>
     Navigator.of(context).push(
       MaterialPageRoute<void>(
+        settings: const RouteSettings(name: kCallScreenRoute),
         builder: (_) => CallScreen(state: state, buildTile: debugCallTileBuilder),
       ),
     );
+
+/// The name [openCallScreen] gives its route, so the debug drive's `ui.closeCall`
+/// can find the faces under anything stacked on them. See
+/// `../src/call_screen_debug.dart`.
+const kCallScreenRoute = 'call';
+
+/// Pops the call screen [openCallScreen] pushed, with whatever sits on top of it,
+/// back to the route below. False (and nothing popped) when there is none.
+bool closeCallScreen(BuildContext context) {
+  final navigator = Navigator.of(context);
+  var found = false;
+  navigator.popUntil((route) {
+    if (route.settings.name == kCallScreenRoute) {
+      found = true;
+      return true;
+    }
+    return route.isFirst;
+  });
+  if (found) navigator.pop();
+  return found;
+}
 
 /// Harness-only override every [openCallScreen] picks up. The simulator has no
 /// camera, so the whole-app harness sets this to paint stand-in footage into the
